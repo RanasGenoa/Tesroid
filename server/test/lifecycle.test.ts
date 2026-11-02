@@ -19,26 +19,30 @@ describe('VaapiEncoder Lifecycle & Idle Shutdown', () => {
     expect(encoder.isRunning()).toBe(false);
   });
 
-  it('should correctly evaluate keyframe staleness', () => {
+  it('should deterministically evaluate keyframe staleness regardless of process uptime', () => {
+    vi.spyOn(performance, 'now').mockReturnValue(10_000); // 10.0s wall clock
     const encoder = new VaapiEncoder();
 
-    // No keyframe cached -> considered stale
+    // Anchor stream start at 5.0s -> getCurrentPts() is deterministically 5_000_000n
+    (encoder as any).streamStartTimeUs = 5_000_000n;
+
+    // 1. No keyframe cached -> considered stale
     expect(encoder.isKeyframeStale()).toBe(true);
 
     const nowPts = encoder.getCurrentPts();
+    expect(nowPts).toBe(5_000_000n);
 
-    // Keyframe generated just now (pts = nowPts)
+    // 2. Keyframe generated just now -> fresh (not stale within 2s threshold)
     (encoder as any).cachedKeyframe = { data: Buffer.alloc(10), pts: nowPts };
-    expect(encoder.isKeyframeStale(2000000n)).toBe(false);
+    expect(encoder.isKeyframeStale(2_000_000n)).toBe(false);
 
-    // Keyframe generated 3 seconds ago
+    // 3. Keyframe generated 3 seconds ago -> deterministically stale (> 2s threshold)
     (encoder as any).cachedKeyframe = {
       data: Buffer.alloc(10),
-      pts: nowPts >= 3000000n ? nowPts - 3000000n : 0n,
+      pts: nowPts - 3_000_000n,
     };
-    if (nowPts >= 3000000n) {
-      expect(encoder.isKeyframeStale(2000000n)).toBe(true);
-    }
+    expect(encoder.isKeyframeStale(2_000_000n)).toBe(true);
+    vi.restoreAllMocks();
   });
 
   it('should trigger watchdog restart when video frames are stalled for >= 3s', () => {
@@ -55,7 +59,7 @@ describe('VaapiEncoder Lifecycle & Idle Shutdown', () => {
     encoder.stop();
   });
 
-  it('should NOT trigger watchdog when video is intentionally stopped or not running', () => {
+  it('should NOT trigger watchdog when video is intentionally stopped, not running, or recently active', () => {
     const encoder = new VaapiEncoder();
     const restartSpy = vi.spyOn(encoder, 'restart').mockResolvedValue(undefined);
 
@@ -69,6 +73,12 @@ describe('VaapiEncoder Lifecycle & Idle Shutdown', () => {
     // 2. Intentional stop
     (encoder as any).isVideoRunning = true;
     (encoder as any).isIntentionalVideoStop = true;
+    encoder.checkVideoWatchdog();
+    expect(restartSpy).not.toHaveBeenCalled();
+
+    // 3. Running and recently emitted frame (< 3s)
+    (encoder as any).isIntentionalVideoStop = false;
+    (encoder as any).lastVideoEmitTime = performance.now() - 500;
     encoder.checkVideoWatchdog();
     expect(restartSpy).not.toHaveBeenCalled();
 

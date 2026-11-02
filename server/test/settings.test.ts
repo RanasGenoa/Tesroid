@@ -8,9 +8,10 @@ import { BrowserManager } from '../src/browser/manager.js';
 import { VaapiEncoder } from '../src/encoder/ffmpeg.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 describe('Settings Routes & Dynamic Stream Config', () => {
-  const tmpDir = path.join(process.cwd(), 'tmp-test-settings-' + Date.now());
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tesroid-settings-'));
 
   afterAll(() => {
     try {

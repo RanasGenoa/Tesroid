@@ -75,6 +75,9 @@ export class H264Parser {
    * Input sps and pps MUST NOT contain start codes.
    */
   public static buildAVCDecoderConfigurationRecord(sps: Uint8Array, pps: Uint8Array): Uint8Array {
+    if (sps.length < 4) {
+      throw new Error('Invalid SPS: length must be at least 4 bytes');
+    }
     const record = new Uint8Array(11 + sps.length + pps.length);
     let offset = 0;
 
@@ -101,6 +104,9 @@ export class H264Parser {
    * Generate codec string (e.g. 'avc1.640028') from SPS bytes
    */
   public static getCodecString(sps: Uint8Array): string {
+    if (sps.length < 4) {
+      throw new Error('Invalid SPS: length must be at least 4 bytes');
+    }
     const hexProfile = sps[1].toString(16).padStart(2, '0');
     const hexCompat = sps[2].toString(16).padStart(2, '0');
     const hexLevel = sps[3].toString(16).padStart(2, '0');
