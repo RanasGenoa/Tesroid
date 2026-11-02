@@ -138,6 +138,7 @@ npm run deploy
 
 ## 📚 ドキュメント一覧
 
+- **[CONTRIBUTING.md](CONTRIBUTING.md)**: コントリビューション・ブランチ運用 & バージョニングガイド
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: デプロイメント・運用・保守ガイド（Docker Compose / NAS / ロックアウト解除 / VAAPI 診断）
 - **[docs/NETWORK.md](docs/NETWORK.md)**: 外部公開 & ネットワーク設定完全ガイド（Cloudflare Tunnel / Caddy / Nginx）
 - **[docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md)**: 描画最適化・ヒステリシス制御・CDP ネイティブタッチ技術仕様書
