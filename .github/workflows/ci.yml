@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Unit Tests & Build Verification
+    name: Build & Test Verification
     runs-on: ubuntu-latest
 
     steps:
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: |
             client/package-lock.json
@@ -30,8 +30,8 @@ jobs:
       - name: Install server dependencies
         run: npm --prefix server ci
 
-      - name: Run test suite
-        run: npm test
-
       - name: Run production build
         run: npm run build
+
+      - name: Run test suite
+        run: npm test
