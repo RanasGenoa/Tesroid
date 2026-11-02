@@ -1,0 +1,42 @@
+# Git & repository metadata
+.git
+.gitignore
+
+# Environment & local secrets (never send to Docker build context)
+.env
+.env.*
+*PRIVATE*
+*private*
+*.local*
+*.pem
+*.key
+*.crt
+
+# Host node_modules and build artifacts (rebuilt cleanly inside container stages)
+node_modules
+**/node_modules
+dist
+**/dist
+
+# Runtime persistent data & logs
+data
+server/data
+*.log
+debug_screen.png
+
+# Test & cache directories
+coverage
+.vitest
+.cache
+**/test
+
+# Documentation & editor configs (not needed inside container image)
+docs
+*.md
+LICENSE
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+.cursor
+.claude

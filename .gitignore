@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Production build outputs
+dist/
+**/dist/
+
+# Environment files & credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Runtime persistent data, debug captures, and logs
+*.log
+data/
+server/data/
+debug_screen.png
+
+# System / Editor / AI tool files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
+.claude/
+
+# Testing & Cache
+coverage/
+.vitest/
+.cache/
+
+# Local / private untracked notes & scripts
+*PRIVATE*
+*private*
+*.local*

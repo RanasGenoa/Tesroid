@@ -1,0 +1,20 @@
+{
+  "name": "tesroid",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "description": "Tesla in-car browser optimized self-hosted Cloud Browser streaming system",
+  "scripts": {
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build && npm --prefix server run build",
+    "test": "./server/node_modules/.bin/vitest run client/test server/test",
+    "proxy": "node scripts/pc-proxy.mjs",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "deploy": "bash scripts/deploy.sh",
+    "start": "npm --prefix server run start"
+  }
+}

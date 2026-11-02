@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Tesroid Car Optimizations",
+  "version": "1.0.0",
+  "description": "Native Web Fullscreen and car layout optimizations for Tesroid",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
