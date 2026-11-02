@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { ConfigStore, AppConfig } from '../config.js';
 import { AuthService } from '../auth.js';
-import { BrowserManager } from '../browser/manager.js';
+import { BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import { VaapiEncoder } from '../encoder/ffmpeg.js';
 
 interface VerifyPinBody {
@@ -75,10 +75,17 @@ export function registerSettingsRoutes(
   });
 
   // Update settings
-  app.put<{ Body: UpdateSettingsBody }>('/api/settings', { preHandler: requireAuth }, async (req, _reply) => {
-    const { pin, allowedDomains, autoSleepMinutes, stream, browserUrl, displayScale } = req.body;
+  app.put<{ Body: UpdateSettingsBody }>('/api/settings', { preHandler: requireAuth }, async (req, reply) => {
+    const { pin, allowedDomains, autoSleepMinutes, stream, browserUrl, displayScale } = req.body || {};
+
+    if (browserUrl !== undefined && browserUrl !== '' && !isSafeHttpUrl(browserUrl)) {
+      return reply.status(400).send({ error: 'Invalid browserUrl: Only http:// and https:// URLs are permitted.' });
+    }
 
     if (pin) {
+      if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
+        return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
+      }
       await authService.setPin(pin);
     }
 

@@ -657,6 +657,10 @@ export class WebSocketHandler {
 
         case 'NAVIGATE':
           this.recordInputActivity(socket);
+          if (!cmd.url || typeof cmd.url !== 'string' || !/^https?:\/\//i.test(cmd.url.trim())) {
+            this.sendControl(socket, { type: 'ERROR', message: 'Invalid URL: Only http:// and https:// URLs are permitted.' });
+            break;
+          }
           // 要件8: ページ移動・再ナビゲーション時はバッファ消去＋LIVE
           this.playbackBuffer.clear();
           for (const s of this.clientSessions.values()) {
@@ -664,10 +668,8 @@ export class WebSocketHandler {
               this.abortCatchupAndSwitchToLive(s);
             }
           }
-          if (cmd.url) {
-            await this.browserManager.navigate(cmd.url);
-            this.broadcastControl({ type: 'BROWSER_STATUS', url: cmd.url, state: this.browserManager.getState() });
-          }
+          await this.browserManager.navigate(cmd.url);
+          this.broadcastControl({ type: 'BROWSER_STATUS', url: cmd.url, state: this.browserManager.getState() });
           break;
 
         case 'NAVIGATE_BACK':

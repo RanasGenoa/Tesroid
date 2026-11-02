@@ -2,9 +2,9 @@ name: CI (Test & Build)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
 
 jobs:
   test:
@@ -30,8 +30,11 @@ jobs:
       - name: Install server dependencies
         run: npm --prefix server ci
 
-      - name: Run production build
+      - name: Run full automated test & PR guardrail suite (pre-build)
+        run: npm test
+
+      - name: Run production build (client & server TypeScript + Vite)
         run: npm run build
 
-      - name: Run test suite
-        run: npm test
+      - name: Verify built dist compliance
+        run: ./server/node_modules/.bin/vitest run client/test/dom.test.ts

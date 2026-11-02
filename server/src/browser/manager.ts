@@ -20,6 +20,19 @@ export interface BrowserManagerOptions {
 
 export type BrowserState = 'stopped' | 'starting' | 'running' | 'paused' | 'error';
 
+/**
+ * Validates that a navigation target uses a safe HTTP/HTTPS scheme (prevents file://, chrome://, javascript:).
+ */
+export function isSafeHttpUrl(rawUrl: unknown): rawUrl is string {
+  if (typeof rawUrl !== 'string' || rawUrl.trim().length === 0) return false;
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export class BrowserManager {
   private displayNum: string;
   private width: number;
@@ -218,6 +231,9 @@ export class BrowserManager {
    * Navigate to a new URL
    */
   public async navigate(url: string): Promise<void> {
+    if (!isSafeHttpUrl(url)) {
+      throw new Error('Invalid URL: Only http:// and https:// URLs are permitted.');
+    }
     this.currentUrl = url;
     if (this.state === 'paused') {
       this.resume();

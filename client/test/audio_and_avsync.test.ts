@@ -1,0 +1,199 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { AvSyncController } from '../src/core/av-sync.js';
+import { AudioPlayer } from '../src/core/audio-player.js';
+import { AUDIO_FLAGS } from '../src/transport/protocol.js';
+
+describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & Lockstep Sync)', () => {
+  const originalWindow = (globalThis as any).window;
+  const originalDocument = (globalThis as any).document;
+
+  afterEach(() => {
+    (globalThis as any).window = originalWindow;
+    (globalThis as any).document = originalDocument;
+    vi.restoreAllMocks();
+  });
+
+  it('AvSyncController maintains 1.0x native rate, interpolates real-time speaker PTS, and realigns >2000ms drift', () => {
+    const sync = new AvSyncController();
+    expect(sync.getPlaybackRate()).toBe(1.0);
+    expect(sync.getCurrentPlayingAudioPtsUs()).toBeNull();
+
+    let ctxTimeSec = 10.0;
+    sync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Anchor audio PTS 1,000,000us (1.0s) scheduled at AudioContext t=10.20s
+    sync.updateAudioPts(1_000_000, 10.2);
+    // At t=10.50s (+0.30s past anchor), speaker is playing PTS 1,300,000us (1.3s)
+    ctxTimeSec = 10.5;
+    expect(sync.getCurrentPlayingAudioPtsUs()).toBe(1_300_000);
+
+    // Video is at 1,340,000us -> +40ms drift
+    sync.updateVideoPts(1_340_000);
+    expect(sync.getDriftMs()).toBe(40);
+
+    // If AudioContext advances >1.5s without new audio packets, stream is silent -> returns null
+    ctxTimeSec = 12.5;
+    expect(sync.getCurrentPlayingAudioPtsUs()).toBeNull();
+
+    // Fallback baseline drift realignment when jump exceeds >2000ms
+    const sync2 = new AvSyncController();
+    sync2.updateVideoPts(1_000_000);
+    sync2.updateAudioPts(1_000_000);
+    sync2.updateVideoPts(5_000_000); // +4000ms jump -> realigns baselines and returns 0
+    expect(sync2.getDriftMs()).toBe(0);
+  });
+
+  it('AudioPlayer configures OpusHead (with fallback), decodes planar & interleaved f32, closes AudioData, and holds audio during video buffering', async () => {
+    let ctxTime = 5.0;
+    const scheduledSources: any[] = [];
+    let decoderCallbacks: any = null;
+    const configuredCalls: any[] = [];
+    let rejectWithDescriptionOnce = true;
+
+    class MockAudioContext {
+      public state = 'running';
+      public sampleRate = 48000;
+      public destination = {};
+      public get currentTime() {
+        return ctxTime;
+      }
+      public resume = vi.fn(async () => {
+        this.state = 'running';
+      });
+      public close = vi.fn(async () => {
+        this.state = 'closed';
+      });
+      public createBuffer(channels: number, frames: number, rate: number) {
+        const chArrays = Array.from({ length: channels }, () => new Float32Array(frames));
+        return {
+          numberOfChannels: channels,
+          length: frames,
+          sampleRate: rate,
+          duration: frames / rate,
+          getChannelData: (c: number) => chArrays[c],
+        };
+      }
+      public createBufferSource() {
+        const src: any = {
+          buffer: null,
+          playbackRate: { value: 1.0 },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(),
+          stop: vi.fn(),
+          onended: null,
+        };
+        scheduledSources.push(src);
+        return src;
+      }
+    }
+
+    class MockAudioDecoder {
+      public state = 'unconfigured';
+      public decode = vi.fn();
+      public close = vi.fn(() => {
+        this.state = 'closed';
+      });
+      constructor(cbs: any) {
+        decoderCallbacks = cbs;
+      }
+      public configure(cfg: any) {
+        configuredCalls.push({ ...cfg });
+        if (cfg.description && rejectWithDescriptionOnce) {
+          rejectWithDescriptionOnce = false;
+          throw new Error('Description not supported on this platform');
+        }
+        this.state = 'configured';
+      }
+    }
+
+    class MockEncodedAudioChunk {
+      public type: string;
+      public timestamp: number;
+      public data: Uint8Array;
+      constructor(init: any) {
+        this.type = init.type;
+        this.timestamp = init.timestamp;
+        this.data = init.data;
+      }
+    }
+
+    (globalThis as any).window = {
+      AudioContext: MockAudioContext,
+      AudioDecoder: MockAudioDecoder,
+      EncodedAudioChunk: MockEncodedAudioChunk,
+    };
+    (globalThis as any).document = {
+      addEventListener: vi.fn(),
+    };
+
+    const avSync = new AvSyncController();
+    const player = new AudioPlayer(avSync);
+    await player.unlock();
+
+    // 1. CONFIG packet (OpusHead >= 19B): retries without description when rejected, and does NOT decode config bytes!
+    const opusHead = new Uint8Array(19);
+    opusHead.set(new TextEncoder().encode('OpusHead'), 0);
+    player.handleAudioPacket(AUDIO_FLAGS.CONFIG, 0n, opusHead);
+    expect(configuredCalls).toHaveLength(2);
+    expect(configuredCalls[0].description).toBeDefined();
+    expect(configuredCalls[1].description).toBeUndefined();
+
+    // 2. While video is buffering, decoded audio frames MUST be held in overflowQueue (never scheduled early!)
+    avSync.setVideoBuffering(true);
+    let closedCount = 0;
+
+    const emitDecodedFrame = (ptsUs: number, format: 'f32-planar' | 'f32') => {
+      const audioData = {
+        numberOfChannels: 2,
+        numberOfFrames: 960, // 20ms @ 48kHz
+        sampleRate: 48000,
+        timestamp: ptsUs,
+        format,
+        copyTo: vi.fn((dest: Float32Array, opts: any) => {
+          if (opts.format === 'f32') {
+            // Interleaved L=0.25, R=-0.25
+            for (let i = 0; i < dest.length; i += 2) {
+              dest[i] = 0.25;
+              dest[i + 1] = -0.25;
+            }
+          } else {
+            dest.fill(opts.planeIndex === 0 ? 0.5 : -0.5);
+          }
+        }),
+        close: vi.fn(() => {
+          closedCount++;
+        }),
+      };
+      decoderCallbacks.output(audioData);
+      return audioData;
+    };
+
+    // Emit 10 chunks (200ms total > 140ms cushion) mixing planar and interleaved formats while video is buffering
+    for (let i = 0; i < 10; i++) {
+      emitDecodedFrame((i + 1) * 20_000, i % 2 === 0 ? 'f32-planar' : 'f32');
+    }
+    expect(closedCount).toBe(10); // Every AudioData closed!
+    expect(scheduledSources).toHaveLength(0); // Held waiting for video!
+
+    // 3. Video exits buffering and advances to 400ms -> syncWithVideo drops >220ms stale chunks and schedules at 1.0x!
+    avSync.setVideoBuffering(false);
+    avSync.updateVideoPts(400_000);
+    player.syncWithVideo();
+
+    expect(scheduledSources.length).toBeGreaterThan(0);
+    for (const src of scheduledSources) {
+      expect(src.playbackRate.value).toBe(1.0);
+    }
+
+    // 4. Muted audioData is closed immediately without scheduling
+    player.toggleMute();
+    expect(player.getIsMuted()).toBe(true);
+    const prevScheduled = scheduledSources.length;
+    emitDecodedFrame(500_000, 'f32-planar');
+    expect(closedCount).toBe(11);
+    expect(scheduledSources.length).toBe(prevScheduled);
+
+    player.close();
+  });
+});

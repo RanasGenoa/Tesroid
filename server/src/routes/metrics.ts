@@ -8,7 +8,7 @@ export function registerMetricsRoutes(app: FastifyInstance, authService?: AuthSe
   const checkAuth = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!authService) return;
     // Allow localhost/loopback requests without authentication for health & diagnostics
-    const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.hostname === 'localhost';
+    const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
     if (isLocal) return;
 
     const authHeader = req.headers.authorization;
@@ -29,10 +29,12 @@ export function registerMetricsRoutes(app: FastifyInstance, authService?: AuthSe
     '/api/metrics/history',
     { preHandler: checkAuth },
     async (req) => {
-      const limit = req.query.limit ? parseInt(req.query.limit, 10) : 60;
+      const parsed = req.query.limit ? parseInt(req.query.limit, 10) : 60;
+      const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 60;
+      const history = metricsManager.getHistory(limit);
       return {
-        count: metricsManager.getHistory(limit).length,
-        history: metricsManager.getHistory(limit),
+        count: history.length,
+        history,
       };
     }
   );

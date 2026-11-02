@@ -2,11 +2,15 @@ import { showToast } from './icons.js';
 
 export async function sleep(token: string): Promise<void> {
   try {
-    await fetch('/api/system/sleep', {
+    const res = await fetch('/api/system/sleep', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    showToast('ブラウザを省電力一時停止しました (CPU/GPU 0%)', 'info');
+    if (res.ok) {
+      showToast('ブラウザを省電力一時停止しました (CPU/GPU 0%)', 'info');
+    } else {
+      showToast(`一時停止に失敗しました (HTTP ${res.status})`, 'error');
+    }
   } catch (err: any) {
     showToast(`一時停止に失敗: ${err.message}`, 'error');
   }
@@ -14,11 +18,15 @@ export async function sleep(token: string): Promise<void> {
 
 export async function resume(token: string): Promise<void> {
   try {
-    await fetch('/api/system/resume', {
+    const res = await fetch('/api/system/resume', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    showToast('ブラウザを再開しました', 'success');
+    if (res.ok) {
+      showToast('ブラウザを再開しました', 'success');
+    } else {
+      showToast(`再開に失敗しました (HTTP ${res.status})`, 'error');
+    }
   } catch (err: any) {
     showToast(`再開に失敗: ${err.message}`, 'error');
   }
@@ -46,11 +54,15 @@ export async function encoderRestart(token: string): Promise<void> {
 export async function browserRestart(token: string): Promise<void> {
   if (confirm('ブラウザプロセスを再起動しますか？')) {
     try {
-      await fetch('/api/system/restart-browser', {
+      const res = await fetch('/api/system/restart-browser', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
-      showToast('ブラウザを再起動しました', 'success');
+      if (res.ok) {
+        showToast('ブラウザを再起動しました', 'success');
+      } else {
+        showToast(`再起動に失敗しました (HTTP ${res.status})`, 'error');
+      }
     } catch (err: any) {
       showToast(`再起動に失敗: ${err.message}`, 'error');
     }

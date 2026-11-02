@@ -37,8 +37,8 @@ export function registerSetupRoutes(
       return reply.status(403).send({ error: 'Setup has already been completed.' });
     }
 
-    const { pin, allowedDomains } = req.body;
-    if (!pin || pin.length < 4 || pin.length > 8) {
+    const { pin, allowedDomains } = req.body || ({} as Partial<SetupBody>);
+    if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
       return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
     }
 
