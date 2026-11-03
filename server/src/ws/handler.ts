@@ -1007,9 +1007,9 @@ export class WebSocketHandler {
           const isIdle = (Date.now() - this.lastInputAt) > idleThresholdMs;
           const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
 
-          // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 256KB) が発生した場合、
+          // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 512KB) が発生した場合、
           // 送信をストップして未送信フレームを CATCHUP キューへ安全に蓄積する
-          if (wantsBuffer && isIdle && !session.isInteractive && buffered > 256 * 1024) {
+          if (wantsBuffer && isIdle && !session.isInteractive && buffered > 512 * 1024) {
             console.log(`[WebSocketHandler] Network congestion detected (buffered=${Math.round(buffered / 1024)}KB). Switching session to CATCHUP buffer mode.`);
             this.transitionLiveSessionToCatchup(session);
             session.playbackQueue.push({ type: 'video', flags, pts, data });
@@ -1049,17 +1049,17 @@ export class WebSocketHandler {
           const session = this.clientSessions.get(client);
           if (!session) continue;
 
-          if (session.isInteractive || session.targetBufferMs === 0) {
-            const buffered = (client as any).bufferedAmount || 0;
-            if (buffered <= 2 * 1024 * 1024) {
-              client.send(packet);
-            }
+          // 1. CATCHUP クライアント: 映像と同様にキューへ格納
+          if (session.mode === 'CATCHUP') {
+            session.playbackQueue.push({ type: 'audio', flags, pts, data });
             continue;
           }
 
-          // アイドル視聴中は音声もキューへ格納 (A/V同期維持)
-          session.mode = 'CATCHUP';
-          session.playbackQueue.push({ type: 'audio', flags, pts, data });
+          // 2. LIVE クライアント: リアルタイム送信 (音声はドロップせず 2MB まで許容)
+          const buffered = (client as any).bufferedAmount || 0;
+          if (buffered <= 2 * 1024 * 1024) {
+            client.send(packet);
+          }
         }
       }
     });

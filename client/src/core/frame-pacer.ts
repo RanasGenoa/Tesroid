@@ -265,20 +265,25 @@ export class FramePacer {
       : null;
 
     if (this.frameQueue.length === 0 && !this.isBuffering) {
-      // スピーカーから現在再生中の音声PTSがある場合、その音声クロックに合わせて理想描画時刻を算出
-      let targetRealtimeSlot: number;
+      // Queue is empty: pace smoothly by deltaMs after previous rendered frame
+      let earliestNextSlot = this.hasRenderedAny ? this.lastScheduledTimeMs + deltaMs : now;
+
+      // 音声が再生中の場合、音声クロックとの誤差を毎フレーム最大±2.0msだけ微小補正（PLLスムーズ吸着）
+      // 画面をガクッと止めることなく、滑らかな30fpsのまま完全に音声へ収束させる
       if (playingAudioPts !== null && playingAudioPts > 0) {
-        const audioAlignedTime = now + (ptsUs - playingAudioPts) / 1000;
-        targetRealtimeSlot = Math.max(now, audioAlignedTime);
-      } else {
-        const earliestNextSlot = this.hasRenderedAny ? this.lastScheduledTimeMs + deltaMs : now;
-        targetRealtimeSlot =
-          this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
+        const audioTargetTime = now + (ptsUs - playingAudioPts) / 1000;
+        const errorMs = audioTargetTime - earliestNextSlot;
+        if (Math.abs(errorMs) >= 15) {
+          const nudge = Math.sign(errorMs) * Math.min(2.0, Math.abs(errorMs) * 0.15);
+          earliestNextSlot += nudge;
+        }
       }
+
+      const targetRealtimeSlot =
+        this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
       scheduledRenderTime = Math.max(now, targetRealtimeSlot);
 
       // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
-      // 音声が再生中の場合、音声より2ms以上先の場合は即時描画せずキューに入れて待つ（リップシンク維持）
       if (scheduledRenderTime <= now + 2) {
         this.renderFrameInternal(frame, ptsUs, now);
         this.lastScheduledTimeMs = now;
