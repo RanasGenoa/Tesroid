@@ -418,7 +418,7 @@ export function renderStreamingView(
     // Notice: Do NOT use raw `(serverLatestPts - lastDecodedPts)` as "buffered behind" because on a static screen
     // FFmpeg does not emit new frames while server wall-clock advances, which previously caused false 2-3s catch-up display!
     const clientBufferedMs = Math.max(pacerBufferedMs + decoderBufferedMs, Math.max(0, audioBufferedMs - 160));
-    return clientBufferedMs + serverCatchupQueueMs;
+    return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
   const updateHudLiveStatus = () => {
@@ -430,7 +430,7 @@ export function renderStreamingView(
     const pacerMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
     const decoderMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
     const localMs = pacerMs + decoderMs;
-    const serverMs = serverMode === 'CATCHUP' ? Math.max(serverCatchupQueueMs, serverBufferMs) : 0;
+    const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
 
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
@@ -744,17 +744,13 @@ export function renderStreamingView(
       metricsCollector.updateRtt(currentRtt);
       jitterController.updateRtt(currentRtt);
       if (typeof msg.catchupQueueMs === 'number') {
-        serverCatchupQueueMs = msg.catchupQueueMs;
+        serverCatchupQueueMs = Math.max(0, msg.catchupQueueMs);
       }
       if (typeof msg.serverBufferMs === 'number') {
-        serverBufferMs = msg.serverBufferMs;
+        serverBufferMs = Math.max(0, msg.serverBufferMs);
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;
-        if (serverMode === 'LIVE') {
-          serverCatchupQueueMs = 0;
-          serverBufferMs = 0;
-        }
       }
       if (connText) connText.textContent = `${currentRtt}ms`;
       if (connDot) {

@@ -790,6 +790,7 @@ export class WebSocketHandler {
           const latestPts = typeof (this.encoder as any).getCurrentPts === 'function'
             ? Number((this.encoder as any).getCurrentPts())
             : 0;
+          // 1. サーバー側送出待ちキューの秒数
           let catchupQueueMs = 0;
           if (session && session.playbackQueue.length > 0) {
             let firstPts: bigint | null = null;
@@ -806,7 +807,21 @@ export class WebSocketHandler {
               catchupQueueMs = Math.round((session.playbackQueue.length * 1000) / 30);
             }
           }
-          const serverBufferMs = session && session.mode === 'CATCHUP' ? catchupQueueMs : 0;
+
+          // 2. サーバー最新PTSとクライアント描画PTSとの遅延差分
+          let serverLagMs = 0;
+          const lastAck = session?.lastAckPts ?? this.lastKnownAckPts;
+          if (lastAck !== null && latestPts > Number(lastAck)) {
+            serverLagMs = Math.round((latestPts - Number(lastAck)) / 1000);
+          }
+
+          // 3. クライアント未達のサーバー側保持バッファ秒数 (全体遅延からクライアント手元バッファを除いた残余)
+          const clientBufferedMs = session?.bufferedMs ?? 0;
+          const serverRemainingMs = Math.max(0, serverLagMs - clientBufferedMs);
+
+          // 物理送出キューと未達残余バッファの大きい方を serverBufferMs とする
+          const serverBufferMs = Math.max(catchupQueueMs, serverRemainingMs);
+
           socket.send(MessageMultiplexer.packControl({
             type: 'PONG',
             id: cmd.id,
@@ -816,6 +831,7 @@ export class WebSocketHandler {
             serverMode: session?.mode || 'LIVE',
             catchupQueueMs,
             serverBufferMs,
+            serverLagMs,
           }));
           break;
         }
