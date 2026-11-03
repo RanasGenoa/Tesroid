@@ -502,9 +502,7 @@ export class AudioPlayer {
     this.overflowQueue = [];
     this.nextPlayTime = 0;
     this.stopAllScheduledSources();
-    if (typeof (this.avSync as any).clearAudioAnchor === 'function') {
-      (this.avSync as any).clearAudioAnchor();
-    }
+    this.avSync.clearAudioAnchor();
   }
 
   public jumpToLive(): void {
