@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AvSyncController } from '../src/core/av-sync.js';
 import { AudioPlayer } from '../src/core/audio-player.js';
 import { AUDIO_FLAGS } from '../src/transport/protocol.js';
+import { FramePacer } from '../src/core/frame-pacer.js';
 
 describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & Lockstep Sync)', () => {
   const originalWindow = (globalThis as any).window;
@@ -41,6 +42,10 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
     sync2.updateAudioPts(1_000_000);
     sync2.updateVideoPts(5_000_000); // +4000ms jump -> realigns baselines and returns 0
     expect(sync2.getDriftMs()).toBe(0);
+
+    // clearAudioAnchor() resets audio playback clock tracking
+    sync.clearAudioAnchor();
+    expect(sync.getCurrentPlayingAudioPtsUs()).toBeNull();
   });
 
   it('AudioPlayer configures OpusHead (with fallback), decodes planar & interleaved f32, closes AudioData, and holds audio during video buffering', async () => {
@@ -195,5 +200,50 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
     expect(scheduledSources.length).toBe(prevScheduled);
 
     player.close();
+  });
+
+  it('FramePacer anchors video playout to playing audio PTS when returning from DirectLive to PassiveStreaming', () => {
+    vi.useFakeTimers();
+    const mockRenderer: any = {
+      render: vi.fn((f: any) => f.close?.()),
+    };
+    const avSync = new AvSyncController();
+    let ctxTimeSec = 10.0;
+    avSync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Audio is playing PTS 2,000,000us (2.0s) at AudioContext t=10.0s
+    avSync.updateAudioPts(2_000_000, 10.0);
+
+    const pacer = new FramePacer(mockRenderer, 30, avSync);
+
+    const createDummyFrame = (ptsUs: number) => ({
+      timestamp: ptsUs,
+      close: vi.fn(),
+    });
+
+    // 1. In ACTIVE_INTERACTION (DirectLive), frames render immediately (0ms delay)
+    pacer.setMode('ACTIVE_INTERACTION');
+    const f1 = createDummyFrame(2_200_000);
+    pacer.queueFrame(f1 as any);
+    expect(mockRenderer.render).toHaveBeenCalledWith(f1);
+
+    // 2. Transition back to PASSIVE_STREAMING (DirectLive ended, watching video)
+    pacer.setMode('PASSIVE_STREAMING');
+
+    // Next video frame arrives at PTS 2,160,000us (160ms ahead of current playing audio 2,000,000us)
+    const f2 = createDummyFrame(2_160_000);
+    mockRenderer.render.mockClear();
+    pacer.queueFrame(f2 as any);
+
+    // Because audio is currently playing 2,000,000us, this video frame must NOT be rendered immediately!
+    // It must wait in the queue until audio catches up to +160ms
+    expect(mockRenderer.render).not.toHaveBeenCalled();
+    expect(pacer.getQueueLength()).toBe(1);
+
+    // Advance timers by 160ms -> frame renders perfectly in sync!
+    vi.advanceTimersByTime(160);
+    expect(mockRenderer.render).toHaveBeenCalledWith(f2);
+
+    pacer.destroy();
   });
 });

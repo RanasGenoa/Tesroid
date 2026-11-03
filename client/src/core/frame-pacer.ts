@@ -83,9 +83,15 @@ export class FramePacer {
   }
 
   public setMode(mode: LatencyMode): void {
+    const prevMode = this.mode;
     this.mode = mode;
     if (mode === 'ACTIVE_INTERACTION') {
       this.flushQueue();
+    } else if (prevMode === 'ACTIVE_INTERACTION' && mode === 'PASSIVE_STREAMING') {
+      // DirectLive から通常再生へ復帰した瞬間:
+      // 次のフレームをスピーカー再生中の音声PTSに正しくアンカーさせるため基準をリセット
+      this.lastScheduledTimeMs = 0;
+      this.lastScheduledPtsUs = -1;
     }
   }
 
@@ -254,16 +260,25 @@ export class FramePacer {
     let scheduledRenderTime: number;
     const deltaMs = this.computeDeltaPtsMs(ptsUs, this.lastScheduledPtsUs);
 
+    const playingAudioPts = typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
+      ? this.avSync.getCurrentPlayingAudioPtsUs()
+      : null;
+
     if (this.frameQueue.length === 0 && !this.isBuffering) {
-      // Queue is empty: check if enough time has elapsed since the previous frame was rendered
-      const earliestNextSlot = this.hasRenderedAny ? this.lastScheduledTimeMs + deltaMs : now;
-      // Do NOT add `now + effectiveDelayMs` on every single frame when queue is empty (that constantly pushes frames into the queue!).
-      // Only apply effectiveDelayMs when a multi-frame burst or explicit additionalDelayMs is active.
-      const targetRealtimeSlot =
-        this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
+      // スピーカーから現在再生中の音声PTSがある場合、その音声クロックに合わせて理想描画時刻を算出
+      let targetRealtimeSlot: number;
+      if (playingAudioPts !== null && playingAudioPts > 0) {
+        const audioAlignedTime = now + (ptsUs - playingAudioPts) / 1000;
+        targetRealtimeSlot = Math.max(now, audioAlignedTime);
+      } else {
+        const earliestNextSlot = this.hasRenderedAny ? this.lastScheduledTimeMs + deltaMs : now;
+        targetRealtimeSlot =
+          this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
+      }
       scheduledRenderTime = Math.max(now, targetRealtimeSlot);
 
       // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
+      // 音声が再生中の場合、音声より2ms以上先の場合は即時描画せずキューに入れて待つ（リップシンク維持）
       if (scheduledRenderTime <= now + 2) {
         this.renderFrameInternal(frame, ptsUs, now);
         this.lastScheduledTimeMs = now;
@@ -353,6 +368,15 @@ export class FramePacer {
     // Re-anchor queued frames starting from `now` at strict 1x PTS intervals so they play smoothly without fast-forward
     if (this.frameQueue.length > 0) {
       let cursorTime = now;
+      const playingAudioPts = typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
+        ? this.avSync.getCurrentPlayingAudioPtsUs()
+        : null;
+
+      if (playingAudioPts !== null && playingAudioPts > 0) {
+        const audioAlignedStart = now + (this.frameQueue[0].ptsUs - playingAudioPts) / 1000;
+        cursorTime = Math.max(now, audioAlignedStart);
+      }
+
       for (let i = 0; i < this.frameQueue.length; i++) {
         if (i > 0) {
           const dMs = this.computeDeltaPtsMs(this.frameQueue[i].ptsUs, this.frameQueue[i - 1].ptsUs);
@@ -405,7 +429,7 @@ export class FramePacer {
         }
 
         // A/V Sync Phase-Locked Loop (リップシンク自動補正):
-        // スピーカー出力中の音声PTSに合わせ、映像スケジュールを微小シフト (最大±1.0ms/frame) して完全に一致させる
+        // スピーカー出力中の音声PTSに合わせ、映像スケジュールを微小シフトして完全に一致させる
         if (typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function') {
           const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
           if (playingAudioPts !== null && playingAudioPts > 0) {
@@ -413,17 +437,19 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
 
-            if (Math.abs(syncErrorMs) > 1000) {
-              // 1秒以上の乖離時は瞬時に音声へ同期
+            if (Math.abs(syncErrorMs) > 150) {
+              // 150ms以上の顕著なズレは、全フレームを一括で瞬時に音声へ吸着再同期！
               const shift = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
               for (const item of this.frameQueue) {
                 item.scheduledRenderTime += shift;
               }
               this.lastScheduledTimeMs += shift;
             } else if (Math.abs(syncErrorMs) >= 15) {
-              // 15ms以上の微小ズレがある場合、毎フレーム最大1.0msだけ音声クロックへ向けてスムーズに吸着
-              const nudge = Math.sign(syncErrorMs) * Math.min(1.0, Math.abs(syncErrorMs) * 0.1);
-              this.frameQueue[0].scheduledRenderTime += nudge;
+              // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
+              const nudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+              for (const item of this.frameQueue) {
+                item.scheduledRenderTime += nudge;
+              }
               this.lastScheduledTimeMs += nudge;
             }
           }

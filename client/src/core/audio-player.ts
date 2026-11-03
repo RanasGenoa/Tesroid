@@ -402,6 +402,14 @@ export class AudioPlayer {
     const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (isVideoBuffering) return;
 
+    const now = this.ctx.currentTime;
+
+    // バッファリング明け等で停止していた場合、overflowQueue があれば即座に再生再開
+    if (!this.isPlaying && this.overflowQueue.length > 0) {
+      this.isPlaying = true;
+      this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
+    }
+
     const lastVideoPts = this.avSync.getLastVideoPts();
     // Only drop truly stale audio on major timeline discontinuity (> 1500ms behind).
     // Never drop frames on minor jitter (< 1.5s) to guarantee zero crackling/clipping clicks!
@@ -414,7 +422,7 @@ export class AudioPlayer {
       }
     }
 
-    this.pumpOverflowQueue(this.ctx.currentTime);
+    this.pumpOverflowQueue(now);
   }
 
   private pumpOverflowQueue(now: number): void {
@@ -494,6 +502,9 @@ export class AudioPlayer {
     this.overflowQueue = [];
     this.nextPlayTime = 0;
     this.stopAllScheduledSources();
+    if (typeof (this.avSync as any).clearAudioAnchor === 'function') {
+      (this.avSync as any).clearAudioAnchor();
+    }
   }
 
   public jumpToLive(): void {
