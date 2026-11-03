@@ -367,6 +367,7 @@ export function renderStreamingView(
   let lastDecodedPts = 0;
   let lastAckSentPts = -1;
   let serverCatchupQueueMs = 0;
+  let serverBufferMs = 0;
   let serverMode: 'LIVE' | 'CATCHUP' = 'LIVE';
 
   const decoder = new VideoStreamDecoder(
@@ -422,40 +423,33 @@ export function renderStreamingView(
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
 
-    const totalBehindMs = getTotalBufferedBehindMs();
     const isBuffering = typeof framePacer.getIsBuffering === 'function' ? framePacer.getIsBuffering() : false;
     const isInteractive = typeof framePacer.getMode === 'function' && framePacer.getMode() === 'ACTIVE_INTERACTION';
+
+    const pacerMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const decoderMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const localMs = pacerMs + decoderMs;
+    const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
+
+    const localSec = (localMs / 1000).toFixed(1);
+    const serverSec = (serverMs / 1000).toFixed(1);
 
     hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
 
     if (isBuffering) {
       hudLiveBtn.classList.add('is-buffering');
       hudLiveDot.className = 'status-dot status-warning';
-      const sec = (Math.max(100, totalBehindMs) / 1000).toFixed(1);
-      hudLiveText.textContent = `⏳ 受信待機中 (-${sec}s)`;
-      hudLiveBtn.title = 'パケット詰まり検知により安定受信まで一時待機中 (タップで即LIVEへジャンプ)';
-    } else if (serverMode === 'CATCHUP') {
-      hudLiveBtn.classList.add('is-catchup');
-      hudLiveDot.className = 'status-dot status-warning';
-      const sec = (Math.max(500, totalBehindMs) / 1000).toFixed(1);
-      hudLiveText.textContent = `⏪ 追っかけ -${sec}s · LIVEへ`;
-      hudLiveBtn.title = `等倍(1x)追っかけ再生中 (遅延 ${sec}秒) — タップでバッファを破棄して最新LIVEへ戻る`;
-    } else if (totalBehindMs >= 450) {
+      hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
+      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへジャンプ`;
+    } else if (localMs >= 400 || serverMode === 'CATCHUP' || serverMs >= 400) {
       hudLiveBtn.classList.add('is-catchup');
       hudLiveDot.className = 'status-dot status-online';
-      const sec = (totalBehindMs / 1000).toFixed(1);
-      if (targetBufferMs >= 1000) {
-        const targetSec = (targetBufferMs / 1000).toFixed(0);
-        hudLiveText.textContent = `🛡️ バッファ ${sec}s / ${targetSec}s`;
-        hudLiveBtn.title = `先行バッファ稼働中 (現在 ${sec}秒 / 目標 ${targetSec}秒) — 回線瞬断時も継続再生します (タップでLIVEジャンプ)`;
-      } else {
-        hudLiveText.textContent = `⏪ 追っかけ -${sec}s · LIVEへ`;
-        hudLiveBtn.title = `等倍(1x)追っかけ再生中 (遅延 ${sec}秒) — タップでバッファを破棄して最新LIVEへ戻る`;
-      }
+      hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
+      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへ同期`;
     } else if (isInteractive) {
       hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = '⚡ 操作優先 LIVE';
-      hudLiveBtn.title = '自動ハイブリッド: 画面操作中のためバッファゼロ・超低遅延モードで動作中';
+      hudLiveText.textContent = 'DIRECT LIVE';
+      hudLiveBtn.title = '操作優先: バッファゼロ・超低遅延モードで動作中';
     } else {
       hudLiveDot.className = 'status-dot status-online';
       const cushionMs = typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
@@ -728,6 +722,7 @@ export function renderStreamingView(
     lastDecodedPts = 0;
     lastAckSentPts = -1;
     serverCatchupQueueMs = 0;
+    serverBufferMs = 0;
     serverMode = 'LIVE';
     updateHudLiveStatus();
     if (browserPowerState !== 'sleeping') {
@@ -748,6 +743,9 @@ export function renderStreamingView(
       jitterController.updateRtt(currentRtt);
       if (typeof msg.catchupQueueMs === 'number') {
         serverCatchupQueueMs = msg.catchupQueueMs;
+      }
+      if (typeof msg.serverBufferMs === 'number') {
+        serverBufferMs = msg.serverBufferMs;
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;

@@ -272,12 +272,9 @@ export class FramePacer {
       }
     } else {
       // Queue already has frames or we are buffering: pace by deltaMs after previous scheduled frame!
-      // When backlog exceeds 6 frames (~200ms) and we are not in a burst within the same millisecond,
-      // gently drain excess latency at 1.06x (94% interval) so accidental 1-2s queues smoothly return to LIVE!
-      const drainFactor = this.frameQueue.length > 6 && !this.isBuffering ? 0.94 : 1.0;
-      const pacedDeltaMs = deltaMs * drainFactor;
+      // Strict 1.0x PTS pacing: never fast-forward (drainFactor = 1.0) to prevent video speed-up and audio crackling!
       const minBase = this.isBuffering ? now + effectiveDelayMs : now;
-      scheduledRenderTime = Math.max(minBase, this.lastScheduledTimeMs + pacedDeltaMs);
+      scheduledRenderTime = Math.max(minBase, this.lastScheduledTimeMs + deltaMs);
     }
 
     this.lastScheduledTimeMs = scheduledRenderTime;
@@ -398,7 +395,7 @@ export class FramePacer {
       // preserving their exact 1x PTS spacing!
       if (this.frameQueue.length > 0) {
         const dMs = this.computeDeltaPtsMs(this.frameQueue[0].ptsUs, nextItem.ptsUs);
-        const minNextTime = now + Math.max(4, dMs * 0.85);
+        const minNextTime = now + Math.max(8, dMs * 0.98);
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
           const shift = minNextTime - this.frameQueue[0].scheduledRenderTime;
           for (const item of this.frameQueue) {

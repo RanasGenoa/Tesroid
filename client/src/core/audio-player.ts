@@ -375,8 +375,9 @@ export class AudioPlayer {
     }
 
     let startAt = this.nextPlayTime;
-    if (startAt < now) {
-      startAt = now + 0.01;
+    // Allow small scheduling jitter (up to 40ms) without jarring hardware re-anchor to prevent crackling clicks
+    if (startAt < now - 0.04) {
+      startAt = now + 0.02;
     }
 
     const bufferedAhead = startAt - now;
@@ -398,10 +399,11 @@ export class AudioPlayer {
     if (isVideoBuffering) return;
 
     const lastVideoPts = this.avSync.getLastVideoPts();
-    // Drop any stale overflow audio that has fallen more than 220ms behind rendered video PTS
+    // Only drop truly stale audio on major timeline discontinuity (> 1500ms behind).
+    // Never drop frames on minor jitter (< 1.5s) to guarantee zero crackling/clipping clicks!
     while (this.overflowQueue.length > 1 && lastVideoPts > 0) {
       const headPts = this.overflowQueue[0].ptsUs;
-      if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 220) {
+      if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 1500) {
         this.overflowQueue.shift();
       } else {
         break;
@@ -423,8 +425,8 @@ export class AudioPlayer {
       }
 
       let startAt = this.nextPlayTime;
-      if (startAt < now) {
-        startAt = now + 0.01;
+      if (startAt < now - 0.04) {
+        startAt = now + 0.02;
       }
       if (startAt - now > maxScheduleWindow) {
         break;

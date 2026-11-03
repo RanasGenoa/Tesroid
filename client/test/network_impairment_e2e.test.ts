@@ -410,7 +410,7 @@ describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Dro
     const hudLiveBtn = elementRegistry.get('hud-live-btn');
     const hudLiveText = elementRegistry.get('hud-live-text');
     expect(hudLiveBtn.classList.contains('is-catchup')).toBe(true);
-    expect(hudLiveText.textContent).toContain('追っかけ -2.4s');
+    expect(hudLiveText.textContent).toContain('S:2.4s');
 
     // Clicking HUD LIVE button sends JUMP_TO_LIVE command and returns badge to LIVE
     hudLiveBtn.click();

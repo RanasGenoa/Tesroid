@@ -72,6 +72,14 @@ export class PlaybackBuffer {
     return this.cachedOpusHead;
   }
 
+  public getBufferedDurationMs(): number {
+    if (this.videoFrames.length <= 1) return 0;
+    const first = this.videoFrames[0].pts;
+    const last = this.videoFrames[this.videoFrames.length - 1].pts;
+    if (last <= first) return 0;
+    return Math.round(Number(last - first) / 1000);
+  }
+
   /**
    * 映像 Access Unit (AU) をバッファへ追加
    */
