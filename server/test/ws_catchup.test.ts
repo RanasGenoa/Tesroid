@@ -444,4 +444,73 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
 
     handler.close();
   });
+
+  it('should pause catchup burst when in-flight buffer reaches targetBufferMs (Flow Control / Sliding Window)', async () => {
+    vi.useFakeTimers();
+
+    // 20秒分のバッファを用意 (30fps = 600フレーム, pts: 0s 〜 20s)
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 30 });
+    const spsPps = Buffer.from([0, 0, 0, 1, 0x67]);
+    const opusHead = Buffer.from('OpusHead');
+    const keyframe = Buffer.from([0, 0, 0, 1, 0x65]);
+
+    playbackBuffer.addVideo(VIDEO_FLAGS.CONFIG, 0n, spsPps);
+    playbackBuffer.addAudio(AUDIO_FLAGS.CONFIG, 0n, opusHead);
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1000000n, keyframe); // PTS = 1s
+
+    // 1秒から21秒まで 33ms 刻みで600フレーム登録
+    for (let i = 1; i < 600; i++) {
+      const pts = 1000000n + BigInt(i * 33333);
+      playbackBuffer.addVideo(0, pts, Buffer.alloc(50));
+    }
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer
+    );
+
+    // アイドル状態 (CATCHUP 許可)
+    handler.setLastInputAt(Date.now() - 10000);
+
+    const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket);
+    const msgListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+
+    const session = handler.getClientSession(socket)!;
+    session.lastAckPts = 1000000n; // 1秒地点まで再生済み
+    session.targetBufferMs = 10000; // クライアントの上限は10秒
+
+    // 認証して CATCHUP 開始
+    await msgListener(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    expect(session.mode).toBe('CATCHUP');
+    expect(session.playbackQueue.length).toBeGreaterThan(500);
+
+    // バーストタイマーを進める (3ms ごとにフレーム送信)
+    // 10秒分 = 約300フレーム 送出されるまで進める (~1000ms)
+    vi.advanceTimersByTime(1200);
+
+    // 10秒分（pts = 11s）に到達した時点でフロー制御が発動し、送出が一時停止していること
+    expect(session.isFlowPaused).toBe(true);
+    // サーバーのキューにはまだ残りの約10秒分（約300フレーム）が残っていること！
+    expect(session.playbackQueue.length).toBeGreaterThan(250);
+
+    // クライアントが 5秒 分再生を進めたと報告 (PTS = 6s)
+    const ackPayload = Buffer.concat([
+      Buffer.from([WSS_CHANNEL.COMMAND]),
+      Buffer.from(JSON.stringify({ type: 'ACK', pts: 6000000 })),
+    ]);
+    await msgListener(ackPayload);
+
+    // 送出が再開され、さらにタイマーを進めると残りのキューから順次送出されること
+    vi.advanceTimersByTime(500);
+    // キューがさらに消費されていること
+    expect(session.playbackQueue.length).toBeLessThan(250);
+
+    handler.close();
+    vi.useRealTimers();
+  });
 });

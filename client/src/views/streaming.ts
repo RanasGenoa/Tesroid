@@ -779,15 +779,20 @@ export function renderStreamingView(
   };
 
   let disconnectSurvivalTimer: any = null;
+  let lastReportedBufferedMs = -1;
 
   const sendBufferFeedback = (force = false) => {
     if (!wsClient.isConnected()) return;
-    if (!force && lastDecodedPts > 0 && lastDecodedPts === lastAckSentPts) return;
 
     const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
     const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
     const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
     const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
+
+    const ptsChanged = lastDecodedPts > 0 && lastDecodedPts !== lastAckSentPts;
+    const bufferDelta = Math.abs(totalBufferedMs - lastReportedBufferedMs);
+
+    if (!force && !ptsChanged && bufferDelta < 250) return;
 
     wsClient.send(
       ClientProtocol.packBufferFeedback({
@@ -798,6 +803,7 @@ export function renderStreamingView(
       })
     );
     lastAckSentPts = lastDecodedPts;
+    lastReportedBufferedMs = totalBufferedMs;
   };
 
   const handleOpen = () => {
@@ -880,12 +886,12 @@ export function renderStreamingView(
     wsClient.send(ClientProtocol.packPing(pingId));
   }, 2000);
 
-  // 6.1. Periodic Buffer Feedback & Flow Control Loop (1秒ごとに残量フィードバック)
+  // 6.1. Periodic Buffer Feedback & Flow Control Loop (250msごとに残量・再生PTSフィードバック)
   const ackTimer = setInterval(() => {
-    if (wsClient.isConnected() && lastDecodedPts > 0) {
+    if (wsClient.isConnected()) {
       sendBufferFeedback();
     }
-  }, 1000);
+  }, 250);
 
   // 7. HUD Status Loop
   const hudTimer = setInterval(() => {

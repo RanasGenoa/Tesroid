@@ -29,9 +29,10 @@ export class VideoStreamDecoder {
   private pendingBytes = 0;
   private isPumping = false;
   private maxActiveFrames = 14;
-  private maxPendingPackets = 900; // Hard fallback limit (30 seconds at 30fps)
-  private maxPendingDurationMs = 10000; // Default 10s prefetch cushion
-  private maxPendingBytes = 3 * 1024 * 1024; // Default 3MB memory guard
+  private targetPendingDurationMs = 10000; // Target prefetch buffer depth
+  private maxPendingPackets = 780; // Hard fallback limit (+35% + margin)
+  private maxPendingDurationMs = 16000; // Hard trimming limit with safety margin (10s * 1.35 + 2.5s)
+  private maxPendingBytes = 16 * 1024 * 1024; // Memory guard (16MB allows 10s of high-bitrate video)
 
   private onFrameDecoded?: (pts: number) => void;
   public onDecoderError?: () => void;
@@ -48,6 +49,10 @@ export class VideoStreamDecoder {
     return this.pendingBytes;
   }
 
+  public getTargetPendingDurationMs(): number {
+    return this.targetPendingDurationMs;
+  }
+
   public getMaxPendingDurationMs(): number {
     return this.maxPendingDurationMs;
   }
@@ -61,9 +66,14 @@ export class VideoStreamDecoder {
    */
   public setBufferDepth(options: { targetDurationMs?: number; maxBytes?: number }): void {
     if (options.targetDurationMs !== undefined && options.targetDurationMs > 0) {
-      this.maxPendingDurationMs = options.targetDurationMs;
-      // Rough frame count estimate + 20% margin
-      this.maxPendingPackets = Math.max(60, Math.ceil((options.targetDurationMs / 1000) * 35));
+      this.targetPendingDurationMs = options.targetDurationMs;
+      // Hard limit for trimming is target + 35% margin (at least +2.5s for GOP alignment)
+      this.maxPendingDurationMs = Math.max(1500, Math.round(options.targetDurationMs * 1.35) + 2500);
+      // Packet count limit based on max 45fps + margin
+      this.maxPendingPackets = Math.max(90, Math.ceil((this.maxPendingDurationMs / 1000) * 45) + 60);
+      // Dynamic memory guard: ~1.5MB per second of buffer depth (min 4MB, max 24MB)
+      const dynamicBytes = Math.round((this.maxPendingDurationMs / 1000) * 1.5 * 1024 * 1024);
+      this.maxPendingBytes = Math.max(4 * 1024 * 1024, Math.min(24 * 1024 * 1024, dynamicBytes));
     }
     if (options.maxBytes !== undefined && options.maxBytes > 0) {
       this.maxPendingBytes = options.maxBytes;

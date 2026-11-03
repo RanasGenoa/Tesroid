@@ -208,7 +208,8 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
 
     // Configure 2000ms / 500KB buffer (e.g. Intel MCU2 profile)
     decoder.setBufferDepth({ targetDurationMs: 2000, maxBytes: 500 * 1024 });
-    expect(decoder.getMaxPendingDurationMs()).toBe(2000);
+    expect(decoder.getTargetPendingDurationMs()).toBe(2000);
+    expect(decoder.getMaxPendingDurationMs()).toBeGreaterThanOrEqual(2000);
     expect(decoder.getMaxPendingBytes()).toBe(500 * 1024);
 
     const spsPpsKeyData = new Uint8Array([
