@@ -445,10 +445,14 @@ export class WebSocketHandler {
   }
 
   /**
-   * クライアントの手元および通信経路上にある未再生バッファ量（ミリ秒）を算出
+   * クライアントの手元にある確定未再生バッファ量（ミリ秒）を取得
    */
   private getClientInFlightBufferMs(session: ClientSession): number {
-    let ptsDiffMs = 0;
+    // 1. クライアントからの定期フィードバック（実際のローカルバッファ秒数）がある場合はそれを第一基準とする
+    if (typeof session.bufferedMs === 'number' && session.bufferedMs >= 0) {
+      return session.bufferedMs;
+    }
+    // 2. 初回接続やテストなど、フィードバック未受信時のみ送信済みPTSとACKの差分で推定
     if (
       session.lastSentVideoPts !== null &&
       session.lastSentVideoPts !== undefined &&
@@ -456,10 +460,9 @@ export class WebSocketHandler {
       session.lastAckPts !== undefined &&
       session.lastSentVideoPts > session.lastAckPts
     ) {
-      ptsDiffMs = Math.round(Number(session.lastSentVideoPts - session.lastAckPts) / 1000);
+      return Math.round(Number(session.lastSentVideoPts - session.lastAckPts) / 1000);
     }
-    const reportedBufferedMs = typeof session.bufferedMs === 'number' ? session.bufferedMs : 0;
-    return Math.max(reportedBufferedMs, ptsDiffMs);
+    return 0;
   }
 
   /**
@@ -489,25 +492,13 @@ export class WebSocketHandler {
   }
 
   /**
-   * LIVE 配信中のセッションが通信悪化または遅延した際、バッファを破棄せずに CATCHUP（サーバー蓄積）へ切り替える
+   * LIVE 配信中にソケット詰まり（通信悪化）を検知した際、フレームを破棄せず CATCHUP（サーバー蓄積）へ切り替える
    */
-  private transitionLiveSessionToCatchup(session: ClientSession, lastAckPts: bigint | null): void {
+  private transitionLiveSessionToCatchup(session: ClientSession): void {
     if (session.mode === 'CATCHUP') return;
 
     session.mode = 'CATCHUP';
     session.isFlowPaused = true;
-
-    if (lastAckPts !== null && lastAckPts > 0n) {
-      const catchupData = this.playbackBuffer.getFramesToCatchup(lastAckPts);
-      if (catchupData && catchupData.frames.length > 0) {
-        session.playbackQueue = [...catchupData.frames];
-        session.lastSentVideoPts = session.lastAckPts;
-      } else {
-        session.playbackQueue = [];
-      }
-    } else {
-      session.playbackQueue = [];
-    }
 
     const burstEnv = process.env.BURST_CATCHUP_ENABLED;
     session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
@@ -516,7 +507,7 @@ export class WebSocketHandler {
       session.pacingTimer = setTimeout(() => {
         session.pacingTimer = null;
         this.checkAndResumeCatchup(session);
-      }, 100);
+      }, 50);
     }
   }
 
@@ -561,7 +552,7 @@ export class WebSocketHandler {
       session.pacingTimer = setTimeout(() => {
         session.pacingTimer = null;
         this.checkAndResumeCatchup(session);
-      }, 100);
+      }, 50);
       return;
     }
 
@@ -576,7 +567,7 @@ export class WebSocketHandler {
       session.pacingTimer = setTimeout(() => {
         session.pacingTimer = null;
         this.checkAndResumeCatchup(session);
-      }, 80);
+      }, 50);
     }
   }
 
@@ -603,7 +594,7 @@ export class WebSocketHandler {
         session.pacingTimer = setTimeout(() => {
           session.pacingTimer = null;
           this.checkAndResumeCatchup(session);
-        }, 100);
+        }, 50);
       }
       return;
     }
@@ -619,7 +610,7 @@ export class WebSocketHandler {
         session.pacingTimer = setTimeout(() => {
           session.pacingTimer = null;
           this.checkAndResumeCatchup(session);
-        }, 80);
+        }, 50);
       }
       return;
     }
@@ -646,7 +637,7 @@ export class WebSocketHandler {
       return;
     }
 
-    let delayMs = 3;
+    let delayMs = session.isBurstMode ? 2 : 4;
     if (!session.isBurstMode) {
       const nextFrame = session.playbackQueue[0];
       let deltaUs = nextFrame.pts - frame.pts;
@@ -787,7 +778,7 @@ export class WebSocketHandler {
             // If client is in interactive mode, abort any pending catchup queue immediately
             if (session.isInteractive && session.mode === 'CATCHUP') {
               this.abortCatchupAndSwitchToLive(session);
-            } else if (session.isFlowPaused) {
+            } else if (session.mode === 'CATCHUP') {
               this.checkAndResumeCatchup(session);
             }
           }
@@ -1011,19 +1002,16 @@ export class WebSocketHandler {
             continue;
           }
 
-          // 2. LIVE クライアントの通信悪化・遅延検知 (アイドル動画視聴中のみバッファ蓄積へ切り替え):
+          // 2. LIVE クライアントの通信悪化検知 (アイドル動画視聴中、ソケット詰まり発生時に CATCHUP へ切り替え):
           const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
           const isIdle = (Date.now() - this.lastInputAt) > idleThresholdMs;
           const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
-          const lastAck = session.lastAckPts ?? this.lastKnownAckPts;
-          const lagMs = (lastAck !== null && pts > lastAck) ? Number(pts - lastAck) / 1000 : 0;
-          const isStalled = (session.bufferedMs !== undefined && session.bufferedMs <= 500 && lagMs >= 1500);
 
-          // アイドル視聴中（操作中でない）かつバッファ有効時に、通信詰まり (buffered > 256KB) または クライアント側バッファ枯渇＋遅延 (lag >= 1500ms) が発生した場合、
-          // フレームを捨てずに自動的に CATCHUP（サーバー側バッファ蓄積）へ切り替える！
-          if (wantsBuffer && isIdle && !session.isInteractive && (buffered > 256 * 1024 || isStalled)) {
-            console.log(`[WebSocketHandler] Network impairment / stall detected (buffered=${Math.round(buffered / 1024)}KB, lag=${Math.round(lagMs)}ms, clientBuf=${session.bufferedMs}ms). Switching session to CATCHUP buffer mode.`);
-            this.transitionLiveSessionToCatchup(session, lastAck);
+          // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 256KB) が発生した場合、
+          // 送信をストップして未送信フレームを CATCHUP キューへ安全に蓄積する
+          if (wantsBuffer && isIdle && !session.isInteractive && buffered > 256 * 1024) {
+            console.log(`[WebSocketHandler] Network congestion detected (buffered=${Math.round(buffered / 1024)}KB). Switching session to CATCHUP buffer mode.`);
+            this.transitionLiveSessionToCatchup(session);
             session.playbackQueue.push({ type: 'video', flags, pts, data });
             continue;
           }
@@ -1040,6 +1028,7 @@ export class WebSocketHandler {
             (client as any)._droppingGop = false;
           }
 
+          session.lastSentVideoPts = pts;
           client.send(packet);
         }
       }
