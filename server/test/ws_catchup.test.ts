@@ -384,4 +384,64 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
 
     handler.close();
   });
+
+  it('should handle BUFFER_FEEDBACK command to update client telemetry and abort CATCHUP on interaction', async () => {
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 10 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1000000n, Buffer.alloc(100));
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer
+    );
+
+    const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket);
+    const msgListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+
+    await msgListener(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    const session = handler.getClientSession(socket)!;
+
+    // Send BUFFER_FEEDBACK with telemetry
+    const feedbackPayload = Buffer.concat([
+      Buffer.from([WSS_CHANNEL.COMMAND]),
+      Buffer.from(JSON.stringify({
+        type: 'BUFFER_FEEDBACK',
+        bufferedMs: 4200,
+        targetBufferMs: 10000,
+        lastRenderedPts: '1050000',
+        isInteractive: false,
+      })),
+    ]);
+    await msgListener(feedbackPayload);
+
+    expect(session.bufferedMs).toBe(4200);
+    expect(session.targetBufferMs).toBe(10000);
+    expect(session.lastAckPts).toBe(1050000n);
+    expect(session.isInteractive).toBe(false);
+
+    // Simulate CATCHUP state and interactive touch feedback
+    session.mode = 'CATCHUP';
+    session.playbackQueue = [{ type: 'video', flags: 0, pts: 1080000n, data: Buffer.alloc(10) }];
+
+    const interactiveFeedback = Buffer.concat([
+      Buffer.from([WSS_CHANNEL.COMMAND]),
+      Buffer.from(JSON.stringify({
+        type: 'BUFFER_FEEDBACK',
+        bufferedMs: 0,
+        targetBufferMs: 10000,
+        isInteractive: true,
+      })),
+    ]);
+    await msgListener(interactiveFeedback);
+
+    // Should abort CATCHUP immediately and switch to LIVE
+    expect(session.mode).toBe('LIVE');
+    expect(session.playbackQueue.length).toBe(0);
+
+    handler.close();
+  });
 });

@@ -198,4 +198,39 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     await decoder.handlePacket(0, 2033n, deltaFrameData);
     expect(mockTarget).toHaveBeenCalledTimes(4);
   });
+
+  it('should manage prefetch buffer depth, byte size, and trim on limit exceed', async () => {
+    let downstreamQueueLength = 100; // Simulate downstream busy/full so packets are queued in pendingPackets
+    const decoder = new VideoStreamDecoder({
+      queueFrame: vi.fn(),
+      getQueueLength: () => downstreamQueueLength,
+    });
+
+    // Configure 2000ms / 500KB buffer (e.g. Intel MCU2 profile)
+    decoder.setBufferDepth({ targetDurationMs: 2000, maxBytes: 500 * 1024 });
+    expect(decoder.getMaxPendingDurationMs()).toBe(2000);
+    expect(decoder.getMaxPendingBytes()).toBe(500 * 1024);
+
+    const spsPpsKeyData = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f,
+      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
+      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00,
+    ]);
+    const deltaFrameData = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
+
+    // Enqueue packets into pending
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1_000_000n, spsPpsKeyData);
+    await decoder.handlePacket(0, 1_033_000n, deltaFrameData);
+    await decoder.handlePacket(0, 1_066_000n, deltaFrameData);
+
+    expect(decoder.getPendingPacketsCount()).toBe(3);
+    expect(decoder.getPendingBytes()).toBeGreaterThan(0);
+    expect(decoder.getPendingBufferedMs()).toBe(66);
+
+    // Clear pending packets
+    decoder.clearPendingPackets();
+    expect(decoder.getPendingPacketsCount()).toBe(0);
+    expect(decoder.getPendingBytes()).toBe(0);
+    expect(decoder.getPendingBufferedMs()).toBe(0);
+  });
 });

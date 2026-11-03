@@ -26,9 +26,12 @@ export class VideoStreamDecoder {
 
   // Pre-decode compressed packet buffer to prevent hardware VideoFrame pool exhaustion during burst arrivals
   private pendingPackets: PendingVideoPacket[] = [];
+  private pendingBytes = 0;
   private isPumping = false;
   private maxActiveFrames = 14;
-  private maxPendingPackets = 900; // Up to 30 seconds at 30fps
+  private maxPendingPackets = 900; // Hard fallback limit (30 seconds at 30fps)
+  private maxPendingDurationMs = 10000; // Default 10s prefetch cushion
+  private maxPendingBytes = 3 * 1024 * 1024; // Default 3MB memory guard
 
   private onFrameDecoded?: (pts: number) => void;
   public onDecoderError?: () => void;
@@ -41,12 +44,45 @@ export class VideoStreamDecoder {
     return this.pendingPackets.length;
   }
 
+  public getPendingBytes(): number {
+    return this.pendingBytes;
+  }
+
+  public getMaxPendingDurationMs(): number {
+    return this.maxPendingDurationMs;
+  }
+
+  public getMaxPendingBytes(): number {
+    return this.maxPendingBytes;
+  }
+
+  /**
+   * Configure prefetch buffer depth (e.g. 2000ms for Intel MCU2, 10000ms for Ryzen MCU3)
+   */
+  public setBufferDepth(options: { targetDurationMs?: number; maxBytes?: number }): void {
+    if (options.targetDurationMs !== undefined && options.targetDurationMs > 0) {
+      this.maxPendingDurationMs = options.targetDurationMs;
+      // Rough frame count estimate + 20% margin
+      this.maxPendingPackets = Math.max(60, Math.ceil((options.targetDurationMs / 1000) * 35));
+    }
+    if (options.maxBytes !== undefined && options.maxBytes > 0) {
+      this.maxPendingBytes = options.maxBytes;
+    }
+    this.trimPendingPackets();
+  }
+
   public getPendingBufferedMs(): number {
     if (this.pendingPackets.length <= 1) return 0;
     const first = this.pendingPackets[0].pts;
     const last = this.pendingPackets[this.pendingPackets.length - 1].pts;
     if (last <= first) return this.pendingPackets.length * 33;
     return Math.max(0, Math.round(Number(last - first) / 1000));
+  }
+
+  public clearPendingPackets(): void {
+    this.pendingPackets = [];
+    this.pendingBytes = 0;
+    this.waitingForKeyframe = true;
   }
 
   public setDownstreamQueueLengthProvider(provider: () => number): void {
@@ -100,8 +136,27 @@ export class VideoStreamDecoder {
 
   private enqueuePendingPacket(pkt: PendingVideoPacket): void {
     this.pendingPackets.push(pkt);
-    // If buffer exceeds 30s limit, trim up to the earliest available KEYFRAME after the head
-    if (this.pendingPackets.length > this.maxPendingPackets) {
+    this.pendingBytes += pkt.data.length;
+    this.trimPendingPackets();
+  }
+
+  /**
+   * Trim oldest frames up to the next available KEYFRAME if buffer exceeds duration or byte limits
+   */
+  private trimPendingPackets(): void {
+    while (this.pendingPackets.length > 1) {
+      const first = this.pendingPackets[0];
+      const last = this.pendingPackets[this.pendingPackets.length - 1];
+      const durationMs = last.pts > first.pts ? Number(last.pts - first.pts) / 1000 : 0;
+      const countExceeded = this.pendingPackets.length > this.maxPendingPackets;
+      const durationExceeded = durationMs > this.maxPendingDurationMs;
+      const bytesExceeded = this.pendingBytes > this.maxPendingBytes;
+
+      if (!countExceeded && !durationExceeded && !bytesExceeded) {
+        break;
+      }
+
+      // Find the next KEYFRAME after head to preserve GOP decoding integrity
       let nextKf = -1;
       for (let i = 1; i < this.pendingPackets.length; i++) {
         if ((this.pendingPackets[i].flags & VIDEO_FLAGS.KEYFRAME) !== 0) {
@@ -109,11 +164,19 @@ export class VideoStreamDecoder {
           break;
         }
       }
+
       if (nextKf > 0) {
+        // Drop frames from 0 to nextKf - 1
+        for (let i = 0; i < nextKf; i++) {
+          this.pendingBytes = Math.max(0, this.pendingBytes - this.pendingPackets[i].data.length);
+        }
         this.pendingPackets.splice(0, nextKf);
       } else {
-        this.pendingPackets.shift();
+        // No keyframe found ahead, but limit is exceeded: drop head and await next keyframe
+        const removed = this.pendingPackets.shift()!;
+        this.pendingBytes = Math.max(0, this.pendingBytes - removed.data.length);
         this.waitingForKeyframe = true;
+        break;
       }
     }
   }
@@ -124,6 +187,7 @@ export class VideoStreamDecoder {
     try {
       while (this.pendingPackets.length > 0 && this.hasCapacityForDecode()) {
         const next = this.pendingPackets.shift()!;
+        this.pendingBytes = Math.max(0, this.pendingBytes - next.data.length);
         await this.processSinglePacket(next.flags, next.pts, next.data);
       }
     } finally {
@@ -215,8 +279,10 @@ export class VideoStreamDecoder {
 
     if (latestKeyframeIdx >= 0) {
       this.pendingPackets = this.pendingPackets.slice(latestKeyframeIdx);
+      this.pendingBytes = this.pendingPackets.reduce((acc, p) => acc + p.data.length, 0);
     } else {
       this.pendingPackets = [];
+      this.pendingBytes = 0;
       this.waitingForKeyframe = true;
     }
   }
@@ -230,6 +296,7 @@ export class VideoStreamDecoder {
     this.activeSps = null;
     this.activePps = null;
     this.pendingPackets = [];
+    this.pendingBytes = 0;
     this.isPumping = false;
     if (this.decoder) {
       try {
@@ -244,6 +311,7 @@ export class VideoStreamDecoder {
 
   public close(): void {
     this.pendingPackets = [];
+    this.pendingBytes = 0;
     if (this.decoder) {
       try {
         this.decoder.close();

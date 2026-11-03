@@ -332,12 +332,38 @@ export function renderStreamingView(
       currentBitrate = Number(e.detail.stream.bitrate);
       changed = true;
     }
+    if (e.detail?.bufferDepth !== undefined) {
+      targetBufferMs = Number(e.detail.bufferDepth);
+      if (typeof decoder.setBufferDepth === 'function') {
+        decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+      }
+      sendBufferFeedback(true);
+    }
     if (changed) {
       updateToggleButtons();
     }
   };
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
 
+  // Initialize configurable buffer depth (e.g. ?buffer=2s for Intel MCU2, ?buffer=10s for Ryzen MCU3)
+  const getInitialBufferDepthMs = (): number => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const bufParam = params.get('buffer');
+      if (bufParam) {
+        if (bufParam.endsWith('s')) return parseFloat(bufParam) * 1000;
+        return parseInt(bufParam, 10);
+      }
+      const saved = localStorage.getItem('tesroid_prefetch_buffer_ms');
+      if (saved !== null) {
+        const val = parseInt(saved, 10);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 10000; // Default 10s prefetch cushion
+  };
+
+  let targetBufferMs = getInitialBufferDepthMs();
   let lastDecodedPts = 0;
   let lastAckSentPts = -1;
   let serverCatchupQueueMs = 0;
@@ -354,6 +380,10 @@ export function renderStreamingView(
       avSync.updateVideoPts(ptsUs);
     }
   );
+
+  if (typeof decoder.setBufferDepth === 'function') {
+    decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+  }
 
   if (typeof decoder.setDownstreamQueueLengthProvider === 'function') {
     decoder.setDownstreamQueueLengthProvider(() =>
@@ -404,12 +434,24 @@ export function renderStreamingView(
       const sec = (Math.max(100, totalBehindMs) / 1000).toFixed(1);
       hudLiveText.textContent = `⏳ 受信待機中 (-${sec}s)`;
       hudLiveBtn.title = 'パケット詰まり検知により安定受信まで一時待機中 (タップで即LIVEへジャンプ)';
-    } else if (totalBehindMs >= 450 || serverMode === 'CATCHUP') {
+    } else if (serverMode === 'CATCHUP') {
       hudLiveBtn.classList.add('is-catchup');
       hudLiveDot.className = 'status-dot status-warning';
       const sec = (Math.max(500, totalBehindMs) / 1000).toFixed(1);
       hudLiveText.textContent = `⏪ 追っかけ -${sec}s · LIVEへ`;
       hudLiveBtn.title = `等倍(1x)追っかけ再生中 (遅延 ${sec}秒) — タップでバッファを破棄して最新LIVEへ戻る`;
+    } else if (totalBehindMs >= 450) {
+      hudLiveBtn.classList.add('is-catchup');
+      hudLiveDot.className = 'status-dot status-online';
+      const sec = (totalBehindMs / 1000).toFixed(1);
+      if (targetBufferMs >= 1000) {
+        const targetSec = (targetBufferMs / 1000).toFixed(0);
+        hudLiveText.textContent = `🛡️ バッファ ${sec}s / ${targetSec}s`;
+        hudLiveBtn.title = `先行バッファ稼働中 (現在 ${sec}秒 / 目標 ${targetSec}秒) — 回線瞬断時も継続再生します (タップでLIVEジャンプ)`;
+      } else {
+        hudLiveText.textContent = `⏪ 追っかけ -${sec}s · LIVEへ`;
+        hudLiveBtn.title = `等倍(1x)追っかけ再生中 (遅延 ${sec}秒) — タップでバッファを破棄して最新LIVEへ戻る`;
+      }
     } else if (isInteractive) {
       hudLiveDot.className = 'status-dot status-online';
       hudLiveText.textContent = '⚡ 操作優先 LIVE';
@@ -738,32 +780,94 @@ export function renderStreamingView(
     }
   };
 
+  let disconnectSurvivalTimer: any = null;
+
+  const sendBufferFeedback = (force = false) => {
+    if (!wsClient.isConnected()) return;
+    if (!force && lastDecodedPts > 0 && lastDecodedPts === lastAckSentPts) return;
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+    const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
+
+    wsClient.send(
+      ClientProtocol.packBufferFeedback({
+        bufferedMs: totalBufferedMs,
+        targetBufferMs,
+        lastRenderedPts: lastDecodedPts > 0 ? lastDecodedPts : undefined,
+        isInteractive,
+      })
+    );
+    lastAckSentPts = lastDecodedPts;
+  };
+
   const handleOpen = () => {
-    decoder.reset();
-    jitterController.reset();
+    if (disconnectSurvivalTimer) {
+      clearTimeout(disconnectSurvivalTimer);
+      disconnectSurvivalTimer = null;
+    }
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+
+    if (totalBufferedMs <= 0) {
+      decoder.reset();
+      jitterController.reset();
+    } else {
+      console.log(`[StreamingView] Reconnected with ${totalBufferedMs}ms buffer active. Seamlessly resuming...`);
+    }
+
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
     if (browserPowerState === 'sleeping') {
       showSleepingScreen();
-    } else {
+    } else if (totalBufferedMs <= 0) {
       showOverlay('画面配信準備中...', '映像ストリームを待機しています...', true);
+    } else {
+      hideOverlay();
     }
-    // 再接続時に手元の最新デコード済み PTS があれば直ちに ACK を送付
-    if (lastDecodedPts > 0) {
-      wsClient.send(ClientProtocol.packAck(lastDecodedPts));
-      lastAckSentPts = lastDecodedPts;
-    }
+
+    // Send buffer telemetry and resume catchup download immediately
+    sendBufferFeedback(true);
   };
 
   const handleClose = () => {
-    decoder.reset();
-    jitterController.reset();
-    renderer.resetFirstFrame();
-    framePacer.resetFirstFrame();
-    avSync.reset();
-    if (connText) connText.textContent = '切断';
-    if (connDot) connDot.className = 'status-dot status-offline';
-    showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+    if (connText) connText.textContent = '一時切断';
+    if (connDot) connDot.className = 'status-dot status-warning';
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+
+    if (totalBufferedMs > 250) {
+      // Survive temporary network drops by playing through local prefetch buffer
+      console.log(`[StreamingView] Disconnected, surviving stall with ${totalBufferedMs}ms local prefetch buffer...`);
+      if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
+      disconnectSurvivalTimer = setTimeout(() => {
+        disconnectSurvivalTimer = null;
+        if (!wsClient.isConnected()) {
+          decoder.reset();
+          jitterController.reset();
+          renderer.resetFirstFrame();
+          framePacer.resetFirstFrame();
+          avSync.reset();
+          if (connText) connText.textContent = '切断';
+          if (connDot) connDot.className = 'status-dot status-offline';
+          showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+        }
+      }, totalBufferedMs);
+    } else {
+      decoder.reset();
+      jitterController.reset();
+      renderer.resetFirstFrame();
+      framePacer.resetFirstFrame();
+      avSync.reset();
+      if (connText) connText.textContent = '切断';
+      if (connDot) connDot.className = 'status-dot status-offline';
+      showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+    }
   };
 
   wsClient.on('video', handleVideo);
@@ -778,13 +882,12 @@ export function renderStreamingView(
     wsClient.send(ClientProtocol.packPing(pingId));
   }, 2000);
 
-  // 6.1. Periodic ACK loop (約2秒ごとにデコード済み video PTS を送信)
+  // 6.1. Periodic Buffer Feedback & Flow Control Loop (1秒ごとに残量フィードバック)
   const ackTimer = setInterval(() => {
-    if (wsClient.isConnected() && lastDecodedPts > 0 && lastDecodedPts !== lastAckSentPts) {
-      lastAckSentPts = lastDecodedPts;
-      wsClient.send(ClientProtocol.packAck(lastDecodedPts));
+    if (wsClient.isConnected() && lastDecodedPts > 0) {
+      sendBufferFeedback();
     }
-  }, 2000);
+  }, 1000);
 
   // 7. HUD Status Loop
   const hudTimer = setInterval(() => {
@@ -950,6 +1053,7 @@ export function renderStreamingView(
 
   // Cleanup function when navigating away
   return () => {
+    if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
     document.getElementById('power-menu-modal')?.remove();
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);

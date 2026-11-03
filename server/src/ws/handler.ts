@@ -16,6 +16,11 @@ export interface ClientSession {
   pacingTimer: NodeJS.Timeout | null;
   playbackQueue: BufferedFrame[];
   isDroppingGop?: boolean;
+  isBurstMode?: boolean;
+  bufferedMs?: number;
+  targetBufferMs?: number;
+  isInteractive?: boolean;
+  lastBufferFeedbackAt?: number;
 }
 
 export class WebSocketHandler {
@@ -439,6 +444,8 @@ export class WebSocketHandler {
   ): void {
     session.mode = 'CATCHUP';
     session.playbackQueue = [...catchupData.frames];
+    const burstEnv = process.env.BURST_CATCHUP_ENABLED;
+    session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
 
     // クライアントの VideoDecoder / AudioPlayer を確実に初期化するための CONFIG パケットを送出
     if (catchupData.configVideo && session.socket.readyState === 1) {
@@ -448,12 +455,12 @@ export class WebSocketHandler {
       session.socket.send(MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, catchupData.configAudio));
     }
 
-    // 1x 等速ペーシングループ開始
+    // ペーシングループ開始 (バーストまたは1x)
     this.scheduleNextCatchupFrame(session);
   }
 
   /**
-   * 等速 (1x) ペーシングによる順次送出
+   * バーストまたは等速 (1x) ペーシングによる順次送出
    */
   private scheduleNextCatchupFrame(session: ClientSession): void {
     if (session.mode !== 'CATCHUP' || session.socket.readyState !== 1) {
@@ -466,6 +473,8 @@ export class WebSocketHandler {
       return;
     }
 
+    // In burst mode, deliver frames with minimal interval (e.g. 2-4ms) so 10s of buffer pre-fills within 1 second,
+    // while keeping timer ticks non-blocking and preserving backpressure limits.
     const frame = session.playbackQueue.shift()!;
     const packet = frame.type === 'video'
       ? MessageMultiplexer.packVideo(frame.flags, frame.pts, frame.data)
@@ -479,13 +488,14 @@ export class WebSocketHandler {
       return;
     }
 
-    const nextFrame = session.playbackQueue[0];
-    let deltaUs = nextFrame.pts - frame.pts;
-    if (deltaUs < 0n) deltaUs = 0n;
-    // 異常なPTSジャンプをクランプ (最大100ms)
-    if (deltaUs > 100000n) deltaUs = 33000n;
-
-    const delayMs = Math.max(0, Math.round(Number(deltaUs) / 1000));
+    let delayMs = 3;
+    if (!session.isBurstMode) {
+      const nextFrame = session.playbackQueue[0];
+      let deltaUs = nextFrame.pts - frame.pts;
+      if (deltaUs < 0n) deltaUs = 0n;
+      if (deltaUs > 100000n) deltaUs = 33000n;
+      delayMs = Math.max(0, Math.round(Number(deltaUs) / 1000));
+    }
 
     session.pacingTimer = setTimeout(() => {
       session.pacingTimer = null;
@@ -595,6 +605,29 @@ export class WebSocketHandler {
             this.lastKnownAckPts = ackPts;
           }
           return; // ACK はバックグラウンド同期であり、ユーザー入力アクティビティではない
+        }
+
+        case 'BUFFER_FEEDBACK': {
+          const session = this.clientSessions.get(socket);
+          if (session) {
+            session.bufferedMs = typeof cmd.bufferedMs === 'number' ? cmd.bufferedMs : 0;
+            session.targetBufferMs = typeof cmd.targetBufferMs === 'number' ? cmd.targetBufferMs : 10000;
+            session.isInteractive = Boolean(cmd.isInteractive);
+            session.lastBufferFeedbackAt = Date.now();
+            if (cmd.lastRenderedPts !== undefined && cmd.lastRenderedPts !== null) {
+              const renderedPts = BigInt(Math.round(Number(cmd.lastRenderedPts)));
+              if (renderedPts > 0n) {
+                session.lastAckPts = renderedPts;
+                this.lastKnownAckPts = renderedPts;
+              }
+            }
+
+            // If client is in interactive mode, abort any pending catchup queue immediately
+            if (session.isInteractive && session.mode === 'CATCHUP') {
+              this.abortCatchupAndSwitchToLive(session);
+            }
+          }
+          return;
         }
 
         case 'PING': {
