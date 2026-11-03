@@ -437,20 +437,20 @@ export function renderStreamingView(
 
     hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
 
-    if (isBuffering) {
+    if (isInteractive) {
+      hudLiveDot.className = 'status-dot status-online';
+      hudLiveText.textContent = 'DIRECT LIVE';
+      hudLiveBtn.title = '操作優先: バッファゼロ・超低遅延モードで動作中';
+    } else if (isBuffering) {
       hudLiveBtn.classList.add('is-buffering');
       hudLiveDot.className = 'status-dot status-warning';
       hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
       hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへジャンプ`;
-    } else if (localMs >= 400 || serverMode === 'CATCHUP' || serverMs >= 400) {
+    } else if (localMs >= 800 || serverMs >= 600) {
       hudLiveBtn.classList.add('is-catchup');
       hudLiveDot.className = 'status-dot status-online';
       hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
       hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへ同期`;
-    } else if (isInteractive) {
-      hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = 'DIRECT LIVE';
-      hudLiveBtn.title = '操作優先: バッファゼロ・超低遅延モードで動作中';
     } else {
       hudLiveDot.className = 'status-dot status-online';
       const cushionMs = typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;

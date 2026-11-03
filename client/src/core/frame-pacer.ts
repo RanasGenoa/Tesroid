@@ -403,6 +403,31 @@ export class FramePacer {
           }
           this.lastScheduledTimeMs += shift;
         }
+
+        // A/V Sync Phase-Locked Loop (リップシンク自動補正):
+        // スピーカー出力中の音声PTSに合わせ、映像スケジュールを微小シフト (最大±1.0ms/frame) して完全に一致させる
+        if (typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function') {
+          const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
+          if (playingAudioPts !== null && playingAudioPts > 0) {
+            const nextVideoPts = this.frameQueue[0].ptsUs;
+            const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
+            const syncErrorMs = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+
+            if (Math.abs(syncErrorMs) > 1000) {
+              // 1秒以上の乖離時は瞬時に音声へ同期
+              const shift = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+              for (const item of this.frameQueue) {
+                item.scheduledRenderTime += shift;
+              }
+              this.lastScheduledTimeMs += shift;
+            } else if (Math.abs(syncErrorMs) >= 15) {
+              // 15ms以上の微小ズレがある場合、毎フレーム最大1.0msだけ音声クロックへ向けてスムーズに吸着
+              const nudge = Math.sign(syncErrorMs) * Math.min(1.0, Math.abs(syncErrorMs) * 0.1);
+              this.frameQueue[0].scheduledRenderTime += nudge;
+              this.lastScheduledTimeMs += nudge;
+            }
+          }
+        }
       }
     }
 
