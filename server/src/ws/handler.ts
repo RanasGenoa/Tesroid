@@ -489,6 +489,55 @@ export class WebSocketHandler {
   }
 
   /**
+   * LIVE 配信中のセッションが通信悪化または遅延した際、バッファを破棄せずに CATCHUP（サーバー蓄積）へ切り替える
+   */
+  private transitionLiveSessionToCatchup(session: ClientSession, lastAckPts: bigint | null): void {
+    if (session.mode === 'CATCHUP') return;
+
+    session.mode = 'CATCHUP';
+    session.isFlowPaused = true;
+
+    if (lastAckPts !== null && lastAckPts > 0n) {
+      const catchupData = this.playbackBuffer.getFramesToCatchup(lastAckPts);
+      if (catchupData && catchupData.frames.length > 0) {
+        session.playbackQueue = [...catchupData.frames];
+        session.lastSentVideoPts = session.lastAckPts;
+      } else {
+        session.playbackQueue = [];
+      }
+    } else {
+      session.playbackQueue = [];
+    }
+
+    const burstEnv = process.env.BURST_CATCHUP_ENABLED;
+    session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
+
+    if (!session.pacingTimer) {
+      session.pacingTimer = setTimeout(() => {
+        session.pacingTimer = null;
+        this.checkAndResumeCatchup(session);
+      }, 100);
+    }
+  }
+
+  /**
+   * サーバー側キューが長くなりすぎた場合、最古のGOPを安全に間引いてメモリを保護
+   */
+  private pruneSessionQueue(session: ClientSession): void {
+    let nextKeyframeIdx = -1;
+    for (let i = 1; i < session.playbackQueue.length; i++) {
+      const f = session.playbackQueue[i];
+      if (f.type === 'video' && (f.flags & VIDEO_FLAGS.KEYFRAME) !== 0) {
+        nextKeyframeIdx = i;
+        break;
+      }
+    }
+    if (nextKeyframeIdx > 0) {
+      session.playbackQueue = session.playbackQueue.slice(nextKeyframeIdx);
+    }
+  }
+
+  /**
    * クライアントのバッファ消費（再生進捗）に応じてCATCHUP送出を安全に再開
    */
   private checkAndResumeCatchup(session: ClientSession): void {
@@ -502,6 +551,17 @@ export class WebSocketHandler {
       return;
     }
     if (session.pacingTimer) {
+      return;
+    }
+
+    // ソケットの詰まり確認: 送信バッファに溜まっている間は通信悪化継続中なので送出しない
+    const socketBuffered = (session.socket as any).bufferedAmount || 0;
+    if (socketBuffered > 128 * 1024) {
+      session.isFlowPaused = true;
+      session.pacingTimer = setTimeout(() => {
+        session.pacingTimer = null;
+        this.checkAndResumeCatchup(session);
+      }, 100);
       return;
     }
 
@@ -532,6 +592,19 @@ export class WebSocketHandler {
       console.log('[WebSocketHandler] CATCHUP playback queue empty. Transitioning to LIVE mode.');
       session.mode = 'LIVE';
       session.isFlowPaused = false;
+      return;
+    }
+
+    // ソケットの詰まり確認: 送信バッファに溜まっている間は送出を控える
+    const socketBuffered = (session.socket as any).bufferedAmount || 0;
+    if (socketBuffered > 128 * 1024) {
+      session.isFlowPaused = true;
+      if (!session.pacingTimer) {
+        session.pacingTimer = setTimeout(() => {
+          session.pacingTimer = null;
+          this.checkAndResumeCatchup(session);
+        }, 100);
+      }
       return;
     }
 
@@ -726,12 +799,22 @@ export class WebSocketHandler {
           const latestPts = typeof (this.encoder as any).getCurrentPts === 'function'
             ? Number((this.encoder as any).getCurrentPts())
             : 0;
-          const catchupQueueMs =
-            session && session.mode === 'CATCHUP' && session.playbackQueue.length > 0
-              ? (session.playbackQueue.length > 1
-                  ? Math.max(0, Math.round(Number(session.playbackQueue[session.playbackQueue.length - 1].pts - session.playbackQueue[0].pts) / 1000))
-                  : 33)
-              : 0;
+          let catchupQueueMs = 0;
+          if (session && session.playbackQueue.length > 0) {
+            let firstPts: bigint | null = null;
+            let lastPts: bigint | null = null;
+            for (const f of session.playbackQueue) {
+              if (f.type === 'video') {
+                if (firstPts === null) firstPts = f.pts;
+                lastPts = f.pts;
+              }
+            }
+            if (firstPts !== null && lastPts !== null && lastPts > firstPts) {
+              catchupQueueMs = Math.round(Number(lastPts - firstPts) / 1000);
+            } else {
+              catchupQueueMs = Math.round((session.playbackQueue.length * 1000) / 30);
+            }
+          }
           const serverBufferMs = session && session.mode === 'CATCHUP' ? catchupQueueMs : 0;
           socket.send(MessageMultiplexer.packControl({
             type: 'PONG',
@@ -914,19 +997,38 @@ export class WebSocketHandler {
       for (const client of this.authenticatedClients) {
         if (client.readyState === 1) { // OPEN
           const session = this.clientSessions.get(client);
-          if (session && session.mode === 'CATCHUP') {
-            // CATCHUP クライアントにはキュー末尾へ追記（追いつくまでバッファ優先）
+          if (!session) continue;
+
+          const buffered = (client as any).bufferedAmount || 0;
+
+          // 1. CATCHUP クライアント: キュー末尾へ追記（追いつくまでバッファ優先）
+          if (session.mode === 'CATCHUP') {
             session.playbackQueue.push({ type: 'video', flags, pts, data });
-            if (session.playbackQueue.length > 2000) {
-              console.warn('[WebSocketHandler] Catchup queue exceeded limit (2000 frames). Falling back to LIVE.');
-              this.abortCatchupAndSwitchToLive(session);
+            if (session.playbackQueue.length > 3000) {
+              this.pruneSessionQueue(session);
             }
+            this.checkAndResumeCatchup(session);
             continue;
           }
 
-          // LIVE クライアント: 既存のヒステリシスバックプレッシャー処理
-          const buffered = (client as any).bufferedAmount || 0;
+          // 2. LIVE クライアントの通信悪化・遅延検知 (アイドル動画視聴中のみバッファ蓄積へ切り替え):
+          const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
+          const isIdle = (Date.now() - this.lastInputAt) > idleThresholdMs;
+          const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
+          const lastAck = session.lastAckPts ?? this.lastKnownAckPts;
+          const lagMs = (lastAck !== null && pts > lastAck) ? Number(pts - lastAck) / 1000 : 0;
+          const isStalled = (session.bufferedMs !== undefined && session.bufferedMs <= 500 && lagMs >= 1500);
 
+          // アイドル視聴中（操作中でない）かつバッファ有効時に、通信詰まり (buffered > 256KB) または クライアント側バッファ枯渇＋遅延 (lag >= 1500ms) が発生した場合、
+          // フレームを捨てずに自動的に CATCHUP（サーバー側バッファ蓄積）へ切り替える！
+          if (wantsBuffer && isIdle && !session.isInteractive && (buffered > 256 * 1024 || isStalled)) {
+            console.log(`[WebSocketHandler] Network impairment / stall detected (buffered=${Math.round(buffered / 1024)}KB, lag=${Math.round(lagMs)}ms, clientBuf=${session.bufferedMs}ms). Switching session to CATCHUP buffer mode.`);
+            this.transitionLiveSessionToCatchup(session, lastAck);
+            session.playbackQueue.push({ type: 'video', flags, pts, data });
+            continue;
+          }
+
+          // 3. LIVE 送信（ヒステリシスバックプレッシャー）
           if (buffered > HIGH_WATER_MARK) {
             (client as any)._droppingGop = true;
           }
@@ -956,15 +1058,19 @@ export class WebSocketHandler {
       for (const client of this.authenticatedClients) {
         if (client.readyState === 1) { // OPEN
           const session = this.clientSessions.get(client);
-          if (session && session.mode === 'CATCHUP') {
-            session.playbackQueue.push({ type: 'audio', flags, pts, data });
+          if (!session) continue;
+
+          if (session.isInteractive || session.targetBufferMs === 0) {
+            const buffered = (client as any).bufferedAmount || 0;
+            if (buffered <= 2 * 1024 * 1024) {
+              client.send(packet);
+            }
             continue;
           }
 
-          const buffered = (client as any).bufferedAmount || 0;
-          if (buffered <= 2 * 1024 * 1024) {
-            client.send(packet);
-          }
+          // アイドル視聴中は音声もキューへ格納 (A/V同期維持)
+          session.mode = 'CATCHUP';
+          session.playbackQueue.push({ type: 'audio', flags, pts, data });
         }
       }
     });

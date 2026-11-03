@@ -902,11 +902,11 @@ export function renderStreamingView(
   wsClient.on('open', handleOpen);
   wsClient.on('close', handleClose);
 
-  // 6. Ping / Pong loop for RTT measurement
+  // 6. Ping / Pong loop for RTT measurement and buffer status update
   const pingTimer = setInterval(() => {
     pingId++;
     wsClient.send(ClientProtocol.packPing(pingId));
-  }, 2000);
+  }, 1000);
 
   // 6.1. Periodic Buffer Feedback & Flow Control Loop (250msごとに残量・再生PTSフィードバック)
   const ackTimer = setInterval(() => {
