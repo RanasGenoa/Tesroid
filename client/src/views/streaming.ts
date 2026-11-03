@@ -399,6 +399,7 @@ export function renderStreamingView(
     if (typeof audioPlayer.syncWithVideo === 'function') {
       audioPlayer.syncWithVideo();
     }
+    sendBufferFeedback();
   };
 
   decoder.onDecoderError = () => {
@@ -760,6 +761,8 @@ export function renderStreamingView(
         connDot.className = currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
       }
       updateHudLiveStatus();
+    } else if (msg.type === 'AUTH_SUCCESS') {
+      sendBufferFeedback(true);
     } else if (msg.type === 'LIVE_JUMPED') {
       serverCatchupQueueMs = 0;
       serverBufferMs = 0;
@@ -799,7 +802,12 @@ export function renderStreamingView(
     const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
     const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
 
-    const ptsChanged = lastDecodedPts > 0 && lastDecodedPts !== lastAckSentPts;
+    const actualRenderedPts = typeof framePacer.getLastRenderedPtsUs === 'function'
+      ? framePacer.getLastRenderedPtsUs()
+      : 0;
+    const reportedPts = actualRenderedPts > 0 ? actualRenderedPts : (lastDecodedPts > 0 ? lastDecodedPts : undefined);
+
+    const ptsChanged = reportedPts !== undefined && reportedPts !== lastAckSentPts;
     const bufferDelta = Math.abs(totalBufferedMs - lastReportedBufferedMs);
 
     if (!force && !ptsChanged && bufferDelta < 250) return;
@@ -808,11 +816,13 @@ export function renderStreamingView(
       ClientProtocol.packBufferFeedback({
         bufferedMs: totalBufferedMs,
         targetBufferMs,
-        lastRenderedPts: lastDecodedPts > 0 ? lastDecodedPts : undefined,
+        lastRenderedPts: reportedPts,
         isInteractive,
       })
     );
-    lastAckSentPts = lastDecodedPts;
+    if (reportedPts !== undefined) {
+      lastAckSentPts = reportedPts;
+    }
     lastReportedBufferedMs = totalBufferedMs;
   };
 
@@ -843,7 +853,9 @@ export function renderStreamingView(
       hideOverlay();
     }
 
-    // Send buffer telemetry and resume catchup download immediately
+    // Send immediate ping and buffer feedback so RTT and server buffer metrics update instantly!
+    pingId++;
+    wsClient.send(ClientProtocol.packPing(pingId));
     sendBufferFeedback(true);
   };
 

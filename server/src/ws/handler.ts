@@ -39,6 +39,7 @@ export class WebSocketHandler {
   private playbackBuffer: PlaybackBuffer;
   private lastInputAt: number = Date.now();
   private lastKnownAckPts: bigint | null = null;
+  private lastKnownTargetBufferMs: number = 10000;
   private clientSessions: Map<WebSocket, ClientSession> = new Map();
 
   private autoSleepTimer: NodeJS.Timeout | null = null;
@@ -103,6 +104,7 @@ export class WebSocketHandler {
     this.clientSessions.set(socket, {
       socket,
       lastAckPts: this.lastKnownAckPts,
+      targetBufferMs: this.lastKnownTargetBufferMs,
       mode: 'LIVE',
       pacingTimer: null,
       playbackQueue: [],
@@ -182,6 +184,9 @@ export class WebSocketHandler {
         session.playbackQueue = [];
         if (session.lastAckPts !== null) {
           this.lastKnownAckPts = session.lastAckPts;
+        }
+        if (typeof session.targetBufferMs === 'number') {
+          this.lastKnownTargetBufferMs = session.targetBufferMs;
         }
         this.clientSessions.delete(socket);
       }
@@ -695,6 +700,7 @@ export class WebSocketHandler {
           if (session) {
             session.bufferedMs = typeof cmd.bufferedMs === 'number' ? cmd.bufferedMs : 0;
             session.targetBufferMs = typeof cmd.targetBufferMs === 'number' ? cmd.targetBufferMs : 10000;
+            this.lastKnownTargetBufferMs = session.targetBufferMs || 10000;
             session.isInteractive = Boolean(cmd.isInteractive);
             session.lastBufferFeedbackAt = Date.now();
             if (cmd.lastRenderedPts !== undefined && cmd.lastRenderedPts !== null) {
@@ -721,8 +727,10 @@ export class WebSocketHandler {
             ? Number((this.encoder as any).getCurrentPts())
             : 0;
           const catchupQueueMs =
-            session && session.mode === 'CATCHUP' && session.playbackQueue.length > 1
-              ? Math.max(0, Math.round(Number(session.playbackQueue[session.playbackQueue.length - 1].pts - session.playbackQueue[0].pts) / 1000))
+            session && session.mode === 'CATCHUP' && session.playbackQueue.length > 0
+              ? (session.playbackQueue.length > 1
+                  ? Math.max(0, Math.round(Number(session.playbackQueue[session.playbackQueue.length - 1].pts - session.playbackQueue[0].pts) / 1000))
+                  : 33)
               : 0;
           const serverBufferMs = session && session.mode === 'CATCHUP' ? catchupQueueMs : 0;
           socket.send(MessageMultiplexer.packControl({
