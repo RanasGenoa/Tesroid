@@ -53,4 +53,17 @@ describe('Tesla Browser Compliance Checks', () => {
       );
     }
   });
+
+  it('must configure .stream-hud with safe centering to prevent left-side overflow clipping', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../src/styles/main.css'), 'utf-8');
+    const hudBlockMatch = css.match(/\.stream-hud\s*\{([^}]+)\}/);
+    expect(hudBlockMatch).not.toBeNull();
+    const hudBlock = hudBlockMatch![1];
+
+    // Must have overflow-x: auto for scrollability
+    expect(hudBlock).toMatch(/overflow-x:\s*auto/);
+    // Must contain safe center or flex-start fallback to avoid negative scroll loss
+    expect(hudBlock).toMatch(/justify-content:\s*safe center/);
+    expect(hudBlock).toMatch(/justify-content:\s*flex-start/);
+  });
 });
