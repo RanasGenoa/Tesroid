@@ -1,6 +1,6 @@
 {
   "name": "tesroid",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "private": true,
   "description": "Tesla in-car browser optimized self-hosted Cloud Browser streaming system",
