@@ -361,9 +361,9 @@ export class AudioPlayer {
     const lastVideoPts = this.avSync.getLastVideoPts();
     if (lastVideoPts <= 0 || ptsUs <= 0) return false;
     const audioLeadMs = (ptsUs - lastVideoPts) / 1000;
-    // Keep a healthy 450ms hardware audio cushion to prevent starvation during main-thread rendering hiccups,
+    // Allow audio to schedule comfortably ahead (up to 1000ms) without stalling,
     // while preventing audio from running wildly ahead (> 25s) during genuine video stalls.
-    return audioLeadMs > 450 && audioLeadMs < 25000;
+    return audioLeadMs > 1000 && audioLeadMs < 25000;
   }
 
   private scheduleOrHold(buffer: AudioBuffer, ptsUs: number, now: number): void {
@@ -379,9 +379,9 @@ export class AudioPlayer {
 
     let startAt = this.nextPlayTime;
     // If nextPlayTime has been overtaken by hardware currentTime (underrun or initial frame),
-    // clamp safely to a near-future timestamp (now + 15ms) so source.start() NEVER receives a past timestamp!
+    // clamp safely to a healthy 80ms lookahead cushion so playback does not repeatedly underrun on minor jitter!
     if (startAt < now + 0.005) {
-      startAt = now + 0.015;
+      startAt = now + 0.080;
     }
 
     const bufferedAhead = startAt - now;
@@ -430,7 +430,7 @@ export class AudioPlayer {
 
       let startAt = this.nextPlayTime;
       if (startAt < now + 0.005) {
-        startAt = now + 0.015;
+        startAt = now + 0.080;
       }
       if (startAt - now > maxScheduleWindow) {
         break;

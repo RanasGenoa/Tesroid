@@ -263,8 +263,8 @@ export class FramePacer {
         this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
       scheduledRenderTime = Math.max(now, targetRealtimeSlot);
 
-      // If the frame slot is due right now (or within 6ms), render immediately without timer/queue overhead!
-      if (scheduledRenderTime <= now + 6) {
+      // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
+      if (scheduledRenderTime <= now + 2) {
         this.renderFrameInternal(frame, ptsUs, now);
         this.lastScheduledTimeMs = now;
         this.lastScheduledPtsUs = ptsUs;
@@ -395,7 +395,7 @@ export class FramePacer {
       // preserving their exact 1x PTS spacing!
       if (this.frameQueue.length > 0) {
         const dMs = this.computeDeltaPtsMs(this.frameQueue[0].ptsUs, nextItem.ptsUs);
-        const minNextTime = now + Math.max(8, dMs * 0.98);
+        const minNextTime = now + Math.max(8, dMs);
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
           const shift = minNextTime - this.frameQueue[0].scheduledRenderTime;
           for (const item of this.frameQueue) {
