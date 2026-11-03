@@ -332,15 +332,42 @@ export function renderStreamingView(
       currentBitrate = Number(e.detail.stream.bitrate);
       changed = true;
     }
+    if (e.detail?.bufferDepth !== undefined) {
+      targetBufferMs = Number(e.detail.bufferDepth);
+      if (typeof decoder.setBufferDepth === 'function') {
+        decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+      }
+      sendBufferFeedback(true);
+    }
     if (changed) {
       updateToggleButtons();
     }
   };
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
 
+  // Initialize configurable buffer depth (e.g. ?buffer=2s for Intel MCU2, ?buffer=10s for Ryzen MCU3)
+  const getInitialBufferDepthMs = (): number => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const bufParam = params.get('buffer');
+      if (bufParam) {
+        if (bufParam.endsWith('s')) return parseFloat(bufParam) * 1000;
+        return parseInt(bufParam, 10);
+      }
+      const saved = localStorage.getItem('tesroid_prefetch_buffer_ms');
+      if (saved !== null) {
+        const val = parseInt(saved, 10);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 10000; // Default 10s prefetch cushion
+  };
+
+  let targetBufferMs = getInitialBufferDepthMs();
   let lastDecodedPts = 0;
   let lastAckSentPts = -1;
   let serverCatchupQueueMs = 0;
+  let serverBufferMs = 0;
   let serverMode: 'LIVE' | 'CATCHUP' = 'LIVE';
 
   const decoder = new VideoStreamDecoder(
@@ -355,6 +382,10 @@ export function renderStreamingView(
     }
   );
 
+  if (typeof decoder.setBufferDepth === 'function') {
+    decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+  }
+
   if (typeof decoder.setDownstreamQueueLengthProvider === 'function') {
     decoder.setDownstreamQueueLengthProvider(() =>
       typeof framePacer.getQueueLength === 'function' ? framePacer.getQueueLength() : 0
@@ -368,6 +399,7 @@ export function renderStreamingView(
     if (typeof audioPlayer.syncWithVideo === 'function') {
       audioPlayer.syncWithVideo();
     }
+    sendBufferFeedback();
   };
 
   decoder.onDecoderError = () => {
@@ -386,34 +418,39 @@ export function renderStreamingView(
     // Notice: Do NOT use raw `(serverLatestPts - lastDecodedPts)` as "buffered behind" because on a static screen
     // FFmpeg does not emit new frames while server wall-clock advances, which previously caused false 2-3s catch-up display!
     const clientBufferedMs = Math.max(pacerBufferedMs + decoderBufferedMs, Math.max(0, audioBufferedMs - 160));
-    return clientBufferedMs + serverCatchupQueueMs;
+    return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
 
-    const totalBehindMs = getTotalBufferedBehindMs();
     const isBuffering = typeof framePacer.getIsBuffering === 'function' ? framePacer.getIsBuffering() : false;
     const isInteractive = typeof framePacer.getMode === 'function' && framePacer.getMode() === 'ACTIVE_INTERACTION';
 
+    const pacerMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const decoderMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const localMs = pacerMs + decoderMs;
+    const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
+
+    const localSec = (localMs / 1000).toFixed(1);
+    const serverSec = (serverMs / 1000).toFixed(1);
+
     hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
 
-    if (isBuffering) {
+    if (isInteractive) {
+      hudLiveDot.className = 'status-dot status-online';
+      hudLiveText.textContent = 'DIRECT LIVE';
+      hudLiveBtn.title = '操作優先: バッファゼロ・超低遅延モードで動作中';
+    } else if (isBuffering) {
       hudLiveBtn.classList.add('is-buffering');
       hudLiveDot.className = 'status-dot status-warning';
-      const sec = (Math.max(100, totalBehindMs) / 1000).toFixed(1);
-      hudLiveText.textContent = `⏳ 受信待機中 (-${sec}s)`;
-      hudLiveBtn.title = 'パケット詰まり検知により安定受信まで一時待機中 (タップで即LIVEへジャンプ)';
-    } else if (totalBehindMs >= 450 || serverMode === 'CATCHUP') {
+      hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
+      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへジャンプ`;
+    } else if (localMs >= 800 || serverMs >= 600) {
       hudLiveBtn.classList.add('is-catchup');
-      hudLiveDot.className = 'status-dot status-warning';
-      const sec = (Math.max(500, totalBehindMs) / 1000).toFixed(1);
-      hudLiveText.textContent = `⏪ 追っかけ -${sec}s · LIVEへ`;
-      hudLiveBtn.title = `等倍(1x)追っかけ再生中 (遅延 ${sec}秒) — タップでバッファを破棄して最新LIVEへ戻る`;
-    } else if (isInteractive) {
       hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = '⚡ 操作優先 LIVE';
-      hudLiveBtn.title = '自動ハイブリッド: 画面操作中のためバッファゼロ・超低遅延モードで動作中';
+      hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
+      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへ同期`;
     } else {
       hudLiveDot.className = 'status-dot status-online';
       const cushionMs = typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
@@ -443,6 +480,7 @@ export function renderStreamingView(
     }
     jitterController.reset();
     serverCatchupQueueMs = 0;
+    serverBufferMs = 0;
     serverMode = 'LIVE';
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
@@ -686,6 +724,7 @@ export function renderStreamingView(
     lastDecodedPts = 0;
     lastAckSentPts = -1;
     serverCatchupQueueMs = 0;
+    serverBufferMs = 0;
     serverMode = 'LIVE';
     updateHudLiveStatus();
     if (browserPowerState !== 'sleeping') {
@@ -705,7 +744,10 @@ export function renderStreamingView(
       metricsCollector.updateRtt(currentRtt);
       jitterController.updateRtt(currentRtt);
       if (typeof msg.catchupQueueMs === 'number') {
-        serverCatchupQueueMs = msg.catchupQueueMs;
+        serverCatchupQueueMs = Math.max(0, msg.catchupQueueMs);
+      }
+      if (typeof msg.serverBufferMs === 'number') {
+        serverBufferMs = Math.max(0, msg.serverBufferMs);
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;
@@ -714,6 +756,13 @@ export function renderStreamingView(
       if (connDot) {
         connDot.className = currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
       }
+      updateHudLiveStatus();
+    } else if (msg.type === 'AUTH_SUCCESS') {
+      sendBufferFeedback(true);
+    } else if (msg.type === 'LIVE_JUMPED') {
+      serverCatchupQueueMs = 0;
+      serverBufferMs = 0;
+      serverMode = 'LIVE';
       updateHudLiveStatus();
     } else if (msg.type === 'STREAM_RESET') {
       resetClientStreamPipeline('配信プロセスを再起動中...', 'エンコーダとバッファをクリーンに再初期化しています...');
@@ -738,32 +787,109 @@ export function renderStreamingView(
     }
   };
 
+  let disconnectSurvivalTimer: any = null;
+  let lastReportedBufferedMs = -1;
+
+  const sendBufferFeedback = (force = false) => {
+    if (!wsClient.isConnected()) return;
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+    const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
+
+    const actualRenderedPts = typeof framePacer.getLastRenderedPtsUs === 'function'
+      ? framePacer.getLastRenderedPtsUs()
+      : 0;
+    const reportedPts = actualRenderedPts > 0 ? actualRenderedPts : (lastDecodedPts > 0 ? lastDecodedPts : undefined);
+
+    const ptsChanged = reportedPts !== undefined && reportedPts !== lastAckSentPts;
+    const bufferDelta = Math.abs(totalBufferedMs - lastReportedBufferedMs);
+
+    if (!force && !ptsChanged && bufferDelta < 250) return;
+
+    wsClient.send(
+      ClientProtocol.packBufferFeedback({
+        bufferedMs: totalBufferedMs,
+        targetBufferMs,
+        lastRenderedPts: reportedPts,
+        isInteractive,
+      })
+    );
+    if (reportedPts !== undefined) {
+      lastAckSentPts = reportedPts;
+    }
+    lastReportedBufferedMs = totalBufferedMs;
+  };
+
   const handleOpen = () => {
-    decoder.reset();
-    jitterController.reset();
+    if (disconnectSurvivalTimer) {
+      clearTimeout(disconnectSurvivalTimer);
+      disconnectSurvivalTimer = null;
+    }
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+
+    if (totalBufferedMs <= 0) {
+      decoder.reset();
+      jitterController.reset();
+    } else {
+      console.log(`[StreamingView] Reconnected with ${totalBufferedMs}ms buffer active. Seamlessly resuming...`);
+    }
+
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
     if (browserPowerState === 'sleeping') {
       showSleepingScreen();
-    } else {
+    } else if (totalBufferedMs <= 0) {
       showOverlay('画面配信準備中...', '映像ストリームを待機しています...', true);
+    } else {
+      hideOverlay();
     }
-    // 再接続時に手元の最新デコード済み PTS があれば直ちに ACK を送付
-    if (lastDecodedPts > 0) {
-      wsClient.send(ClientProtocol.packAck(lastDecodedPts));
-      lastAckSentPts = lastDecodedPts;
-    }
+
+    // Send immediate ping and buffer feedback so RTT and server buffer metrics update instantly!
+    pingId++;
+    wsClient.send(ClientProtocol.packPing(pingId));
+    sendBufferFeedback(true);
   };
 
   const handleClose = () => {
-    decoder.reset();
-    jitterController.reset();
-    renderer.resetFirstFrame();
-    framePacer.resetFirstFrame();
-    avSync.reset();
-    if (connText) connText.textContent = '切断';
-    if (connDot) connDot.className = 'status-dot status-offline';
-    showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+    if (connText) connText.textContent = '一時切断';
+    if (connDot) connDot.className = 'status-dot status-warning';
+
+    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+
+    if (totalBufferedMs > 250) {
+      // Survive temporary network drops by playing through local prefetch buffer
+      console.log(`[StreamingView] Disconnected, surviving stall with ${totalBufferedMs}ms local prefetch buffer...`);
+      if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
+      disconnectSurvivalTimer = setTimeout(() => {
+        disconnectSurvivalTimer = null;
+        if (!wsClient.isConnected()) {
+          decoder.reset();
+          jitterController.reset();
+          renderer.resetFirstFrame();
+          framePacer.resetFirstFrame();
+          avSync.reset();
+          if (connText) connText.textContent = '切断';
+          if (connDot) connDot.className = 'status-dot status-offline';
+          showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+        }
+      }, totalBufferedMs);
+    } else {
+      decoder.reset();
+      jitterController.reset();
+      renderer.resetFirstFrame();
+      framePacer.resetFirstFrame();
+      avSync.reset();
+      if (connText) connText.textContent = '切断';
+      if (connDot) connDot.className = 'status-dot status-offline';
+      showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
+    }
   };
 
   wsClient.on('video', handleVideo);
@@ -772,19 +898,18 @@ export function renderStreamingView(
   wsClient.on('open', handleOpen);
   wsClient.on('close', handleClose);
 
-  // 6. Ping / Pong loop for RTT measurement
+  // 6. Ping / Pong loop for RTT measurement and buffer status update
   const pingTimer = setInterval(() => {
     pingId++;
     wsClient.send(ClientProtocol.packPing(pingId));
-  }, 2000);
+  }, 1000);
 
-  // 6.1. Periodic ACK loop (約2秒ごとにデコード済み video PTS を送信)
+  // 6.1. Periodic Buffer Feedback & Flow Control Loop (250msごとに残量・再生PTSフィードバック)
   const ackTimer = setInterval(() => {
-    if (wsClient.isConnected() && lastDecodedPts > 0 && lastDecodedPts !== lastAckSentPts) {
-      lastAckSentPts = lastDecodedPts;
-      wsClient.send(ClientProtocol.packAck(lastDecodedPts));
+    if (wsClient.isConnected()) {
+      sendBufferFeedback();
     }
-  }, 2000);
+  }, 250);
 
   // 7. HUD Status Loop
   const hudTimer = setInterval(() => {
@@ -950,6 +1075,7 @@ export function renderStreamingView(
 
   // Cleanup function when navigating away
   return () => {
+    if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
     document.getElementById('power-menu-modal')?.remove();
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);

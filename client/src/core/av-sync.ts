@@ -68,6 +68,11 @@ export class AvSyncController {
     return Math.round(this.audioAnchorPtsUs + deltaSec * 1_000_000);
   }
 
+  public clearAudioAnchor(): void {
+    this.audioAnchorContextTimeSec = 0;
+    this.audioAnchorPtsUs = 0;
+  }
+
   public reset(): void {
     this.lastVideoPts = 0;
     this.lastAudioPts = 0;

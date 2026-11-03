@@ -125,6 +125,14 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
           <option value="150">150% (特大)</option>
         </select>
 
+        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">先行バッファ深度 (回線瞬断・トンネル対策 / メモリ調整)</label>
+        <select id="cfg-buffer-depth">
+          <option value="0">オフ (0.1秒 / 超低遅延優先)</option>
+          <option value="2000">軽量 2秒 (Intel / MCU2車両向け・省メモリ約280KB)</option>
+          <option value="5000">標準 5秒 (市街地走行向け・メモリ約700KB)</option>
+          <option value="10000" selected>最大 10秒 (長大トンネル・耐障害最優先 / Ryzen推奨)</option>
+        </select>
+
         <button id="cfg-save-btn" class="btn btn-primary" style="width: 100%; margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 6px;">
           ${ICONS.check} 設定を保存
         </button>
@@ -326,6 +334,11 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = savedLocalScale;
   }
 
+  const savedBufferDepth = localStorage.getItem('tesroid_prefetch_buffer_ms') || '10000';
+  if (overlay.querySelector('#cfg-buffer-depth')) {
+    (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement).value = savedBufferDepth;
+  }
+
   try {
     const res = await fetch('/api/settings', {
       headers: { Authorization: `Bearer ${token}` },
@@ -348,6 +361,7 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     const bitrate = Number((overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value);
     const maxFps = Number((overlay.querySelector('#cfg-fps') as HTMLSelectElement).value);
     const displayScale = Number((overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120);
+    const bufferDepth = Number((overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000);
 
     const body: any = {
       displayScale,
@@ -356,6 +370,7 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     if (newPin) body.pin = newPin;
 
     localStorage.setItem('tesroid_display_scale', String(displayScale));
+    localStorage.setItem('tesroid_prefetch_buffer_ms', String(bufferDepth));
 
     try {
       const res = await fetch('/api/settings', {
@@ -366,7 +381,7 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       if (res.ok) {
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
-            detail: { displayScale, stream: { bitrate, maxFps } },
+            detail: { displayScale, bufferDepth, stream: { bitrate, maxFps } },
           })
         );
         showToast('設定を保存しました。', 'success');

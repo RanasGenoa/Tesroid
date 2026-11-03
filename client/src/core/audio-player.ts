@@ -29,15 +29,14 @@ export class AudioPlayer {
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
-  // 140ms target buffer (~7 Opus packets). Absorbs network jitter and keeps seamless playback.
-  private static readonly JITTER_BUFFER_TARGET_SEC = 0.14;
-  // Max WebAudio nodes scheduled ahead at once (0.28s) so audio never runs seconds ahead of video during stalls;
-  // excess is held in overflowQueue and fed in lockstep with video PTS!
-  private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.28;
+  // 160ms target initial buffer (~8 Opus packets). Absorbs network jitter and keeps seamless playback.
+  private static readonly JITTER_BUFFER_TARGET_SEC = 0.16;
+  // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
+  private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.50;
   // Maximum catchup buffer before trimming oldest audio (30s)
   private static readonly MAX_CATCHUP_BUFFER_SEC = 30.0;
-  // Hardware lookahead when starting playback from currentTime (30ms)
-  private static readonly HARDWARE_LOOKAHEAD_SEC = 0.03;
+  // Hardware lookahead when starting playback from currentTime (25ms)
+  private static readonly HARDWARE_LOOKAHEAD_SEC = 0.025;
   private additionalDelaySec: number = 0;
 
   // Stats
@@ -64,7 +63,11 @@ export class AudioPlayer {
     try {
       if (!this.ctx) {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        this.ctx = new AudioCtx({ latencyHint: 'interactive' });
+        try {
+          this.ctx = new AudioCtx({ latencyHint: 'interactive', sampleRate: 48000 });
+        } catch {
+          this.ctx = new AudioCtx({ latencyHint: 'interactive' });
+        }
       }
 
       if (this.ctx.state === 'suspended') {
@@ -358,9 +361,9 @@ export class AudioPlayer {
     const lastVideoPts = this.avSync.getLastVideoPts();
     if (lastVideoPts <= 0 || ptsUs <= 0) return false;
     const audioLeadMs = (ptsUs - lastVideoPts) / 1000;
-    // If audio chunk is more than 160ms ahead of the currently rendered video frame (and within a sane 25s window),
-    // hold it in overflowQueue until video catches up!
-    return audioLeadMs > 160 && audioLeadMs < 25000;
+    // Allow audio to schedule comfortably ahead (up to 1000ms) without stalling,
+    // while preventing audio from running wildly ahead (> 25s) during genuine video stalls.
+    return audioLeadMs > 1000 && audioLeadMs < 25000;
   }
 
   private scheduleOrHold(buffer: AudioBuffer, ptsUs: number, now: number): void {
@@ -375,8 +378,10 @@ export class AudioPlayer {
     }
 
     let startAt = this.nextPlayTime;
-    if (startAt < now) {
-      startAt = now + 0.01;
+    // If nextPlayTime has been overtaken by hardware currentTime (underrun or initial frame),
+    // clamp safely to a healthy 80ms lookahead cushion so playback does not repeatedly underrun on minor jitter!
+    if (startAt < now + 0.005) {
+      startAt = now + 0.080;
     }
 
     const bufferedAhead = startAt - now;
@@ -397,18 +402,27 @@ export class AudioPlayer {
     const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (isVideoBuffering) return;
 
+    const now = this.ctx.currentTime;
+
+    // バッファリング明け等で停止していた場合、overflowQueue があれば即座に再生再開
+    if (!this.isPlaying && this.overflowQueue.length > 0) {
+      this.isPlaying = true;
+      this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
+    }
+
     const lastVideoPts = this.avSync.getLastVideoPts();
-    // Drop any stale overflow audio that has fallen more than 220ms behind rendered video PTS
+    // Only drop truly stale audio on major timeline discontinuity (> 1500ms behind).
+    // Never drop frames on minor jitter (< 1.5s) to guarantee zero crackling/clipping clicks!
     while (this.overflowQueue.length > 1 && lastVideoPts > 0) {
       const headPts = this.overflowQueue[0].ptsUs;
-      if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 220) {
+      if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 1500) {
         this.overflowQueue.shift();
       } else {
         break;
       }
     }
 
-    this.pumpOverflowQueue(this.ctx.currentTime);
+    this.pumpOverflowQueue(now);
   }
 
   private pumpOverflowQueue(now: number): void {
@@ -423,8 +437,8 @@ export class AudioPlayer {
       }
 
       let startAt = this.nextPlayTime;
-      if (startAt < now) {
-        startAt = now + 0.01;
+      if (startAt < now + 0.005) {
+        startAt = now + 0.080;
       }
       if (startAt - now > maxScheduleWindow) {
         break;
@@ -488,6 +502,7 @@ export class AudioPlayer {
     this.overflowQueue = [];
     this.nextPlayTime = 0;
     this.stopAllScheduledSources();
+    this.avSync.clearAudioAnchor();
   }
 
   public jumpToLive(): void {

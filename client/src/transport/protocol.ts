@@ -78,6 +78,23 @@ export class ClientProtocol {
     return this.packCommand({ type: 'ACK', pts });
   }
 
+  public static packBufferFeedback(feedback: {
+    bufferedMs: number;
+    targetBufferMs: number;
+    lastRenderedPts?: bigint | number;
+    isInteractive?: boolean;
+    stallCount?: number;
+  }): Uint8Array {
+    return this.packCommand({
+      type: 'BUFFER_FEEDBACK',
+      bufferedMs: feedback.bufferedMs,
+      targetBufferMs: feedback.targetBufferMs,
+      lastRenderedPts: feedback.lastRenderedPts !== undefined ? String(feedback.lastRenderedPts) : undefined,
+      isInteractive: feedback.isInteractive ?? false,
+      stallCount: feedback.stallCount ?? 0,
+    });
+  }
+
   /**
    * Pack 32-byte binary touch event:
    * [type=2: 1B] [action: 1B] [pointerId: 8B int64] [x: 4B int32] [y: 4B int32]
