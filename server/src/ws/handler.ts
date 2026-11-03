@@ -724,9 +724,7 @@ export class WebSocketHandler {
             session && session.mode === 'CATCHUP' && session.playbackQueue.length > 1
               ? Math.max(0, Math.round(Number(session.playbackQueue[session.playbackQueue.length - 1].pts - session.playbackQueue[0].pts) / 1000))
               : 0;
-          const serverBufferMs = typeof this.playbackBuffer.getBufferedDurationMs === 'function'
-            ? this.playbackBuffer.getBufferedDurationMs()
-            : 0;
+          const serverBufferMs = session && session.mode === 'CATCHUP' ? catchupQueueMs : 0;
           socket.send(MessageMultiplexer.packControl({
             type: 'PONG',
             id: cmd.id,

@@ -429,7 +429,7 @@ export function renderStreamingView(
     const pacerMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
     const decoderMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
     const localMs = pacerMs + decoderMs;
-    const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
+    const serverMs = serverMode === 'CATCHUP' ? Math.max(serverCatchupQueueMs, serverBufferMs) : 0;
 
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
@@ -479,6 +479,7 @@ export function renderStreamingView(
     }
     jitterController.reset();
     serverCatchupQueueMs = 0;
+    serverBufferMs = 0;
     serverMode = 'LIVE';
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
@@ -749,11 +750,20 @@ export function renderStreamingView(
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;
+        if (serverMode === 'LIVE') {
+          serverCatchupQueueMs = 0;
+          serverBufferMs = 0;
+        }
       }
       if (connText) connText.textContent = `${currentRtt}ms`;
       if (connDot) {
         connDot.className = currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
       }
+      updateHudLiveStatus();
+    } else if (msg.type === 'LIVE_JUMPED') {
+      serverCatchupQueueMs = 0;
+      serverBufferMs = 0;
+      serverMode = 'LIVE';
       updateHudLiveStatus();
     } else if (msg.type === 'STREAM_RESET') {
       resetClientStreamPipeline('配信プロセスを再起動中...', 'エンコーダとバッファをクリーンに再初期化しています...');
