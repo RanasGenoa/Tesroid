@@ -29,6 +29,7 @@ export class AudioPlayer {
   private totalOverflowDurationSec: number = 0;
   private scheduledSources: Set<AudioBufferSourceNode> = new Set();
   private isPlaying: boolean = false;
+  private hasInitialPlaybackStarted: boolean = false;
   private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
   private lastChunkPtsUs: number = 0;
@@ -420,15 +421,15 @@ export class AudioPlayer {
         queuedSec += item.buffer.duration;
       }
 
-      // If we have overflow items or this is recovering from underrun, REBUFFER_CUSHION_SEC (80ms) suffices;
-      // otherwise wait for initial targetBufferSec (160ms)
+      // Differentiate initial playout cushion (targetBufferSec = 160ms) from fast underrun recovery (REBUFFER_CUSHION_SEC = 80ms)
       const requiredCushion =
-        this.overflowQueue.length > 0 || queuedSec >= AudioPlayer.REBUFFER_CUSHION_SEC
+        this.overflowQueue.length > 0 || this.hasInitialPlaybackStarted
           ? AudioPlayer.REBUFFER_CUSHION_SEC
           : targetBufferSec;
 
       if (queuedSec >= requiredCushion) {
         this.isPlaying = true;
+        this.hasInitialPlaybackStarted = true;
         this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
 
         for (const item of this.bufferQueue) {
@@ -461,6 +462,7 @@ export class AudioPlayer {
       // 1ms linear fade-in (~48 samples at 48kHz) to eliminate DC step / transient clicks
       // that trigger OS / Chromium hardware limiter auto-ducking.
       const fadeSamples = Math.min(48, Math.floor(buffer.length / 4));
+      if (fadeSamples <= 0) return;
       const channels = buffer.numberOfChannels;
       for (let ch = 0; ch < channels; ch++) {
         const data = buffer.getChannelData(ch);
@@ -658,6 +660,7 @@ export class AudioPlayer {
 
   public resetJitterBuffer(): void {
     this.isPlaying = false;
+    this.hasInitialPlaybackStarted = false;
     this.needsDeclickFadeIn = true;
     this.bufferQueue = [];
     this.overflowQueue = [];
