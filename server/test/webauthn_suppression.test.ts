@@ -222,4 +222,27 @@ describe('WebAuthn / Passkey Suppression (Issue #35)', () => {
       "createNotAllowedError('Passkeys are not supported in this environment.')",
     );
   });
+
+  it('validates CdpTouchBridge in xdotool.ts maintains continuous WebAuthn suppression and setAutoAttach', async () => {
+    const xdotoolSource = fs.readFileSync(
+      path.resolve(__dirname, '../src/input/xdotool.ts'),
+      'utf-8',
+    );
+
+    // CdpTouchBridge holds the persistent WebSocket connection across navigations
+    expect(xdotoolSource).toContain('WebAuthn / Passkey Dialog Suppressor (Issue #35)');
+    expect(xdotoolSource).toContain(
+      'isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false)',
+    );
+    expect(xdotoolSource).toContain(
+      "createNotAllowedError('Passkeys are not supported in this environment.')",
+    );
+    expect(xdotoolSource).toContain('Target.setAutoAttach');
+  });
+
+  it('validates manifest.json specifies host_permissions <all_urls> for cross-origin navigation', () => {
+    const manifestPath = path.resolve(__dirname, '../extension/manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    expect(manifest.host_permissions).toEqual(['<all_urls>']);
+  });
 });

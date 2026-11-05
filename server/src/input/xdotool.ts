@@ -361,6 +361,70 @@ class CdpTouchBridge {
 
     const script = `
       (() => {
+        // WebAuthn / Passkey Dialog Suppressor (Issue #35)
+        // Docker/Xvfb環境には物理・プラットフォームFIDO2認証器が存在せず、ChromeネイティブのWebAuthn
+        // バブルダイアログ（"No passkeys available"）が表示されると車載タッチ操作（DOM注入）では
+        // 閉じられず操作不能になるため、WebAuthn API呼び出しをインターセプトして安全に拒否・無効化する。
+        try {
+          if (typeof window.PublicKeyCredential !== 'undefined') {
+            try {
+              window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
+            } catch {
+              Object.defineProperty(window.PublicKeyCredential, 'isUserVerifyingPlatformAuthenticatorAvailable', {
+                value: () => Promise.resolve(false),
+                configurable: true,
+                writable: true,
+              });
+            }
+            if (typeof window.PublicKeyCredential.isConditionalMediationAvailable === 'function') {
+              try {
+                window.PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
+              } catch {
+                Object.defineProperty(window.PublicKeyCredential, 'isConditionalMediationAvailable', {
+                  value: () => Promise.resolve(false),
+                  configurable: true,
+                  writable: true,
+                });
+              }
+            }
+          }
+        } catch (e) {}
+
+        try {
+          if (typeof navigator !== 'undefined' && navigator.credentials && !navigator.credentials._tesroidWebAuthnHooked) {
+            navigator.credentials._tesroidWebAuthnHooked = true;
+
+            const createNotAllowedError = (msg) => {
+              if (typeof DOMException !== 'undefined') {
+                return new DOMException(msg, 'NotAllowedError');
+              }
+              const err = new Error(msg);
+              err.name = 'NotAllowedError';
+              return err;
+            };
+
+            if (typeof navigator.credentials.get === 'function') {
+              const origGet = navigator.credentials.get.bind(navigator.credentials);
+              navigator.credentials.get = async function(options) {
+                if (options && options.publicKey) {
+                  throw createNotAllowedError('Passkeys are not supported in this environment.');
+                }
+                return origGet(options);
+              };
+            }
+
+            if (typeof navigator.credentials.create === 'function') {
+              const origCreate = navigator.credentials.create.bind(navigator.credentials);
+              navigator.credentials.create = async function(options) {
+                if (options && options.publicKey) {
+                  throw createNotAllowedError('Passkeys are not supported in this environment.');
+                }
+                return origCreate(options);
+              };
+            }
+          }
+        } catch (e) {}
+
         if (window._tesroidBridgeActive) return;
         window._tesroidBridgeActive = true;
 
@@ -544,6 +608,11 @@ class CdpTouchBridge {
       })()
     `;
 
+    this.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
     this.send('Page.enable');
     this.send('Page.addScriptToEvaluateOnNewDocument', { source: script });
     this.send('Runtime.evaluate', { expression: script });
