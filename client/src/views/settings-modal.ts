@@ -1,5 +1,4 @@
 import { ICONS, showToast } from './icons.js';
-import { browserRestart, resume, sleep } from './power-actions.js';
 
 export function openSettingsWithAuth(
   container: HTMLElement,
@@ -36,17 +35,17 @@ async function showSettingsModal(
       <!-- Tabs -->
       <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; flex-wrap: wrap;">
         <button id="tab-browser" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px; display: flex; align-items: center; gap: 6px;">
-          ${ICONS.globe} ブラウザ & 電源
+          ${ICONS.globe} Webブラウザ
         </button>
         <button id="tab-general" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px; display: flex; align-items: center; gap: 6px;">
-          ${ICONS.settings} ストリーミング & PIN
+          ${ICONS.settings} 一般 & PIN
         </button>
         <button id="tab-metrics" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px; display: flex; align-items: center; gap: 6px;">
           ${ICONS.activity} 品質統計
         </button>
       </div>
 
-      <!-- Tab Content: Browser & Power -->
+      <!-- Tab Content: Browser -->
       <div id="content-browser">
         <h3 style="font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
           ${ICONS.globe} ブラウザURL移動
@@ -65,55 +64,12 @@ async function showSettingsModal(
           <button class="btn btn-secondary quick-url-btn" data-url="https://www.netflix.com">Netflix</button>
           <button class="btn btn-secondary quick-url-btn" data-url="https://www.amazon.co.jp/primevideo">Prime Video</button>
         </div>
-
-        <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 20px 0;" />
-
-        <h3 style="font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-          ${ICONS.power} 省電力 & リソース制御
-        </h3>
-        <p style="font-size: 13px; margin-bottom: 12px; color: var(--text-muted);">車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。</p>
-        <div style="display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;">
-          <button id="power-sleep-btn" class="btn btn-secondary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-            ${ICONS.pause} 一時停止 (CPU 0%)
-          </button>
-          <button id="power-resume-btn" class="btn btn-primary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-            ${ICONS.play} 再開 (Resume)
-          </button>
-          <button id="browser-restart-btn" class="btn btn-danger" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-            ${ICONS.refresh} ブラウザ再起動
-          </button>
-        </div>
-
-        <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 20px 0;" />
-
-        <h3 style="font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-          ${ICONS.volume2} 音声テスト
-        </h3>
-        <p style="font-size: 13px; margin-bottom: 12px; color: var(--text-muted);">PulseAudio仮想シンク経由でテスト音を鳴らし、音声出力を確認します。</p>
-        <button id="audio-test-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;">
-          ${ICONS.volume2} テストトーン再生 (1秒)
-        </button>
       </div>
 
       <!-- Tab Content: General & PIN -->
       <div id="content-general" style="display: none;">
         <label style="display: block; font-size: 14px; margin-bottom: 6px;">新しいPINコード (4〜8桁 / 空欄で維持)</label>
         <input type="password" id="cfg-pin" placeholder="変更する場合のみ入力" maxlength="8" />
-
-        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">ストリーミング ビットレート</label>
-        <select id="cfg-bitrate">
-          <option value="500000">0.5 Mbps (超節約 / 低速回線)</option>
-          <option value="750000">0.75 Mbps (節約)</option>
-          <option value="1000000" selected>1 Mbps (標準・推奨)</option>
-          <option value="1500000">1.5 Mbps (高画質)</option>
-          <option value="2000000">2 Mbps (超高画質)</option>
-        </select>
-
-        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">フレームレート (FPS)</label>
-        <select id="cfg-fps">
-          <option value="30" selected>30 FPS (省負荷・高安定性)</option>
-          <option value="60">60 FPS (高滑らか・高負荷)</option>
-        </select>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">ブラウザ表示拡大率 (文字サイズ・UI拡大)</label>
         <select id="cfg-display-scale">
@@ -162,9 +118,6 @@ async function showSettingsModal(
             <strong style="color: #fbbf24;">※ 通常運用時はクライアント・サーバー双方の負荷低減のため「OFF」を推奨します。</strong>
           </p>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button id="cfg-telemetry-download-btn" class="btn btn-secondary" style="font-size: 12px; padding: 7px 12px; display: flex; align-items: center; gap: 6px;">
-              ${ICONS.download} 直近のセッションログを保存 (.jsonl)
-            </button>
             <button id="cfg-telemetry-clear-btn" class="btn btn-secondary" style="font-size: 12px; padding: 7px 12px; display: flex; align-items: center; gap: 6px; color: #f87171;">
               ${ICONS.trash} サーバーログ全消去
             </button>
@@ -339,32 +292,6 @@ async function showSettingsModal(
     });
   });
 
-  // Power actions
-  overlay.querySelector('#power-sleep-btn')?.addEventListener('click', () => {
-    sleep(token);
-  });
-
-  overlay.querySelector('#power-resume-btn')?.addEventListener('click', () => {
-    resume(token);
-  });
-
-  overlay.querySelector('#browser-restart-btn')?.addEventListener('click', () => {
-    browserRestart(token);
-  });
-
-  // Audio test
-  overlay.querySelector('#audio-test-btn')?.addEventListener('click', async () => {
-    try {
-      await fetch('/api/audio/test', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      showToast('テストトーンを送信しました', 'info');
-    } catch (err: any) {
-      showToast(`テスト音声再生失敗: ${err.message}`, 'error');
-    }
-  });
-
   // Load current settings
   const savedLocalScale = localStorage.getItem('tesroid_display_scale');
   if (savedLocalScale && overlay.querySelector('#cfg-display-scale')) {
@@ -397,39 +324,6 @@ async function showSettingsModal(
       );
     });
   }
-
-  overlay.querySelector('#cfg-telemetry-download-btn')?.addEventListener('click', async () => {
-    const msgEl = overlay.querySelector('#telemetry-action-msg') as HTMLElement;
-    try {
-      if (msgEl) msgEl.textContent = '直近のセッションログを準備中...';
-      const res = await fetch('/api/telemetry/sessions/latest/download', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        if (res.status === 404) {
-          if (msgEl)
-            msgEl.innerHTML =
-              '<span style="color: #fbbf24;">記録されたセッションログがまだありません。</span>';
-          return;
-        }
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `tesroid-telemetry-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-      if (msgEl)
-        msgEl.innerHTML = '<span style="color: #4ade80;">ログのダウンロードが完了しました。</span>';
-    } catch (err: any) {
-      if (msgEl)
-        msgEl.innerHTML = `<span style="color: var(--accent-danger);">ダウンロード失敗: ${err.message}</span>`;
-    }
-  });
 
   const clearBtn = overlay.querySelector('#cfg-telemetry-clear-btn') as HTMLButtonElement | null;
   let isClearConfirmPending = false;
@@ -491,12 +385,6 @@ async function showSettingsModal(
     if (res.ok) {
       const data = await res.json();
       if (data.browserUrl) urlInput.value = data.browserUrl;
-      if (data.stream?.bitrate)
-        (overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value = String(
-          data.stream.bitrate,
-        );
-      if (data.stream?.maxFps)
-        (overlay.querySelector('#cfg-fps') as HTMLSelectElement).value = String(data.stream.maxFps);
       if (data.displayScale) {
         (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(
           data.displayScale,
@@ -509,8 +397,6 @@ async function showSettingsModal(
   // Save settings
   overlay.querySelector('#cfg-save-btn')?.addEventListener('click', async () => {
     const newPin = (overlay.querySelector('#cfg-pin') as HTMLInputElement).value.trim();
-    const bitrate = Number((overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value);
-    const maxFps = Number((overlay.querySelector('#cfg-fps') as HTMLSelectElement).value);
     const displayScale = Number(
       (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120,
     );
@@ -520,7 +406,6 @@ async function showSettingsModal(
 
     const body: any = {
       displayScale,
-      stream: { bitrate, maxFps },
     };
     if (newPin) body.pin = newPin;
 
@@ -536,7 +421,7 @@ async function showSettingsModal(
       if (res.ok) {
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
-            detail: { displayScale, bufferDepth, stream: { bitrate, maxFps } },
+            detail: { displayScale, bufferDepth },
           }),
         );
         showToast('設定を保存しました。', 'success');

@@ -230,17 +230,17 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
     onOpenSettings = vi.fn();
   });
 
-  it('Issue 29: 設定メニュー（settings-modal）内に「再エンコード」ボタンが存在しないこと', () => {
+  it('Issue 29 & Issue 33: 設定メニュー（settings-modal）内に再エンコードボタンおよび電源管理ボタンが存在しないこと（HUD停止メニューへ集約）', () => {
     openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
 
     // 設定モーダル内の #encoder-restart-btn は削除されていること
     const encoderRestartBtn = elementRegistry.get('encoder-restart-btn');
     expect(encoderRestartBtn).toBeUndefined();
 
-    // 他の電源ボタンは残っていること
-    expect(elementRegistry.get('power-sleep-btn')).toBeDefined();
-    expect(elementRegistry.get('power-resume-btn')).toBeDefined();
-    expect(elementRegistry.get('browser-restart-btn')).toBeDefined();
+    // Issue 33: 電源管理ボタンはHUD停止メニューに集約され、設定モーダルからは削除されていること
+    expect(elementRegistry.get('power-sleep-btn')).toBeUndefined();
+    expect(elementRegistry.get('power-resume-btn')).toBeUndefined();
+    expect(elementRegistry.get('browser-restart-btn')).toBeUndefined();
   });
 
   it('Issue 29: HUDバッファ状態（hud-live-btn）連打時に再エンコードAPIが重複実行されないこと（連打ガード）', async () => {

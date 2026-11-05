@@ -292,4 +292,37 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
     // モーダルが閉じていること（removeが呼ばれていること）
     expect(elementRegistry.get('power-menu-modal')).toBeUndefined();
   });
+
+  it('(d) Issue 33: 停止モーダルから「一時停止」「再開」が削除され、「ワンタップ停止」と「ブラウザ再起動」に集約されていること', () => {
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
+
+    // HUD 停止ボタンをクリックしてモーダルを開く
+    const stopBtn = elementRegistry.get('hud-stop-btn');
+    stopBtn.click();
+
+    // 「一時停止」「再開」ボタンは削除されていること
+    expect(elementRegistry.get('power-sleep-btn')).toBeUndefined();
+    expect(elementRegistry.get('power-resume-btn')).toBeUndefined();
+
+    // 「ワンタップ停止」「ブラウザ再起動」の2つの主要アクションが存在すること
+    expect(elementRegistry.get('power-quick-stop-btn')).toBeDefined();
+    expect(elementRegistry.get('power-browser-restart-btn')).toBeDefined();
+
+    // ブラウザ再起動ボタンをクリックした時の動作確認
+    const restartBtn = elementRegistry.get('power-browser-restart-btn');
+    restartBtn.click();
+
+    expect(globalThis.confirm).toHaveBeenCalledWith('ブラウザプロセスを再起動しますか？');
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/system/restart-browser', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${testToken}` },
+    });
+  });
 });
