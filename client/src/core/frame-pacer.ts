@@ -54,6 +54,21 @@ export class FramePacer {
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
+  // A/V Sync PLL constants:
+  // Deadband threshold (ms) within which lip-sync differences are imperceptible to human eyes.
+  // Prevents micro-hunting (jittering between +nudge and -nudge) during steady-state playback.
+  private static readonly AV_SYNC_DEADBAND_MS = 45;
+  // Maximum smoothing nudge applied per frame (ms) for minor sync drifts (45ms ~ 150ms).
+  // Kept small (<= 0.75ms) so playback speed changes by at most ~2%, preserving frame pacing smoothness.
+  private static readonly AV_SYNC_MAX_NUDGE_MS = 0.75;
+  // Sync error limit (ms) for proportional PLL nudge scaling before transitioning to large-shift jump (150ms).
+  private static readonly AV_SYNC_MAX_ERROR_MS = 150;
+  // Maximum shift (ms) applied per frame during large A/V desync (> 150ms).
+  // Slew-rate clamped to ±2.0ms/frame to preserve smooth pacing (~28.5 - 31.5 FPS at 30fps) and eliminate stutter.
+  private static readonly AV_SYNC_LARGE_SHIFT_MAX_MS = 2.0;
+  // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
+  private static readonly AV_SYNC_KP =
+    FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -308,17 +323,6 @@ export class FramePacer {
         earliestNextSlot = this.lastScheduledTimeMs + deltaMs;
       }
 
-      // 音声が再生中の場合、音声クロックとの誤差を毎フレーム最大±2.0msだけ微小補正（PLLスムーズ吸着）
-      // 画面をガクッと止めることなく、滑らかな30fpsのまま完全に音声へ収束させる
-      if (playingAudioPts !== null && playingAudioPts > 0) {
-        const audioTargetTime = now + (ptsUs - playingAudioPts) / 1000;
-        const errorMs = audioTargetTime - earliestNextSlot;
-        if (Math.abs(errorMs) >= 15) {
-          const nudge = Math.sign(errorMs) * Math.min(2.0, Math.abs(errorMs) * 0.15);
-          earliestNextSlot += nudge;
-        }
-      }
-
       const targetRealtimeSlot =
         this.additionalDelayMs > 0
           ? Math.max(now + this.additionalDelayMs, earliestNextSlot)
@@ -511,20 +515,21 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
-            if (Math.abs(syncErrorMs) > 150) {
+            if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
               // 150ms以上の顕著なズレ:
-              // 重要: 未来方向 (syncErrorMs > 0) への無制限シフトは画面フリーズ (0〜4FPS落ち込み) を招くため、
-              // 1フレームあたりの最大遅延量 (maxPositiveShift) を厳格にクランプし、スムーズな描画を維持しながら音声吸着させる！
-              const maxPositiveShift = 2.5; // 最大+2.5ms/frame (約27.5fps以上を維持し、画面を一切止めずに音声へ収束)
+              // 重要: プラス/マイナス両方向のスルーレートを ±2.0ms/frame に厳格にクランプすることで、
+              // 描画間隔（約31.3ms〜35.3ms）を維持し、画面フリーズや急激な前倒しによる激しいカクつき（スタッター）を
+              // 完全に防ぎながら、音声へスムーズに吸着・同期させる。
+              const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
               const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
               const maxNegativeShift = -Math.min(
-                16.0,
+                FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
                 Math.max(0, currentHeadSchedule - (now + minCatchupIntervalMs)),
               );
               const pllShift =
                 syncErrorMs > 0
                   ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
-                  : Math.max(maxNegativeShift, syncErrorMs);
+                  : Math.max(maxNegativeShift, syncErrorMs * 0.15);
 
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
@@ -543,9 +548,14 @@ export class FramePacer {
                 }
               }
               totalShift += pllShift;
-            } else if (Math.abs(syncErrorMs) >= 15) {
-              // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
-              const rawNudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+            } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
+              // 45ms〜150ms のズレに対して、毎フレーム最大 ±0.75ms (約2%の微小速度調整) の範囲で
+              // 画面の等速性を完全に保護しながら滑らかにリップシンクを収束させる (比例ゲイン Kp = 0.005)。
+              const errorMagnitude = Math.min(
+                FramePacer.AV_SYNC_MAX_ERROR_MS,
+                Math.abs(syncErrorMs),
+              );
+              const rawNudge = Math.sign(syncErrorMs) * (errorMagnitude * FramePacer.AV_SYNC_KP);
               const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
               const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {

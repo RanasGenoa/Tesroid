@@ -40,7 +40,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PULSE_SINK=virtual_sink \
     PUBLIC_DIR=/app/server/public
 
-# 1. Install system utilities, repositories, and dependencies
+# 1. Install system utilities, Intel GPU repositories (VA-API 1.22+ for Chrome 131+), and dependencies
 RUN apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
         curl \
@@ -55,12 +55,22 @@ RUN apt-get update -qq && \
         pulseaudio-utils \
         alsa-utils \
         ffmpeg \
-        intel-media-va-driver-non-free \
-        vainfo \
+        libpci3 \
+        pciutils \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
-        procps \
-        && rm -rf /var/lib/apt/lists/* && \
+        procps && \
+    mkdir -p /usr/share/keyrings && \
+    curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy client" > /etc/apt/sources.list.d/intel-gpu-jammy.list && \
+    apt-get update -qq && \
+    apt-get install -qq -y --no-install-recommends \
+        libva2 \
+        libva-drm2 \
+        intel-media-va-driver-non-free \
+        vainfo && \
+    rm -rf /var/lib/apt/lists/* && \
+    echo "LIBVA_DRIVER_NAME=iHD" > /etc/libva.conf && \
     sed -i 's|</applications>|  <application class="*">\n    <decor>no</decor>\n    <position force="yes">\n      <x>0</x>\n      <y>0</y>\n    </position>\n    <fullscreen>no</fullscreen>\n    <maximized>no</maximized>\n  </application>\n</applications>|' /etc/xdg/openbox/rc.xml
 
 # 2. Install Node.js 20 LTS
@@ -81,8 +91,8 @@ RUN curl -sSL https://dl.google.com/linux/direct/google-chrome-stable_current_am
 # 4. Configure PulseAudio for container execution
 RUN echo "default-server = unix:/tmp/pulse-socket" > /etc/pulse/client.conf && \
     echo "autospawn = no" >> /etc/pulse/client.conf && \
-    echo "default-fragments = 2" > /etc/pulse/daemon.conf && \
-    echo "default-fragment-size-msec = 10" >> /etc/pulse/daemon.conf && \
+    echo "default-fragments = 4" > /etc/pulse/daemon.conf && \
+    echo "default-fragment-size-msec = 25" >> /etc/pulse/daemon.conf && \
     echo "enable-deferred-volume = no" >> /etc/pulse/daemon.conf && \
     echo "flat-volumes = no" >> /etc/pulse/daemon.conf && \
     echo "exit-idle-time = -1" >> /etc/pulse/daemon.conf && \

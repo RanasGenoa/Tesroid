@@ -475,40 +475,57 @@ export function renderStreamingView(
     return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
+  const setTextIfChanged = (el: HTMLElement | null, text: string) => {
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  const setClassIfChanged = (el: HTMLElement | null, cls: string) => {
+    if (el && el.className !== cls) el.className = cls;
+  };
+  const setTitleIfChanged = (el: HTMLElement | null, title: string) => {
+    if (el && el.title !== title) el.title = title;
+  };
+  const setColorIfChanged = (el: HTMLElement | null, color: string) => {
+    if (el && el.style.color !== color) el.style.color = color;
+  };
+
   const updateHudConnStatus = () => {
     if (!connText || !connDot) return;
+
+    let targetClass = '';
+    let targetText = '';
+    let targetTitle = '';
+
     if (!wsClient.isConnected()) {
-      connDot.className = 'status-dot status-offline';
-      connText.textContent = '切断';
-      if (hudConn) hudConn.title = '接続状態: 切断';
-      return;
-    }
-
-    const elapsed = performance.now() - lastPacketReceivedTime;
-
-    if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
-      // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
-      connDot.className = 'status-dot status-offline';
-      connText.textContent = '瞬断中';
-      if (hudConn) {
-        hudConn.title = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
-      }
-    } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
-      // パケット到着間隔の拡大、または回線RTTが警告レベル
-      connDot.className = 'status-dot status-warning';
-      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-      if (hudConn) {
-        hudConn.title = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
-      }
+      targetClass = 'status-dot status-offline';
+      targetText = '切断';
+      targetTitle = '接続状態: 切断';
     } else {
-      // パケットが円滑に届いており回線も良好
-      connDot.className = 'status-dot status-online';
-      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-      if (hudConn) {
-        hudConn.title = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
+      const elapsed = performance.now() - lastPacketReceivedTime;
+
+      if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
+        // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
+        targetClass = 'status-dot status-offline';
+        targetText = '瞬断中';
+        targetTitle = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
+      } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
+        // パケット到着間隔の拡大、または回線RTTが警告レベル
+        targetClass = 'status-dot status-warning';
+        targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+        targetTitle = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
+      } else {
+        // パケットが円滑に届いており回線も良好
+        targetClass = 'status-dot status-online';
+        targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+        targetTitle = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
       }
     }
+
+    setClassIfChanged(connDot, targetClass);
+    setTextIfChanged(connText, targetText);
+    setTitleIfChanged(hudConn, targetTitle);
   };
+
+  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'live' | '' = '';
 
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
@@ -530,30 +547,49 @@ export function renderStreamingView(
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
 
-    hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+    const currentState = isInteractive
+      ? 'interactive'
+      : isBuffering
+        ? 'buffering'
+        : localMs >= 800 || serverMs >= 600
+          ? 'catchup'
+          : 'live';
 
-    if (isInteractive) {
-      hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = 'DIRECT LIVE';
-      hudLiveBtn.title =
+    if (currentState !== lastHudLiveState) {
+      lastHudLiveState = currentState;
+      hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+      if (currentState === 'buffering') {
+        hudLiveBtn.classList.add('is-buffering');
+      } else if (currentState === 'catchup') {
+        hudLiveBtn.classList.add('is-catchup');
+      }
+
+      const targetDotClass =
+        currentState === 'buffering' ? 'status-dot status-warning' : 'status-dot status-online';
+      setClassIfChanged(hudLiveDot, targetDotClass);
+    }
+
+    let targetText = 'LIVE';
+    let targetTitle = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
+
+    if (currentState === 'interactive') {
+      targetText = 'DIRECT LIVE';
+      targetTitle =
         '操作優先: バッファゼロ・超低遅延モードで動作中 (タップで最新LIVE同期・再エンコード)';
-    } else if (isBuffering) {
-      hudLiveBtn.classList.add('is-buffering');
-      hudLiveDot.className = 'status-dot status-warning';
-      hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
-    } else if (localMs >= 800 || serverMs >= 600) {
-      hudLiveBtn.classList.add('is-catchup');
-      hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
+    } else if (currentState === 'buffering') {
+      targetText = `WAIT L:${localSec}s S:${serverSec}s`;
+      targetTitle = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
+    } else if (currentState === 'catchup') {
+      targetText = `BUF L:${localSec}s S:${serverSec}s`;
+      targetTitle = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
     } else {
-      hudLiveDot.className = 'status-dot status-online';
       const cushionMs =
         typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
-      hudLiveText.textContent = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
-      hudLiveBtn.title = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
+      targetText = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
     }
+
+    setTextIfChanged(hudLiveText, targetText);
+    setTitleIfChanged(hudLiveBtn, targetTitle);
   };
 
   framePacer.onBufferingChange = () => {
@@ -579,6 +615,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    lastHudLiveState = '';
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
     }
@@ -1094,19 +1131,27 @@ export function renderStreamingView(
 
     const jitterDelay = jitterController.getCurrentDelayMs();
 
+    let targetFpsText = '';
+    let targetFpsColor = '';
+    let targetFpsTitle = '';
+
     if (lastRenderElapsed > 1500) {
-      fpsBadge.textContent = '静止中';
-      fpsBadge.style.color = '#8e8e93';
-      fpsBadge.title = '実測描画フレームレート';
+      targetFpsText = '静止中';
+      targetFpsColor = '#8e8e93';
+      targetFpsTitle = '実測描画フレームレート';
     } else {
-      fpsBadge.textContent = `${fps} FPS`;
+      targetFpsText = `${fps} FPS`;
       const healthyThreshold = Math.round(targetFps * 0.8);
-      fpsBadge.style.color = fps >= healthyThreshold ? '#34c759' : '#ff9500';
-      fpsBadge.title =
+      targetFpsColor = fps >= healthyThreshold ? '#34c759' : '#ff9500';
+      targetFpsTitle =
         jitterDelay > 0
           ? `実測描画フレームレート (ジッタバッファ: +${jitterDelay}ms)`
           : '実測描画フレームレート';
     }
+
+    setTextIfChanged(fpsBadge, targetFpsText);
+    setColorIfChanged(fpsBadge, targetFpsColor);
+    setTitleIfChanged(fpsBadge, targetFpsTitle);
 
     updateHudConnStatus();
     updateHudLiveStatus();
@@ -1115,16 +1160,17 @@ export function renderStreamingView(
     const audioStats = audioPlayer.getStats();
     if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
       if (hudMuteBtn) {
-        hudMuteBtn.style.color = '#ff9500';
-        hudMuteBtn.title = 'タップして音声を再生';
+        setColorIfChanged(hudMuteBtn, '#ff9500');
+        setTitleIfChanged(hudMuteBtn, 'タップして音声を再生');
       }
       if (!hasPromptedAudioUnlock) {
         hasPromptedAudioUnlock = true;
         showToast('画面または音量アイコンをタップすると音声を再生します', 'info');
       }
     } else if (hudMuteBtn && audioStats.state === 'running') {
-      hudMuteBtn.style.color = '';
-      hudMuteBtn.title = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
+      const targetMuteTitle = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
+      setColorIfChanged(hudMuteBtn, '');
+      setTitleIfChanged(hudMuteBtn, targetMuteTitle);
     }
   }, 1000);
 

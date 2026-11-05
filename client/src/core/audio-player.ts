@@ -46,6 +46,9 @@ export class AudioPlayer {
   private static readonly MAX_CATCHUP_BUFFER_SEC = 30.0;
   // Hardware lookahead when starting playback from currentTime (25ms)
   private static readonly HARDWARE_LOOKAHEAD_SEC = 0.025;
+  // Tolerance before declaring an underrun in PLAYING state (40ms = 2 Opus packets).
+  // Prevents false-positive underrun triggers and anchor resets from routine main-thread micro-stalls.
+  private static readonly UNDERRUN_TOLERANCE_SEC = 0.04;
   private additionalDelaySec: number = 0;
 
   // Stats
@@ -392,10 +395,10 @@ export class AudioPlayer {
     }
 
     // Underrun detection in PLAYING state:
-    // If nextPlayTime has been overtaken by hardware currentTime (buffer exhausted / underrun),
+    // If nextPlayTime has been overtaken by hardware currentTime by more than UNDERRUN_TOLERANCE_SEC (buffer completely exhausted / genuine network stall),
     // do NOT schedule isolated 20ms chunks into future holes (which cuts effective volume by ~80%).
     // Instead, seamlessly switch to cushion rebuilding mode so audio resumes with a healthy contiguous cushion!
-    if (this.isPlaying && this.nextPlayTime < now + 0.005) {
+    if (this.isPlaying && now - this.nextPlayTime > AudioPlayer.UNDERRUN_TOLERANCE_SEC) {
       const gapMs = Math.round((now - this.nextPlayTime) * 1000);
       if (gapMs > 500 && this.telemetry?.isEnabled()) {
         this.telemetry.recordAudio('major_underrun', {
