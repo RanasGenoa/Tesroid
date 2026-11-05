@@ -46,7 +46,7 @@ export async function encoderRestart(token: string): Promise<void> {
       ) {
         window.dispatchEvent(new CustomEvent('tesroid:stream-reset'));
       }
-      showToast('配信プロセスをクリーン再起動しました（映像・音声リセット中）', 'success');
+      showToast('最新状態へ同期し、再エンコードを実行しました', 'success');
     } else {
       showToast(`再エンコードに失敗しました (HTTP ${res.status})`, 'error');
     }

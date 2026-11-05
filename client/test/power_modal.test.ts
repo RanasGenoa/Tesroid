@@ -221,7 +221,7 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
     expect(mockWsClient.send).not.toHaveBeenCalled();
   });
 
-  it('(b)「⚡再エンコード」クリックで fetch が /api/encoder/restart・POST・Bearer 付きで呼ばれる', async () => {
+  it('(b) 停止モーダルから「⚡再エンコード」が削除され、HUDバッファ状態（hud-live-btn）タップでバッファ破棄と再エンコードが一括実行される', async () => {
     renderStreamingView(
       mockContainer,
       mockWsClient,
@@ -235,22 +235,28 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
     const stopBtn = elementRegistry.get('hud-stop-btn');
     stopBtn.click();
 
+    // 停止モーダル内から再エンコードボタンが削除されていること
     const encoderRestartBtn = elementRegistry.get('power-encoder-restart-btn');
-    expect(encoderRestartBtn).toBeDefined();
+    expect(encoderRestartBtn).toBeUndefined();
 
-    // 「⚡再エンコード」ボタンをクリック
-    encoderRestartBtn.click();
+    // HUD バッファ状態ボタンをクリック
+    const hudLiveBtn = elementRegistry.get('hud-live-btn');
+    expect(hudLiveBtn).toBeDefined();
+    hudLiveBtn.click();
+
+    // 1. 未再生バッファ破棄 (JUMP_TO_LIVE) コマンドが送信されること
+    expect(mockWsClient.send).toHaveBeenCalledWith(
+      ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }),
+    );
 
     // 非同期 fetch の完了を待つ
     await new Promise((resolve) => setTimeout(resolve, 10));
 
+    // 2. /api/encoder/restart が POST・Bearer 付きで呼ばれること
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/encoder/restart', {
       method: 'POST',
       headers: { Authorization: `Bearer ${testToken}` },
     });
-
-    // モーダルは開いたまま（連続操作可能）
-    expect(elementRegistry.get('power-menu-modal')).toBeDefined();
   });
 
   it('(c)「ワンタップ停止」で wsClient.send が1回呼ばれる', () => {

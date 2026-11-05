@@ -60,13 +60,13 @@ export function renderStreamingView(
         <button id="hud-toggle-btn" class="hud-btn" title="HUDバー展開/最小化" style="font-weight: 700; font-size: 13px;">HUD</button>
 
         <!-- Connection Status & RTT -->
-        <span id="hud-conn" class="hud-badge" title="接続状態と遅延往復時間">
+        <span id="hud-conn" class="hud-badge" title="接続状態と瞬間ネットワーク往復時間 (RTT)">
           <span id="hud-conn-dot" class="status-dot status-online"></span>
           <span id="hud-conn-text">--ms</span>
         </span>
 
         <!-- Playback Mode / Catch-up Buffer Status & One-Tap Jump to LIVE -->
-        <button id="hud-live-btn" class="hud-live-btn" title="再生状態 / タップで未再生バッファを破棄して最新LIVE映像へジャンプ">
+        <button id="hud-live-btn" class="hud-live-btn" title="再生状態 / タップで最新LIVE同期・再エンコードを一括実行">
           <span id="hud-live-dot" class="status-dot status-online"></span>
           <span id="hud-live-text">LIVE</span>
         </button>
@@ -130,6 +130,7 @@ export function renderStreamingView(
 
   const canvas = document.getElementById('stream-canvas') as HTMLCanvasElement;
   const streamViewport = document.getElementById('stream-viewport') as HTMLElement;
+  const hudConn = document.getElementById('hud-conn') as HTMLElement;
   const connDot = document.getElementById('hud-conn-dot') as HTMLElement;
   const connText = document.getElementById('hud-conn-text') as HTMLElement;
   const hudLiveBtn = document.getElementById('hud-live-btn') as HTMLButtonElement;
@@ -149,7 +150,10 @@ export function renderStreamingView(
   type BrowserPowerState = 'active' | 'sleeping' | 'waking';
   let browserPowerState: BrowserPowerState = 'active';
 
-  let currentRtt = 0;
+  let instantRtt = 0;
+  let minRtt = 999;
+  let rttHistory: number[] = [];
+  let lastPacketReceivedTime = performance.now();
   let pingId = 0;
   let targetFps = 30;
   let currentFps = 30;
@@ -465,6 +469,41 @@ export function renderStreamingView(
     return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
+  const updateHudConnStatus = () => {
+    if (!connText || !connDot) return;
+    if (!wsClient.isConnected()) {
+      connDot.className = 'status-dot status-offline';
+      connText.textContent = '切断';
+      if (hudConn) hudConn.title = '接続状態: 切断';
+      return;
+    }
+
+    const elapsed = performance.now() - lastPacketReceivedTime;
+
+    if (elapsed > 1200) {
+      // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
+      connDot.className = 'status-dot status-offline';
+      connText.textContent = '瞬断中';
+      if (hudConn) {
+        hudConn.title = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
+      }
+    } else if (elapsed > 400 || instantRtt >= 90) {
+      // パケット到着間隔の拡大、または回線RTTが警告レベル
+      connDot.className = 'status-dot status-warning';
+      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+      if (hudConn) {
+        hudConn.title = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
+      }
+    } else {
+      // パケットが円滑に届いており回線も良好
+      connDot.className = 'status-dot status-online';
+      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+      if (hudConn) {
+        hudConn.title = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
+      }
+    }
+  };
+
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
 
@@ -490,23 +529,24 @@ export function renderStreamingView(
     if (isInteractive) {
       hudLiveDot.className = 'status-dot status-online';
       hudLiveText.textContent = 'DIRECT LIVE';
-      hudLiveBtn.title = '操作優先: バッファゼロ・超低遅延モードで動作中';
+      hudLiveBtn.title =
+        '操作優先: バッファゼロ・超低遅延モードで動作中 (タップで最新LIVE同期・再エンコード)';
     } else if (isBuffering) {
       hudLiveBtn.classList.add('is-buffering');
       hudLiveDot.className = 'status-dot status-warning';
       hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへジャンプ`;
+      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
     } else if (localMs >= 800 || serverMs >= 600) {
       hudLiveBtn.classList.add('is-catchup');
       hudLiveDot.className = 'status-dot status-online';
       hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへ同期`;
+      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
     } else {
       hudLiveDot.className = 'status-dot status-online';
       const cushionMs =
         typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
       hudLiveText.textContent = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
-      hudLiveBtn.title = 'リアルタイム再生中 (タップで最新フレームへ同期)';
+      hudLiveBtn.title = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
     }
   };
 
@@ -542,10 +582,20 @@ export function renderStreamingView(
     }
   };
 
-  hudLiveBtn?.addEventListener('click', (e) => {
+  hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
     resetHudDimTimer();
-    executeJumpToLive(false);
+    executeJumpToLive(true);
+    const token =
+      authToken ||
+      localStorage.getItem('tesroid_token') ||
+      sessionStorage.getItem('tesroid_token') ||
+      '';
+    try {
+      await encoderRestart(token);
+    } catch (err: any) {
+      console.error('[StreamingView] Failed to restart encoder on live tap:', err);
+    }
   });
 
   // 2. Auto-Hybrid Dynamic Latency Controller:
@@ -607,6 +657,7 @@ export function renderStreamingView(
 
   // 5. Connect WebSocket streams
   const handleVideo = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
+    lastPacketReceivedTime = performance.now();
     metricsCollector.recordVideoPacket(msg.data.byteLength);
     jitterController.recordVideoArrival();
     decoder.handlePacket(msg.flags, msg.pts, msg.data);
@@ -616,6 +667,7 @@ export function renderStreamingView(
   };
 
   const handleAudio = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
+    lastPacketReceivedTime = performance.now();
     metricsCollector.recordAudioPacket();
     audioPlayer.handleAudioPacket(msg.flags, msg.pts, msg.data);
   };
@@ -695,9 +747,6 @@ export function renderStreamingView(
             <button id="power-resume-btn" class="btn btn-primary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
               ${ICONS.play} 再開 (Resume)
             </button>
-            <button id="power-encoder-restart-btn" class="btn btn-secondary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;" title="通信瞬断等による映像ノイズを修復するために動画エンコーダを再起動します">
-              ${ICONS.zap} 再エンコード
-            </button>
             <button id="power-browser-restart-btn" class="btn btn-danger" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
               ${ICONS.refresh} ブラウザ再起動
             </button>
@@ -747,12 +796,6 @@ export function renderStreamingView(
       resume(token);
     });
 
-    overlay.querySelector('#power-encoder-restart-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      resetHudDimTimer();
-      encoderRestart(token);
-    });
-
     overlay.querySelector('#power-browser-restart-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
@@ -800,11 +843,11 @@ export function renderStreamingView(
   window.addEventListener('tesroid:stream-reset', onStreamResetEvent);
 
   const handleControl = (msg: any) => {
+    lastPacketReceivedTime = performance.now();
     if (msg.type === 'PONG') {
       const now = performance.now();
-      currentRtt = Math.max(1, Math.round(now - msg.clientTime));
-      metricsCollector.updateRtt(currentRtt);
-      jitterController.updateRtt(currentRtt);
+      const rawRtt = Math.max(1, Math.round(now - msg.clientTime));
+
       if (typeof msg.catchupQueueMs === 'number') {
         serverCatchupQueueMs = Math.max(0, msg.catchupQueueMs);
       }
@@ -814,11 +857,26 @@ export function renderStreamingView(
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;
       }
-      if (connText) connText.textContent = `${currentRtt}ms`;
-      if (connDot) {
-        connDot.className =
-          currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
+
+      // 瞬間ネットワーク往復時間（Instantaneous RTT）の測定と表示 (Issue 24):
+      // バッファ蓄積中（CATCHUP中やサーバー送出キュー滞留時）は、単一WebSocket内のパケット待ち行列遅延によって
+      // rawRtt が肥大化するため、キュー滞留時間と回線自体の遅延（物理RTT）を明確に分離する。
+      const hasQueueDelay = serverMode === 'CATCHUP' || serverCatchupQueueMs > 0;
+      if (!hasQueueDelay) {
+        rttHistory.push(rawRtt);
+        if (rttHistory.length > 8) rttHistory.shift();
+        minRtt = Math.min(...rttHistory);
+        instantRtt = instantRtt === 0 ? rawRtt : Math.round(instantRtt * 0.7 + rawRtt * 0.3);
+      } else {
+        // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ
+        if (instantRtt === 0) {
+          instantRtt = minRtt < 999 ? minRtt : Math.min(rawRtt, 60);
+        }
       }
+      metricsCollector.updateRtt(instantRtt);
+      jitterController.updateRtt(instantRtt);
+
+      updateHudConnStatus();
       updateHudLiveStatus();
     } else if (msg.type === 'AUTH_SUCCESS') {
       sendBufferFeedback(true);
@@ -915,8 +973,14 @@ export function renderStreamingView(
       );
     }
 
+    lastPacketReceivedTime = performance.now();
+    instantRtt = 0;
+    minRtt = 999;
+    rttHistory = [];
+
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
+    if (hudConn) hudConn.title = '接続状態: 接続中 (RTT計測待機)';
     if (browserPowerState === 'sleeping') {
       showSleepingScreen();
     } else if (totalBufferedMs <= 0) {
@@ -934,6 +998,7 @@ export function renderStreamingView(
   const handleClose = () => {
     if (connText) connText.textContent = '一時切断';
     if (connDot) connDot.className = 'status-dot status-warning';
+    if (hudConn) hudConn.title = '接続状態: 一時切断';
 
     const pendingBufferedMs =
       typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
@@ -959,6 +1024,7 @@ export function renderStreamingView(
           avSync.reset();
           if (connText) connText.textContent = '切断';
           if (connDot) connDot.className = 'status-dot status-offline';
+          if (hudConn) hudConn.title = '接続状態: 切断';
           showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
         }
       }, totalBufferedMs);
@@ -970,6 +1036,7 @@ export function renderStreamingView(
       avSync.reset();
       if (connText) connText.textContent = '切断';
       if (connDot) connDot.className = 'status-dot status-offline';
+      if (hudConn) hudConn.title = '接続状態: 切断';
       showOverlay('サーバーと切断されました', '自動再接続を試行しています...', true);
     }
   };
@@ -986,10 +1053,11 @@ export function renderStreamingView(
     wsClient.send(ClientProtocol.packPing(pingId));
   }, 1000);
 
-  // 6.1. Periodic Buffer Feedback & Flow Control Loop (250msごとに残量・再生PTSフィードバック)
+  // 6.1. Periodic Buffer Feedback & Flow Control Loop (250msごとに残量・再生PTSフィードバック & 通信状態評価)
   const ackTimer = setInterval(() => {
     if (wsClient.isConnected()) {
       sendBufferFeedback();
+      updateHudConnStatus();
     }
   }, 250);
 
@@ -1017,6 +1085,7 @@ export function renderStreamingView(
           : '実測描画フレームレート';
     }
 
+    updateHudConnStatus();
     updateHudLiveStatus();
 
     // Audio Autoplay & Unlock Guidance for Tesla Browser

@@ -1,5 +1,5 @@
 import { ICONS, showToast } from './icons.js';
-import { browserRestart, encoderRestart, resume, sleep } from './power-actions.js';
+import { browserRestart, resume, sleep } from './power-actions.js';
 
 export function openSettingsWithAuth(
   container: HTMLElement,
@@ -78,9 +78,6 @@ async function showSettingsModal(
           </button>
           <button id="power-resume-btn" class="btn btn-primary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
             ${ICONS.play} 再開 (Resume)
-          </button>
-          <button id="encoder-restart-btn" class="btn btn-secondary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;" title="通信瞬断等による映像ノイズを修復するために動画エンコーダを再起動します">
-            ${ICONS.zap} 再エンコード
           </button>
           <button id="browser-restart-btn" class="btn btn-danger" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
             ${ICONS.refresh} ブラウザ再起動
@@ -349,10 +346,6 @@ async function showSettingsModal(
 
   overlay.querySelector('#power-resume-btn')?.addEventListener('click', () => {
     resume(token);
-  });
-
-  overlay.querySelector('#encoder-restart-btn')?.addEventListener('click', () => {
-    encoderRestart(token);
   });
 
   overlay.querySelector('#browser-restart-btn')?.addEventListener('click', () => {
