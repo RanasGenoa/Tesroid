@@ -64,10 +64,11 @@ jobs:
             exit 0
           fi
 
-          # Linux カーネル引数長制限 (MAX_ARG_STRLEN: 128KB) 対策として 80KB で安全に切り詰め (バイト単位)
-          if [ "$DIFF_SIZE" -gt 80000 ]; then
-            head -c 80000 "$WORKDIR/pr_diff.patch" > "$WORKDIR/truncated_diff.patch"
-            echo -e "\n\n... (差分が上限を超えたため一部省略されました)" >> "$WORKDIR/truncated_diff.patch"
+          # 異常に巨大なバイナリ混入等の DoS 事故防止上限 (Gemini 3.8 Flash の 1M トークン上限に合わせた 3MB セーフティキャップ)
+          # 通常のコード PR (数千〜数万行) は切り詰められず 100% 全差分が対象となります
+          if [ "$DIFF_SIZE" -gt 3000000 ]; then
+            head -c 3000000 "$WORKDIR/pr_diff.patch" > "$WORKDIR/truncated_diff.patch"
+            echo -e "\n\n... (差分が 3MB のセーフティキャップを超えたため一部省略されました)" >> "$WORKDIR/truncated_diff.patch"
             mv "$WORKDIR/truncated_diff.patch" "$WORKDIR/pr_diff.patch"
           fi
 
@@ -139,8 +140,8 @@ jobs:
           # 2. コンテナ保護: シェル設定ファイルの書き込み防止
           chmod a-w ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true
 
-          # 3. Antigravity CLI をテキスト生成専用モードで実行 (プロンプト引数渡し)
-          if ! agy -p "$(cat "$WORKDIR/prompt.txt")" --model gemini-3.8-flash > "$WORKDIR/review_comment.md"; then
+          # 3. Antigravity CLI をテキスト生成専用モードで実行 (OS引数長制限を回避するため標準入力からストリーム入力)
+          if ! agy --model gemini-3.8-flash < "$WORKDIR/prompt.txt" > "$WORKDIR/review_comment.md"; then
             echo "::error::Antigravity review generation failed."
             exit 1
           fi
