@@ -586,6 +586,7 @@ export function renderStreamingView(
   };
 
   let isRestartingEncoder = false;
+  let encoderRestartTimer: any = null;
 
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -607,8 +608,10 @@ export function renderStreamingView(
     } catch (err: unknown) {
       console.error('[StreamingView] Failed to restart encoder on live tap:', err);
     } finally {
-      setTimeout(() => {
+      if (encoderRestartTimer) clearTimeout(encoderRestartTimer);
+      encoderRestartTimer = setTimeout(() => {
         isRestartingEncoder = false;
+        encoderRestartTimer = null;
       }, 1000);
     }
   });
@@ -885,7 +888,7 @@ export function renderStreamingView(
       } else {
         // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ
         if (instantRtt === 0) {
-          instantRtt = minRtt < 999 ? minRtt : Math.min(rawRtt, 60);
+          instantRtt = minRtt < 999 ? minRtt : rawRtt;
         }
       }
       metricsCollector.updateRtt(instantRtt);
@@ -1251,6 +1254,7 @@ export function renderStreamingView(
   // Cleanup function when navigating away
   return () => {
     if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
+    if (encoderRestartTimer) clearTimeout(encoderRestartTimer);
     document.getElementById('power-menu-modal')?.remove();
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
