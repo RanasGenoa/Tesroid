@@ -11,7 +11,7 @@ import { TouchMapper } from '../input/touch-mapper.js';
 import { ClientProtocol } from '../transport/protocol.js';
 import type { WsClient } from '../transport/ws-client.js';
 import { ICONS, showToast } from './icons.js';
-import { browserRestart, encoderRestart, resume, sleep } from './power-actions.js';
+import { browserRestart, encoderRestart } from './power-actions.js';
 
 const PACKET_STALL_WARN_THRESHOLD_MS = 400;
 const PACKET_LOSS_TIMEOUT_MS = 1200;
@@ -29,7 +29,75 @@ export function renderStreamingView(
 ): () => void {
   container.innerHTML = `
     <div id="screen-container">
-      <!-- Dedicated Stream Viewport above the Bottom HUD Dock -->
+      <!-- Dedicated Slim Top HUD Dock Bar -->
+      <div id="stream-hud" class="stream-hud">
+        <!-- Left Group: Stop Button & Telemetry Cluster -->
+        <div class="hud-left-group">
+          <!-- Always visible Power & Stop Button (Leftmost) -->
+          <button id="hud-stop-btn" class="hud-btn hud-stop-btn" title="省電力 & リソース制御">${ICONS.power} 停止</button>
+
+          <div class="hud-divider"></div>
+
+          <!-- Telemetry Cluster (Smart & Cyber Instrument Style) -->
+          <div class="hud-telemetry-cluster">
+            <!-- Connection Status & Instant RTT with Signal Bars -->
+            <span id="hud-conn" class="hud-badge hud-conn-badge" title="接続状態と瞬間ネットワーク往復時間 (RTT)">
+              <span id="hud-signal" class="signal-meter signal-level-4">
+                <span class="signal-bar bar-1"></span>
+                <span class="signal-bar bar-2"></span>
+                <span class="signal-bar bar-3"></span>
+                <span class="signal-bar bar-4"></span>
+              </span>
+              <span id="hud-conn-dot" class="status-dot status-online"></span>
+              <span id="hud-conn-text" class="telemetry-value">--ms</span>
+            </span>
+
+            <!-- Playback Mode / Catch-up Buffer Status & One-Tap Jump to LIVE -->
+            <button id="hud-live-btn" class="hud-live-btn" title="再生状態 / タップで最新LIVE同期・再エンコードを一括実行">
+              <span id="hud-live-dot" class="status-dot status-online pulse"></span>
+              <span id="hud-live-text" class="telemetry-value">LIVE</span>
+            </button>
+
+            <!-- Render FPS Real-time -->
+            <span id="hud-fps" class="hud-badge telemetry-value" title="実測描画フレームレート">-- FPS</span>
+
+            <!-- Stream Quality Quick Toggles -->
+            <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで 30 / 60 切替)">
+              ${ICONS.zap} <span id="hud-fps-val" class="telemetry-value">30</span>
+            </button>
+            <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.5M 〜 2.0M 切替)">
+              ${ICONS.signal} <span id="hud-bitrate-val" class="telemetry-value">1.0M</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Group: Navigation, Search, Settings -->
+        <div class="hud-right-group">
+          <!-- Browser Navigation Controls -->
+          <button id="hud-back-btn" class="hud-btn" title="戻る (Back)">${ICONS.back}</button>
+          <button id="hud-home-btn" class="hud-btn" title="YouTube ホーム (Home)">${ICONS.home}</button>
+
+          <div class="hud-divider"></div>
+
+          <!-- YouTube Search Box (Direct Search Page Navigation) -->
+          <form id="hud-search-form" class="hud-search-form" style="display: flex; align-items: center; gap: 4px; margin: 0;">
+            <input
+              id="hud-search-input"
+              type="text"
+              placeholder="YouTube検索..."
+              autocomplete="off"
+            />
+            <button id="hud-search-btn" class="hud-btn hud-search-submit-btn" type="submit" title="YouTube検索を実行">${ICONS.search}</button>
+          </form>
+
+          <div class="hud-divider"></div>
+
+          <!-- Settings Console Trigger -->
+          <button id="hud-settings-btn" class="hud-btn" title="設定コンソール">${ICONS.settings}</button>
+        </div>
+      </div>
+
+      <!-- Dedicated Stream Viewport below the Top HUD Dock -->
       <div id="stream-viewport" class="stream-viewport">
         <!-- Direct rendering target for Tesla Browser (Canvas 2D) -->
         <canvas id="stream-canvas"></canvas>
@@ -59,84 +127,13 @@ export function renderStreamingView(
           </div>
         </div>
       </div>
-
-      <!-- Dedicated Bottom HUD Dock Bar (Browser Controls) -->
-      <div id="stream-hud" class="stream-hud">
-        <!-- Collapse / Expand Toggle Button -->
-        <button id="hud-toggle-btn" class="hud-btn" title="HUDバー展開/最小化" style="font-weight: 700; font-size: 13px;">HUD</button>
-
-        <!-- Connection Status & RTT -->
-        <span id="hud-conn" class="hud-badge" title="接続状態と瞬間ネットワーク往復時間 (RTT)">
-          <span id="hud-conn-dot" class="status-dot status-online"></span>
-          <span id="hud-conn-text">--ms</span>
-        </span>
-
-        <!-- Playback Mode / Catch-up Buffer Status & One-Tap Jump to LIVE -->
-        <button id="hud-live-btn" class="hud-live-btn" title="再生状態 / タップで最新LIVE同期・再エンコードを一括実行">
-          <span id="hud-live-dot" class="status-dot status-online"></span>
-          <span id="hud-live-text">LIVE</span>
-        </button>
-
-        <!-- Render FPS -->
-        <span id="hud-fps" class="hud-badge hud-collapsible" title="実測描画フレームレート">-- FPS</span>
-
-        <!-- Stream Quality Quick Toggles -->
-        <button id="hud-fps-toggle" class="hud-pill-btn hud-collapsible" title="フレームレート切替 (タップで 30 / 60 切替)">
-          ${ICONS.zap} <span id="hud-fps-val">30</span>
-        </button>
-        <button id="hud-bitrate-toggle" class="hud-pill-btn hud-collapsible" title="ビットレート切替 (タップで 0.5M 〜 2.0M 切替)">
-          ${ICONS.signal} <span id="hud-bitrate-val">1.0M</span>
-        </button>
-
-        <!-- Browser Navigation Controls -->
-        <div class="hud-divider hud-collapsible"></div>
-        <button id="hud-back-btn" class="hud-btn hud-collapsible" title="戻る (Back)">${ICONS.back}</button>
-        <button id="hud-reload-btn" class="hud-btn hud-collapsible" title="再読み込み (Reload)">${ICONS.reload}</button>
-        <button id="hud-home-btn" class="hud-btn hud-collapsible" title="YouTube ホーム (Home)">${ICONS.home}</button>
-
-        <!-- Media Fullscreen Toggle & Window Fit Toggle -->
-        <button id="hud-cinema-btn" class="hud-pill-btn hud-collapsible" title="動画全画面切替 (YouTubeプレイヤー拡大)">${ICONS.cinema} 全画面</button>
-        <button id="hud-fit-toggle" class="hud-btn hud-collapsible" title="画面フィット切替">${ICONS.fullscreen}</button>
-
-        <!-- Audio Mute Quick Toggle -->
-        <button id="hud-mute-btn" class="hud-btn hud-collapsible" title="音声ミュート切替">${ICONS.volume}</button>
-
-        <!-- YouTube Search Box (Direct Search Page Navigation) -->
-        <div class="hud-divider hud-collapsible"></div>
-        <form id="hud-search-form" class="hud-collapsible" style="display: flex; align-items: center; gap: 4px; margin: 0;">
-          <input
-            id="hud-search-input"
-            type="text"
-            placeholder="YouTube検索..."
-            autocomplete="off"
-            style="
-              background: rgba(0, 0, 0, 0.45);
-              border: 1px solid rgba(255, 255, 255, 0.2);
-              border-radius: 8px;
-              color: #fff;
-              padding: 6px 10px;
-              font-size: 13px;
-              width: 115px;
-              outline: none;
-              transition: all 0.2s;
-            "
-          />
-          <button id="hud-search-btn" class="hud-btn" type="submit" title="YouTube検索を実行" style="padding: 6px 10px;">${ICONS.search}</button>
-        </form>
-
-        <!-- Always visible Power & Stop Button -->
-        <div class="hud-divider"></div>
-        <button id="hud-stop-btn" class="hud-btn hud-stop-btn" title="省電力 & リソース制御">${ICONS.stop} 停止</button>
-
-        <!-- Settings Console Trigger -->
-        <button id="hud-settings-btn" class="hud-btn hud-collapsible" title="設定コンソール">${ICONS.settings}</button>
-      </div>
     </div>
   `;
 
   const canvas = document.getElementById('stream-canvas') as HTMLCanvasElement;
   const streamViewport = document.getElementById('stream-viewport') as HTMLElement;
   const hudConn = document.getElementById('hud-conn') as HTMLElement;
+  const hudSignal = document.getElementById('hud-signal') as HTMLElement;
   const connDot = document.getElementById('hud-conn-dot') as HTMLElement;
   const connText = document.getElementById('hud-conn-text') as HTMLElement;
   const hudLiveBtn = document.getElementById('hud-live-btn') as HTMLButtonElement;
@@ -174,8 +171,6 @@ export function renderStreamingView(
   const hudBitrateVal = document.getElementById('hud-bitrate-val') as HTMLElement;
 
   const streamHud = document.getElementById('stream-hud') as HTMLElement;
-  const hudToggleBtn = document.getElementById('hud-toggle-btn') as HTMLButtonElement;
-  const hudMuteBtn = document.getElementById('hud-mute-btn') as HTMLButtonElement;
   let hasPromptedAudioUnlock = false;
 
   // Auto-dimming HUD after 4 seconds of inactivity
@@ -195,15 +190,6 @@ export function renderStreamingView(
   window.addEventListener('pointerdown', resetHudDimTimer);
   resetHudDimTimer();
 
-  hudToggleBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!streamHud) return;
-    const isCollapsed = streamHud.classList.toggle('collapsed');
-    hudToggleBtn.textContent = isCollapsed ? 'MENU' : 'HUD';
-    hudToggleBtn.title = isCollapsed ? 'HUDバーを展開' : 'HUDバーを最小化';
-    resetHudDimTimer();
-  });
-
   const formatBitrateLabel = (bps: number): string => {
     if (bps === 500000) return '0.5M';
     if (bps === 750000) return '0.75M';
@@ -217,15 +203,6 @@ export function renderStreamingView(
     if (hudFpsVal) hudFpsVal.textContent = `${currentFps}`;
     if (hudBitrateVal) hudBitrateVal.textContent = formatBitrateLabel(currentBitrate);
   };
-
-  // Mute button handler
-  hudMuteBtn?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await audioPlayer.unlock();
-    const isMuted = audioPlayer.toggleMute();
-    hudMuteBtn.innerHTML = isMuted ? ICONS.volumeMute : ICONS.volume;
-    showToast(isMuted ? '音声をミュートしました' : '音声ミュートを解除しました', 'info');
-  });
 
   // 1. Core Streaming Pipeline
   const telemetryCollector = new TelemetryCollector();
@@ -492,11 +469,13 @@ export function renderStreamingView(
     if (!connText || !connDot) return;
 
     let targetClass = '';
+    let signalLevelClass = 'signal-meter signal-level-4';
     let targetText = '';
     let targetTitle = '';
 
     if (!wsClient.isConnected()) {
       targetClass = 'status-dot status-offline';
+      signalLevelClass = 'signal-meter signal-level-0';
       targetText = '切断';
       targetTitle = '接続状態: 切断';
     } else {
@@ -505,22 +484,28 @@ export function renderStreamingView(
       if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
         // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
         targetClass = 'status-dot status-offline';
+        signalLevelClass = 'signal-meter signal-level-0';
         targetText = '瞬断中';
         targetTitle = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
       } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
         // パケット到着間隔の拡大、または回線RTTが警告レベル
         targetClass = 'status-dot status-warning';
+        signalLevelClass =
+          instantRtt >= 130 ? 'signal-meter signal-level-1' : 'signal-meter signal-level-2';
         targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
         targetTitle = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
       } else {
         // パケットが円滑に届いており回線も良好
         targetClass = 'status-dot status-online';
+        signalLevelClass =
+          instantRtt >= 60 ? 'signal-meter signal-level-3' : 'signal-meter signal-level-4';
         targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
         targetTitle = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
       }
     }
 
     setClassIfChanged(connDot, targetClass);
+    setClassIfChanged(hudSignal, signalLevelClass);
     setTextIfChanged(connText, targetText);
     setTitleIfChanged(hudConn, targetTitle);
   };
@@ -786,29 +771,21 @@ export function renderStreamingView(
     overlay.id = 'power-menu-modal';
 
     overlay.innerHTML = `
-      <div class="card" style="max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; position: relative;">
+      <div class="card" style="max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; position: relative; border-radius: 4px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <h3 style="margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px;">
             ${ICONS.power} 省電力 & リソース制御
           </h3>
-          <button id="power-modal-close-btn" class="hud-btn" style="font-size: 18px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;">✕</button>
+          <button id="power-modal-close-btn" class="hud-btn" style="font-size: 18px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 3px;">✕</button>
         </div>
         <p style="font-size: 13px; margin-bottom: 16px; color: var(--text-muted);">車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。</p>
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; font-weight: 700;">
-            ${ICONS.stop} ワンタップ停止
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 700; border-radius: 4px;">
+            ${ICONS.stop} ワンタップ停止 (省電力スタンバイ)
           </button>
-          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button id="power-sleep-btn" class="btn btn-secondary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-              ${ICONS.pause} 一時停止 (CPU 0%)
-            </button>
-            <button id="power-resume-btn" class="btn btn-primary" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-              ${ICONS.play} 再開 (Resume)
-            </button>
-            <button id="power-browser-restart-btn" class="btn btn-danger" style="flex: 1; min-width: 140px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-              ${ICONS.refresh} ブラウザ再起動
-            </button>
-          </div>
+          <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
+            ${ICONS.refresh} ブラウザ＆配信再起動
+          </button>
         </div>
       </div>
     `;
@@ -842,21 +819,10 @@ export function renderStreamingView(
       triggerStop();
     });
 
-    overlay.querySelector('#power-sleep-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      resetHudDimTimer();
-      sleep(token);
-    });
-
-    overlay.querySelector('#power-resume-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      resetHudDimTimer();
-      resume(token);
-    });
-
     overlay.querySelector('#power-browser-restart-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
+      closePowerModal();
       browserRestart(token);
     });
 
@@ -1159,18 +1125,10 @@ export function renderStreamingView(
     // Audio Autoplay & Unlock Guidance for Tesla Browser
     const audioStats = audioPlayer.getStats();
     if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
-      if (hudMuteBtn) {
-        setColorIfChanged(hudMuteBtn, '#ff9500');
-        setTitleIfChanged(hudMuteBtn, 'タップして音声を再生');
-      }
       if (!hasPromptedAudioUnlock) {
         hasPromptedAudioUnlock = true;
-        showToast('画面または音量アイコンをタップすると音声を再生します', 'info');
+        showToast('画面をタップすると音声を再生します', 'info');
       }
-    } else if (hudMuteBtn && audioStats.state === 'running') {
-      const targetMuteTitle = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
-      setColorIfChanged(hudMuteBtn, '');
-      setTitleIfChanged(hudMuteBtn, targetMuteTitle);
     }
   }, 1000);
 
@@ -1180,55 +1138,9 @@ export function renderStreamingView(
     wsClient.send(ClientProtocol.packCommand({ type: 'NAVIGATE_BACK' }));
   });
 
-  document.getElementById('hud-reload-btn')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    wsClient.send(ClientProtocol.packCommand({ type: 'RELOAD' }));
-  });
-
   document.getElementById('hud-home-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     wsClient.send(ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'https://www.youtube.com' }));
-  });
-
-  document.getElementById('hud-cinema-btn')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    wsClient.send(ClientProtocol.packCommand({ type: 'TOGGLE_CINEMA' }));
-  });
-
-  // Dynamic Resolution Fullscreen Sync
-  const fitToggleBtn = document.getElementById('hud-fit-toggle') as HTMLButtonElement;
-  const updateFullscreenBtnState = () => {
-    if (document.fullscreenElement) {
-      fitToggleBtn.innerHTML = ICONS.minimize;
-      fitToggleBtn.title = '全画面解除';
-    } else {
-      fitToggleBtn.innerHTML = ICONS.fullscreen;
-      fitToggleBtn.title = '画面最大化';
-    }
-  };
-
-  const onFullscreenChange = () => {
-    updateFullscreenBtnState();
-    sendResize(true);
-  };
-  document.addEventListener('fullscreenchange', onFullscreenChange);
-
-  fitToggleBtn?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      if (!document.fullscreenElement) {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen();
-        }
-      } else {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        }
-      }
-    } catch (err) {
-      console.warn('Fullscreen toggle failed, falling back to immediate resize sync:', err);
-    }
-    setTimeout(() => sendResize(true), 150);
   });
 
   // Search / Text Input Bar Handlers (Direct YouTube Search Navigation)
@@ -1255,11 +1167,11 @@ export function renderStreamingView(
   });
 
   searchInput?.addEventListener('focus', () => {
-    searchInput.style.width = '180px';
+    searchInput.style.width = '160px';
     searchInput.style.borderColor = '#3e6ae1';
   });
   searchInput?.addEventListener('blur', () => {
-    searchInput.style.width = '115px';
+    searchInput.style.width = '120px';
     searchInput.style.borderColor = 'rgba(255, 255, 255, 0.2)';
   });
 
@@ -1312,7 +1224,6 @@ export function renderStreamingView(
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
     window.removeEventListener('resize', onResize);
-    document.removeEventListener('fullscreenchange', onFullscreenChange);
     window.removeEventListener('tesroid:settings-updated', onSettingsUpdated);
     window.removeEventListener('tesroid:stream-reset', onStreamResetEvent);
     if (saveSettingsTimer) clearTimeout(saveSettingsTimer);
