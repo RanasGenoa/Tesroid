@@ -26,6 +26,7 @@ export class AdaptiveJitterController {
   private lastRampTime: number = 0;
   private lastNotifiedDelay: number = 0;
   private isCatchup: boolean = false;
+  private sortScratch: number[] = [];
 
   constructor(options: AdaptiveJitterOptions = {}) {
     this.historySize = options.historySize ?? 20;
@@ -80,6 +81,22 @@ export class AdaptiveJitterController {
   }
 
   /**
+   * 配列アロケーションなしで中央値と95パーセンタイルの差分（ジッタ）を算出
+   */
+  private computeJitter(arr: number[], minLen: number): number {
+    const len = arr.length;
+    if (len < minLen) return 0;
+    this.sortScratch.length = len;
+    for (let i = 0; i < len; i++) {
+      this.sortScratch[i] = arr[i];
+    }
+    this.sortScratch.sort((a, b) => a - b);
+    const median = this.sortScratch[Math.floor(len * 0.5)];
+    const p95 = this.sortScratch[Math.min(len - 1, Math.floor(len * 0.95))];
+    return Math.max(0, p95 - median);
+  }
+
+  /**
    * 直近のAU到着間隔とRTTからジッタを推定し、目標追加遅延を計算
    */
   private evaluateJitter(): void {
@@ -88,22 +105,8 @@ export class AdaptiveJitterController {
       return;
     }
 
-    let arrivalJitter = 0;
-    if (this.arrivalIntervals.length >= 5) {
-      const sorted = [...this.arrivalIntervals].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length * 0.5)];
-      const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-      arrivalJitter = Math.max(0, p95 - median);
-    }
-
-    let rttJitter = 0;
-    if (this.rttHistory.length >= 3) {
-      const sortedRtt = [...this.rttHistory].sort((a, b) => a - b);
-      const medianRtt = sortedRtt[Math.floor(sortedRtt.length * 0.5)];
-      const p95Rtt = sortedRtt[Math.min(sortedRtt.length - 1, Math.floor(sortedRtt.length * 0.95))];
-      rttJitter = Math.max(0, p95Rtt - medianRtt);
-    }
-
+    const arrivalJitter = this.computeJitter(this.arrivalIntervals, 5);
+    const rttJitter = this.computeJitter(this.rttHistory, 3);
     const estimatedJitter = Math.max(arrivalJitter, rttJitter);
 
     if (estimatedJitter >= this.jitterThresholdMs) {

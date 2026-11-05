@@ -26,6 +26,7 @@ export class AudioPlayer {
   // Jitter buffer queue & contiguous timeline
   private bufferQueue: { buffer: AudioBuffer; ptsUs: number }[] = [];
   private overflowQueue: { buffer: AudioBuffer; ptsUs: number }[] = [];
+  private totalOverflowDurationSec: number = 0;
   private scheduledSources: Set<AudioBufferSourceNode> = new Set();
   private isPlaying: boolean = false;
   private nextPlayTime: number = 0;
@@ -340,14 +341,29 @@ export class AudioPlayer {
     this.enqueueAndSchedule(buffer, ptsUs);
   }
 
+  private pushOverflow(item: { buffer: AudioBuffer; ptsUs: number }): void {
+    this.overflowQueue.push(item);
+    this.totalOverflowDurationSec += item.buffer.duration;
+  }
+
+  private shiftOverflow(): { buffer: AudioBuffer; ptsUs: number } | undefined {
+    const item = this.overflowQueue.shift();
+    if (item) {
+      this.totalOverflowDurationSec = Math.max(
+        0,
+        this.totalOverflowDurationSec - item.buffer.duration,
+      );
+    }
+    return item;
+  }
+
   public getBufferedAudioMs(): number {
     if (!this.ctx || this.ctx.state !== 'running') return 0;
     const now = this.ctx.currentTime;
     const scheduledAheadSec = this.isPlaying ? Math.max(0, this.nextPlayTime - now) : 0;
     let queuedSec = 0;
     for (const item of this.bufferQueue) queuedSec += item.buffer.duration;
-    for (const item of this.overflowQueue) queuedSec += item.buffer.duration;
-    return Math.round((scheduledAheadSec + queuedSec) * 1000);
+    return Math.round((scheduledAheadSec + queuedSec + this.totalOverflowDurationSec) * 1000);
   }
 
   /**
@@ -365,7 +381,7 @@ export class AudioPlayer {
     // If video is currently paused waiting for stall cushion, hold incoming audio in overflowQueue
     // so audio NEVER starts playing ahead while video is waiting!
     if (isVideoBuffering) {
-      this.overflowQueue.push({ buffer, ptsUs });
+      this.pushOverflow({ buffer, ptsUs });
       this.trimOverflowIfNeeded();
       return;
     }
@@ -429,7 +445,7 @@ export class AudioPlayer {
     const isVideoBuffering =
       typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (this.overflowQueue.length > 0 || isVideoBuffering || this.isAudioAheadOfVideo(ptsUs)) {
-      this.overflowQueue.push({ buffer, ptsUs });
+      this.pushOverflow({ buffer, ptsUs });
       this.trimOverflowIfNeeded();
       return;
     }
@@ -445,7 +461,7 @@ export class AudioPlayer {
     const maxScheduleWindow = AudioPlayer.MAX_SCHEDULE_AHEAD_SEC + this.additionalDelaySec;
 
     if (bufferedAhead > maxScheduleWindow) {
-      this.overflowQueue.push({ buffer, ptsUs });
+      this.pushOverflow({ buffer, ptsUs });
       this.trimOverflowIfNeeded();
       return;
     }
@@ -490,7 +506,7 @@ export class AudioPlayer {
         if (headPts > 0 && (targetAudioPtsUs - headPts) / 1000 > 60) {
           if (droppedStaleCount === 0) firstDroppedPtsUs = headPts;
           lastDroppedPtsUs = headPts;
-          this.overflowQueue.shift();
+          this.shiftOverflow();
           droppedStaleCount++;
         } else {
           break;
@@ -530,25 +546,23 @@ export class AudioPlayer {
       if (startAt - now > maxScheduleWindow) {
         break;
       }
-      const next = this.overflowQueue.shift()!;
+      const next = this.shiftOverflow()!;
       this.scheduleSourceNode(next.buffer, next.ptsUs, startAt);
       this.nextPlayTime = startAt + next.buffer.duration;
     }
   }
 
   private trimOverflowIfNeeded(): void {
-    let totalOverflowSec = 0;
-    for (const item of this.overflowQueue) {
-      totalOverflowSec += item.buffer.duration;
-    }
-    while (totalOverflowSec > AudioPlayer.MAX_CATCHUP_BUFFER_SEC && this.overflowQueue.length > 1) {
-      const removed = this.overflowQueue.shift()!;
-      totalOverflowSec -= removed.buffer.duration;
-      if (this.telemetry?.isEnabled()) {
+    while (
+      this.totalOverflowDurationSec > AudioPlayer.MAX_CATCHUP_BUFFER_SEC &&
+      this.overflowQueue.length > 1
+    ) {
+      const removed = this.shiftOverflow();
+      if (removed && this.telemetry?.isEnabled()) {
         this.telemetry.recordAudio('trim_overflow', {
           droppedPtsUs: removed.ptsUs,
           droppedDurationSec: removed.buffer.duration,
-          remainingOverflowSec: Math.round(totalOverflowSec * 10) / 10,
+          remainingOverflowSec: Math.round(this.totalOverflowDurationSec * 10) / 10,
         });
       }
     }
@@ -602,6 +616,7 @@ export class AudioPlayer {
     this.isPlaying = false;
     this.bufferQueue = [];
     this.overflowQueue = [];
+    this.totalOverflowDurationSec = 0;
     this.nextPlayTime = 0;
     this.stopAllScheduledSources();
     this.avSync.clearAudioAnchor();

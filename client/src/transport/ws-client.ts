@@ -26,6 +26,21 @@ export type WsEventMap = {
   control: (msg: ControlMessage) => void;
 };
 
+const sharedTextDecoder = new TextDecoder();
+
+function readBigInt64BE(bytes: Uint8Array, offset: number): bigint {
+  const u64 =
+    (BigInt(bytes[offset]) << 56n) |
+    (BigInt(bytes[offset + 1]) << 48n) |
+    (BigInt(bytes[offset + 2]) << 40n) |
+    (BigInt(bytes[offset + 3]) << 32n) |
+    (BigInt(bytes[offset + 4]) << 24n) |
+    (BigInt(bytes[offset + 5]) << 16n) |
+    (BigInt(bytes[offset + 6]) << 8n) |
+    BigInt(bytes[offset + 7]);
+  return u64 >= 0x8000000000000000n ? u64 - 0x10000000000000000n : u64;
+}
+
 export class WsClient {
   private ws: WebSocket | null = null;
   private url: string;
@@ -118,13 +133,12 @@ export class WsClient {
     if (bytes.length === 0) return;
 
     const channel = bytes[0];
-    const view = new DataView(buffer);
 
     switch (channel) {
       case WSS_CHANNEL.VIDEO: {
         if (bytes.length < 10) return;
         const flags = bytes[1];
-        const pts = view.getBigInt64(2, false);
+        const pts = readBigInt64BE(bytes, 2);
         const data = bytes.subarray(10);
         this.emit('video', { flags, pts, data });
         break;
@@ -133,14 +147,14 @@ export class WsClient {
       case WSS_CHANNEL.AUDIO: {
         if (bytes.length < 10) return;
         const flags = bytes[1];
-        const pts = view.getBigInt64(2, false);
+        const pts = readBigInt64BE(bytes, 2);
         const data = bytes.subarray(10);
         this.emit('audio', { flags, pts, data });
         break;
       }
 
       case WSS_CHANNEL.CONTROL_RESPONSE: {
-        const jsonStr = new TextDecoder().decode(bytes.subarray(1));
+        const jsonStr = sharedTextDecoder.decode(bytes.subarray(1));
         try {
           const parsed = JSON.parse(jsonStr);
           this.emit('control', parsed);

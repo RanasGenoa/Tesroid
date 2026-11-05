@@ -9,28 +9,39 @@ export class H264Parser {
    */
   public static extractNalUnits(data: Uint8Array): NalUnit[] {
     const len = data.length;
-    const startCodes: { start: number; headerLen: number }[] = [];
+    if (len < 3) return [];
 
-    // Find 3-byte or 4-byte start codes (0x000001 or 0x00000001)
+    const nalUnits: NalUnit[] = [];
+    let prevNalStart = -1;
+    let prevNalHeaderLen = 0;
+
+    // Single-pass scan for 3-byte or 4-byte start codes (0x000001 or 0x00000001)
     for (let i = 0; i < len - 2; i++) {
       if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
         const is4 = i > 0 && data[i - 1] === 0;
-        startCodes.push({
-          start: is4 ? i - 1 : i,
-          headerLen: is4 ? 4 : 3,
-        });
+        const curStart = is4 ? i - 1 : i;
+        const curHeaderLen = is4 ? 4 : 3;
+
+        if (prevNalStart !== -1) {
+          const start = prevNalStart + prevNalHeaderLen;
+          const end = curStart;
+          if (start < end) {
+            const nalData = data.subarray(start, end);
+            nalUnits.push({ type: nalData[0] & 0x1f, data: nalData });
+          }
+        }
+
+        prevNalStart = curStart;
+        prevNalHeaderLen = curHeaderLen;
       }
     }
 
-    const nalUnits: NalUnit[] = [];
-    for (let i = 0; i < startCodes.length; i++) {
-      const start = startCodes[i].start + startCodes[i].headerLen;
-      const end = i + 1 < startCodes.length ? startCodes[i + 1].start : len;
-
+    if (prevNalStart !== -1) {
+      const start = prevNalStart + prevNalHeaderLen;
+      const end = len;
       if (start < end) {
         const nalData = data.subarray(start, end);
-        const type = nalData[0] & 0x1f;
-        nalUnits.push({ type, data: nalData });
+        nalUnits.push({ type: nalData[0] & 0x1f, data: nalData });
       }
     }
 
@@ -40,31 +51,74 @@ export class H264Parser {
   /**
    * Convert Annex-B NAL units to AVCC format (4-byte length prefix)
    * Parameter sets (SPS/PPS) are filtered out since they are passed via AVCDecoderConfigurationRecord.
+   * Optimized single-pass parser with zero intermediate object allocations.
    */
   public static annexBToAvcc(data: Uint8Array): Uint8Array {
-    const nalUnits = H264Parser.extractNalUnits(data);
-    if (nalUnits.length === 0) return data;
+    const len = data.length;
+    if (len < 4) return data;
 
-    // In AVCC elementary stream, only slice/SEI NAL units are included in sample chunks.
-    // SPS (7) and PPS (8) are in AVCDecoderConfigurationRecord, AUD (9) is Annex-B only.
-    const slices = nalUnits.filter((n) => n.type !== 7 && n.type !== 8 && n.type !== 9);
-    if (slices.length === 0) return new Uint8Array(0);
-
+    // Flat array to store slice boundary pairs [nalStart, nalEnd] without object wrappers
+    const sliceOffsets: number[] = [];
     let totalLength = 0;
-    for (const s of slices) {
-      totalLength += 4 + s.data.length;
+    let prevNalStart = -1;
+    let prevNalHeaderLen = 0;
+
+    for (let i = 0; i < len - 2; i++) {
+      if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+        const is4 = i > 0 && data[i - 1] === 0;
+        const curStart = is4 ? i - 1 : i;
+        const curHeaderLen = is4 ? 4 : 3;
+
+        if (prevNalStart !== -1) {
+          const nalStart = prevNalStart + prevNalHeaderLen;
+          const nalEnd = curStart;
+          if (nalStart < nalEnd) {
+            const type = data[nalStart] & 0x1f;
+            // Filter out SPS (7), PPS (8), AUD (9)
+            if (type !== 7 && type !== 8 && type !== 9) {
+              sliceOffsets.push(nalStart, nalEnd);
+              totalLength += 4 + (nalEnd - nalStart);
+            }
+          }
+        }
+
+        prevNalStart = curStart;
+        prevNalHeaderLen = curHeaderLen;
+      }
+    }
+
+    if (prevNalStart !== -1) {
+      const nalStart = prevNalStart + prevNalHeaderLen;
+      const nalEnd = len;
+      if (nalStart < nalEnd) {
+        const type = data[nalStart] & 0x1f;
+        if (type !== 7 && type !== 8 && type !== 9) {
+          sliceOffsets.push(nalStart, nalEnd);
+          totalLength += 4 + (nalEnd - nalStart);
+        }
+      }
+    } else {
+      // No start code found in buffer
+      return data;
+    }
+
+    if (sliceOffsets.length === 0) {
+      return new Uint8Array(0);
     }
 
     const avcc = new Uint8Array(totalLength);
     let offset = 0;
-    for (const s of slices) {
-      const len = s.data.length;
-      avcc[offset++] = (len >> 24) & 0xff;
-      avcc[offset++] = (len >> 16) & 0xff;
-      avcc[offset++] = (len >> 8) & 0xff;
-      avcc[offset++] = len & 0xff;
-      avcc.set(s.data, offset);
-      offset += len;
+    for (let i = 0; i < sliceOffsets.length; i += 2) {
+      const nalStart = sliceOffsets[i];
+      const nalEnd = sliceOffsets[i + 1];
+      const nalLen = nalEnd - nalStart;
+
+      avcc[offset++] = (nalLen >>> 24) & 0xff;
+      avcc[offset++] = (nalLen >>> 16) & 0xff;
+      avcc[offset++] = (nalLen >>> 8) & 0xff;
+      avcc[offset++] = nalLen & 0xff;
+      avcc.set(data.subarray(nalStart, nalEnd), offset);
+      offset += nalLen;
     }
 
     return avcc;

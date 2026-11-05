@@ -40,8 +40,8 @@ export class CanvasRenderer {
       this.resize(frame.displayWidth, frame.displayHeight);
     }
 
-    // Render frame
-    this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+    // Render frame (using cached dimensions instead of querying DOM canvas width/height properties)
+    this.ctx.drawImage(frame, 0, 0, this.currentWidth, this.currentHeight);
 
     if (!this.hasRenderedFirstFrame) {
       this.hasRenderedFirstFrame = true;
