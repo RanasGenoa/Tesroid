@@ -475,6 +475,19 @@ export function renderStreamingView(
     return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
+  const setTextIfChanged = (el: HTMLElement | null, text: string) => {
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  const setClassIfChanged = (el: HTMLElement | null, cls: string) => {
+    if (el && el.className !== cls) el.className = cls;
+  };
+  const setTitleIfChanged = (el: HTMLElement | null, title: string) => {
+    if (el && el.title !== title) el.title = title;
+  };
+  const setColorIfChanged = (el: HTMLElement | null, color: string) => {
+    if (el && el.style.color !== color) el.style.color = color;
+  };
+
   const updateHudConnStatus = () => {
     if (!connText || !connDot) return;
 
@@ -507,15 +520,9 @@ export function renderStreamingView(
       }
     }
 
-    if (connDot.className !== targetClass) {
-      connDot.className = targetClass;
-    }
-    if (connText.textContent !== targetText) {
-      connText.textContent = targetText;
-    }
-    if (hudConn && hudConn.title !== targetTitle) {
-      hudConn.title = targetTitle;
-    }
+    setClassIfChanged(connDot, targetClass);
+    setTextIfChanged(connText, targetText);
+    setTitleIfChanged(hudConn, targetTitle);
   };
 
   let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'live' | '' = '';
@@ -559,9 +566,7 @@ export function renderStreamingView(
 
       const targetDotClass =
         currentState === 'buffering' ? 'status-dot status-warning' : 'status-dot status-online';
-      if (hudLiveDot.className !== targetDotClass) {
-        hudLiveDot.className = targetDotClass;
-      }
+      setClassIfChanged(hudLiveDot, targetDotClass);
     }
 
     let targetText = 'LIVE';
@@ -583,12 +588,8 @@ export function renderStreamingView(
       targetText = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
     }
 
-    if (hudLiveText.textContent !== targetText) {
-      hudLiveText.textContent = targetText;
-    }
-    if (hudLiveBtn.title !== targetTitle) {
-      hudLiveBtn.title = targetTitle;
-    }
+    setTextIfChanged(hudLiveText, targetText);
+    setTitleIfChanged(hudLiveBtn, targetTitle);
   };
 
   framePacer.onBufferingChange = () => {
@@ -1148,15 +1149,9 @@ export function renderStreamingView(
           : '実測描画フレームレート';
     }
 
-    if (fpsBadge.textContent !== targetFpsText) {
-      fpsBadge.textContent = targetFpsText;
-    }
-    if (fpsBadge.style.color !== targetFpsColor) {
-      fpsBadge.style.color = targetFpsColor;
-    }
-    if (fpsBadge.title !== targetFpsTitle) {
-      fpsBadge.title = targetFpsTitle;
-    }
+    setTextIfChanged(fpsBadge, targetFpsText);
+    setColorIfChanged(fpsBadge, targetFpsColor);
+    setTitleIfChanged(fpsBadge, targetFpsTitle);
 
     updateHudConnStatus();
     updateHudLiveStatus();
@@ -1165,8 +1160,8 @@ export function renderStreamingView(
     const audioStats = audioPlayer.getStats();
     if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
       if (hudMuteBtn) {
-        if (hudMuteBtn.style.color !== '#ff9500') hudMuteBtn.style.color = '#ff9500';
-        if (hudMuteBtn.title !== 'タップして音声を再生') hudMuteBtn.title = 'タップして音声を再生';
+        setColorIfChanged(hudMuteBtn, '#ff9500');
+        setTitleIfChanged(hudMuteBtn, 'タップして音声を再生');
       }
       if (!hasPromptedAudioUnlock) {
         hasPromptedAudioUnlock = true;
@@ -1174,8 +1169,8 @@ export function renderStreamingView(
       }
     } else if (hudMuteBtn && audioStats.state === 'running') {
       const targetMuteTitle = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
-      if (hudMuteBtn.style.color !== '') hudMuteBtn.style.color = '';
-      if (hudMuteBtn.title !== targetMuteTitle) hudMuteBtn.title = targetMuteTitle;
+      setColorIfChanged(hudMuteBtn, '');
+      setTitleIfChanged(hudMuteBtn, targetMuteTitle);
     }
   }, 1000);
 
