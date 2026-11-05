@@ -137,4 +137,14 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
       }
     }
   });
+
+  it('ensures AI PR review workflow isolates concurrency groups by event name to prevent race cancellation', () => {
+    const aiReviewWorkflow = fs.readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/ai-review.yml'),
+      'utf-8',
+    );
+    expect(aiReviewWorkflow).toMatch(
+      /group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.event_name\s*\}\}-\$\{\{\s*github\.event\.pull_request\.number\s*\|\|\s*github\.ref\s*\}\}/,
+    );
+  });
 });
