@@ -61,6 +61,8 @@ export class FramePacer {
   // Maximum smoothing nudge applied per frame (ms) for minor sync drifts (45ms ~ 150ms).
   // Kept small (<= 0.75ms) so playback speed changes by at most ~2%, preserving frame pacing smoothness.
   private static readonly AV_SYNC_MAX_NUDGE_MS = 0.75;
+  // Sync error limit (ms) for proportional PLL nudge scaling before transitioning to large-shift jump (150ms).
+  private static readonly AV_SYNC_MAX_ERROR_MS = 150;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -540,10 +542,15 @@ export class FramePacer {
               }
               totalShift += pllShift;
             } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
-              // 45ms〜150msのズレのみ、毎フレーム最大±0.75msずつスムーズに吸着（デッドバンド未満はハンチング防止）
-              const rawNudge =
-                Math.sign(syncErrorMs) *
-                Math.min(FramePacer.AV_SYNC_MAX_NUDGE_MS, Math.abs(syncErrorMs) * 0.1);
+              // 45ms〜150ms のズレに対して、毎フレーム最大 ±0.75ms (約2%の微小速度調整) の範囲で
+              // 画面の等速性を完全に保護しながら滑らかにリップシンクを収束させる (比例ゲイン Kp = 0.75 / 150 = 0.005)。
+              const errorMagnitude = Math.min(
+                FramePacer.AV_SYNC_MAX_ERROR_MS,
+                Math.abs(syncErrorMs),
+              );
+              const proportionalGain =
+                FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
+              const rawNudge = Math.sign(syncErrorMs) * (errorMagnitude * proportionalGain);
               const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
               const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {

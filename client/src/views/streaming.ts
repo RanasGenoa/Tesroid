@@ -518,6 +518,8 @@ export function renderStreamingView(
     }
   };
 
+  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'live' | '' = '';
+
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
 
@@ -538,29 +540,54 @@ export function renderStreamingView(
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
 
-    hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+    const currentState = isInteractive
+      ? 'interactive'
+      : isBuffering
+        ? 'buffering'
+        : localMs >= 800 || serverMs >= 600
+          ? 'catchup'
+          : 'live';
 
-    if (isInteractive) {
-      hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = 'DIRECT LIVE';
-      hudLiveBtn.title =
+    if (currentState !== lastHudLiveState) {
+      lastHudLiveState = currentState;
+      hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+      if (currentState === 'buffering') {
+        hudLiveBtn.classList.add('is-buffering');
+      } else if (currentState === 'catchup') {
+        hudLiveBtn.classList.add('is-catchup');
+      }
+
+      const targetDotClass =
+        currentState === 'buffering' ? 'status-dot status-warning' : 'status-dot status-online';
+      if (hudLiveDot.className !== targetDotClass) {
+        hudLiveDot.className = targetDotClass;
+      }
+    }
+
+    let targetText = 'LIVE';
+    let targetTitle = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
+
+    if (currentState === 'interactive') {
+      targetText = 'DIRECT LIVE';
+      targetTitle =
         '操作優先: バッファゼロ・超低遅延モードで動作中 (タップで最新LIVE同期・再エンコード)';
-    } else if (isBuffering) {
-      hudLiveBtn.classList.add('is-buffering');
-      hudLiveDot.className = 'status-dot status-warning';
-      hudLiveText.textContent = `WAIT L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
-    } else if (localMs >= 800 || serverMs >= 600) {
-      hudLiveBtn.classList.add('is-catchup');
-      hudLiveDot.className = 'status-dot status-online';
-      hudLiveText.textContent = `BUF L:${localSec}s S:${serverSec}s`;
-      hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
+    } else if (currentState === 'buffering') {
+      targetText = `WAIT L:${localSec}s S:${serverSec}s`;
+      targetTitle = `受信待機中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
+    } else if (currentState === 'catchup') {
+      targetText = `BUF L:${localSec}s S:${serverSec}s`;
+      targetTitle = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVE同期・再エンコード`;
     } else {
-      hudLiveDot.className = 'status-dot status-online';
       const cushionMs =
         typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
-      hudLiveText.textContent = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
-      hudLiveBtn.title = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
+      targetText = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
+    }
+
+    if (hudLiveText.textContent !== targetText) {
+      hudLiveText.textContent = targetText;
+    }
+    if (hudLiveBtn.title !== targetTitle) {
+      hudLiveBtn.title = targetTitle;
     }
   };
 
@@ -587,6 +614,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    lastHudLiveState = '';
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
     }
@@ -1102,18 +1130,32 @@ export function renderStreamingView(
 
     const jitterDelay = jitterController.getCurrentDelayMs();
 
+    let targetFpsText = '';
+    let targetFpsColor = '';
+    let targetFpsTitle = '';
+
     if (lastRenderElapsed > 1500) {
-      fpsBadge.textContent = '静止中';
-      fpsBadge.style.color = '#8e8e93';
-      fpsBadge.title = '実測描画フレームレート';
+      targetFpsText = '静止中';
+      targetFpsColor = '#8e8e93';
+      targetFpsTitle = '実測描画フレームレート';
     } else {
-      fpsBadge.textContent = `${fps} FPS`;
+      targetFpsText = `${fps} FPS`;
       const healthyThreshold = Math.round(targetFps * 0.8);
-      fpsBadge.style.color = fps >= healthyThreshold ? '#34c759' : '#ff9500';
-      fpsBadge.title =
+      targetFpsColor = fps >= healthyThreshold ? '#34c759' : '#ff9500';
+      targetFpsTitle =
         jitterDelay > 0
           ? `実測描画フレームレート (ジッタバッファ: +${jitterDelay}ms)`
           : '実測描画フレームレート';
+    }
+
+    if (fpsBadge.textContent !== targetFpsText) {
+      fpsBadge.textContent = targetFpsText;
+    }
+    if (fpsBadge.style.color !== targetFpsColor) {
+      fpsBadge.style.color = targetFpsColor;
+    }
+    if (fpsBadge.title !== targetFpsTitle) {
+      fpsBadge.title = targetFpsTitle;
     }
 
     updateHudConnStatus();
@@ -1123,16 +1165,17 @@ export function renderStreamingView(
     const audioStats = audioPlayer.getStats();
     if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
       if (hudMuteBtn) {
-        hudMuteBtn.style.color = '#ff9500';
-        hudMuteBtn.title = 'タップして音声を再生';
+        if (hudMuteBtn.style.color !== '#ff9500') hudMuteBtn.style.color = '#ff9500';
+        if (hudMuteBtn.title !== 'タップして音声を再生') hudMuteBtn.title = 'タップして音声を再生';
       }
       if (!hasPromptedAudioUnlock) {
         hasPromptedAudioUnlock = true;
         showToast('画面または音量アイコンをタップすると音声を再生します', 'info');
       }
     } else if (hudMuteBtn && audioStats.state === 'running') {
-      hudMuteBtn.style.color = '';
-      hudMuteBtn.title = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
+      const targetMuteTitle = audioStats.isMuted ? 'ミュート中 (タップで解除)' : '音声ミュート切替';
+      if (hudMuteBtn.style.color !== '') hudMuteBtn.style.color = '';
+      if (hudMuteBtn.title !== targetMuteTitle) hudMuteBtn.title = targetMuteTitle;
     }
   }, 1000);
 
