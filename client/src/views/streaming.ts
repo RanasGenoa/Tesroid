@@ -604,7 +604,7 @@ export function renderStreamingView(
       '';
     try {
       await encoderRestart(token);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('[StreamingView] Failed to restart encoder on live tap:', err);
     } finally {
       setTimeout(() => {
@@ -880,7 +880,7 @@ export function renderStreamingView(
       if (!hasQueueDelay) {
         rttHistory.push(rawRtt);
         if (rttHistory.length > 8) rttHistory.shift();
-        minRtt = Math.min(...rttHistory);
+        minRtt = rttHistory.length > 0 ? Math.min(...rttHistory) : rawRtt;
         instantRtt = instantRtt === 0 ? rawRtt : Math.round(instantRtt * 0.7 + rawRtt * 0.3);
       } else {
         // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ
