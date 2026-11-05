@@ -106,6 +106,26 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(canvasRendererSrc).toContain('frame.close()');
   });
 
+  it('preserves WebAuthn suppression in extension content script and BrowserManager CDP injection', () => {
+    const extContentJs = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/extension/content.js'),
+      'utf-8',
+    );
+    const managerSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/manager.ts'),
+      'utf-8',
+    );
+
+    // Both extension and CDP injection must intercept WebAuthn to prevent unclosable native bubble dialogs
+    expect(extContentJs).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+    expect(extContentJs).toContain('Passkeys are not supported in this environment');
+    expect(extContentJs).toContain('NotAllowedError');
+
+    expect(managerSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+    expect(managerSrc).toContain('Passkeys are not supported in this environment');
+    expect(managerSrc).toContain('NotAllowedError');
+  });
+
   it('prevents accidental commits of private keys, local developer paths, or Chrome image registry pushes', () => {
     const files = walkWorkspaceFiles(REPO_ROOT);
     const selfPath = path.resolve(__filename);
