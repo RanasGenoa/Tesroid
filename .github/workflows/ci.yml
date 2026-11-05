@@ -35,7 +35,7 @@ jobs:
         run: npm --prefix server ci
 
       - name: Code Quality & Formatting Check (Biome)
-        run: npx @biomejs/biome ci --reporter=github
+        run: npm run lint:ci
 
       - name: TypeScript Type Check (client & server)
         run: npm run typecheck
