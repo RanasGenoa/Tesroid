@@ -23,27 +23,30 @@ jobs:
 
       - name: Extract PR Diff
         id: prepare_diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           # ジョブ固有の一時作業ディレクトリを初期化
           WORKDIR="${{ runner.temp }}/ai-review-${{ github.event.pull_request.number }}"
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
 
-          # ベースブランチとPRブランチを確実に fetch
-          git fetch origin ${{ github.base_ref }} || true
-          if [ -n "${{ github.head_ref }}" ]; then
-            git fetch origin ${{ github.head_ref }} || true
+          # ベースブランチとPRブランチを安全に fetch
+          git fetch origin -- "$BASE_REF" || true
+          if [ -n "$HEAD_REF" ]; then
+            git fetch origin -- "$HEAD_REF" || true
           fi
 
           # 差分比較対象の参照を特定 (head_ref が origin にあれば優先、無ければ HEAD)
-          if git rev-parse --verify origin/${{ github.head_ref }} >/dev/null 2>&1; then
-            TARGET_REF="origin/${{ github.head_ref }}"
+          if git rev-parse --verify "origin/$HEAD_REF" >/dev/null 2>&1; then
+            TARGET_REF="origin/$HEAD_REF"
           else
             TARGET_REF="HEAD"
           fi
 
           # 差分の抽出 (ロックファイル・ビルド成果物を除外)
-          git diff origin/${{ github.base_ref }}...$TARGET_REF \
+          git diff "origin/$BASE_REF...$TARGET_REF" \
             -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
           DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
@@ -120,13 +123,15 @@ jobs:
           # Self-hosted Runner 内の Antigravity CLI (Gemini 3.8 Flash) を実行
           agy -p "$(cat "$WORKDIR/prompt.txt")" --model gemini-3.8-flash > "$WORKDIR/review_comment.md"
 
-      - name: Post Comment to PR
+      - name: Post or Update PR Comment
         if: steps.prepare_diff.outputs.has_changes == 'true'
         env:
           WORKDIR: ${{ steps.prepare_diff.outputs.workdir }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           # レビュー内容が空でないか検証
           if [ ! -s "$WORKDIR/review_comment.md" ]; then
@@ -134,12 +139,33 @@ jobs:
             exit 0
           fi
 
-          cat << 'EOF' >> "$WORKDIR/review_comment.md"
+          # マーカーとフッターを付与
+          cat << 'EOF' > "$WORKDIR/final_comment.md"
+          <!-- antigravity-pr-review -->
+          EOF
+          cat "$WORKDIR/review_comment.md" >> "$WORKDIR/final_comment.md"
+          cat << 'EOF' >> "$WORKDIR/final_comment.md"
 
           ---
           *🤖 Reviewed by **Antigravity** (`gemini-3.8-flash`)*
           EOF
 
-          gh pr comment "$PR_URL" --body-file "$WORKDIR/review_comment.md"
-          # 一時ディレクトリのクリーンアップ
-          rm -rf "$WORKDIR"
+          # 既存のレビューコメントが存在するか検索 (マーカー一致)
+          EXISTING_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("<!-- antigravity-pr-review -->")) | .id' | head -n 1)
+
+          if [ -n "$EXISTING_COMMENT_ID" ]; then
+            echo "Updating existing review comment (ID: $EXISTING_COMMENT_ID)..."
+            gh api \
+              --method PATCH \
+              "repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
+              --field body="$(cat "$WORKDIR/final_comment.md")" > /dev/null
+          else
+            echo "Creating new review comment..."
+            gh pr comment "$PR_URL" --body-file "$WORKDIR/final_comment.md"
+          fi
+
+      - name: Cleanup Workdir
+        if: always() && steps.prepare_diff.outputs.workdir != ''
+        run: |
+          rm -rf "${{ steps.prepare_diff.outputs.workdir }}"
