@@ -477,36 +477,44 @@ export function renderStreamingView(
 
   const updateHudConnStatus = () => {
     if (!connText || !connDot) return;
+
+    let targetClass = '';
+    let targetText = '';
+    let targetTitle = '';
+
     if (!wsClient.isConnected()) {
-      connDot.className = 'status-dot status-offline';
-      connText.textContent = '切断';
-      if (hudConn) hudConn.title = '接続状態: 切断';
-      return;
+      targetClass = 'status-dot status-offline';
+      targetText = '切断';
+      targetTitle = '接続状態: 切断';
+    } else {
+      const elapsed = performance.now() - lastPacketReceivedTime;
+
+      if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
+        // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
+        targetClass = 'status-dot status-offline';
+        targetText = '瞬断中';
+        targetTitle = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
+      } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
+        // パケット到着間隔の拡大、または回線RTTが警告レベル
+        targetClass = 'status-dot status-warning';
+        targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+        targetTitle = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
+      } else {
+        // パケットが円滑に届いており回線も良好
+        targetClass = 'status-dot status-online';
+        targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
+        targetTitle = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
+      }
     }
 
-    const elapsed = performance.now() - lastPacketReceivedTime;
-
-    if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
-      // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
-      connDot.className = 'status-dot status-offline';
-      connText.textContent = '瞬断中';
-      if (hudConn) {
-        hudConn.title = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
-      }
-    } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
-      // パケット到着間隔の拡大、または回線RTTが警告レベル
-      connDot.className = 'status-dot status-warning';
-      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-      if (hudConn) {
-        hudConn.title = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
-      }
-    } else {
-      // パケットが円滑に届いており回線も良好
-      connDot.className = 'status-dot status-online';
-      connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-      if (hudConn) {
-        hudConn.title = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
-      }
+    if (connDot.className !== targetClass) {
+      connDot.className = targetClass;
+    }
+    if (connText.textContent !== targetText) {
+      connText.textContent = targetText;
+    }
+    if (hudConn && hudConn.title !== targetTitle) {
+      hudConn.title = targetTitle;
     }
   };
 

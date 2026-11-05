@@ -308,17 +308,6 @@ export class FramePacer {
         earliestNextSlot = this.lastScheduledTimeMs + deltaMs;
       }
 
-      // 音声が再生中の場合、音声クロックとの誤差を毎フレーム最大±2.0msだけ微小補正（PLLスムーズ吸着）
-      // 画面をガクッと止めることなく、滑らかな30fpsのまま完全に音声へ収束させる
-      if (playingAudioPts !== null && playingAudioPts > 0) {
-        const audioTargetTime = now + (ptsUs - playingAudioPts) / 1000;
-        const errorMs = audioTargetTime - earliestNextSlot;
-        if (Math.abs(errorMs) >= 15) {
-          const nudge = Math.sign(errorMs) * Math.min(2.0, Math.abs(errorMs) * 0.15);
-          earliestNextSlot += nudge;
-        }
-      }
-
       const targetRealtimeSlot =
         this.additionalDelayMs > 0
           ? Math.max(now + this.additionalDelayMs, earliestNextSlot)
@@ -514,8 +503,8 @@ export class FramePacer {
             if (Math.abs(syncErrorMs) > 150) {
               // 150ms以上の顕著なズレ:
               // 重要: 未来方向 (syncErrorMs > 0) への無制限シフトは画面フリーズ (0〜4FPS落ち込み) を招くため、
-              // 1フレームあたりの最大遅延量 (maxPositiveShift) を厳格にクランプし、スムーズな描画を維持しながら音声吸着させる！
-              const maxPositiveShift = 2.5; // 最大+2.5ms/frame (約27.5fps以上を維持し、画面を一切止めずに音声へ収束)
+              // 1フレームあたりの最大遅延量 (maxPositiveShift) を最大+2.5ms/frameに厳格にクランプし、スムーズな描画（>=27.5FPS）を維持しながら音声吸着させる！
+              const maxPositiveShift = 2.5;
               const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
               const maxNegativeShift = -Math.min(
                 16.0,
@@ -543,9 +532,9 @@ export class FramePacer {
                 }
               }
               totalShift += pllShift;
-            } else if (Math.abs(syncErrorMs) >= 15) {
-              // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
-              const rawNudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+            } else if (Math.abs(syncErrorMs) >= 45) {
+              // 45ms〜150msのズレのみ、毎フレーム最大±0.75msずつスムーズに吸着（45ms未満はデッドバンドでハンチング防止）
+              const rawNudge = Math.sign(syncErrorMs) * Math.min(0.75, Math.abs(syncErrorMs) * 0.1);
               const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
               const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {
