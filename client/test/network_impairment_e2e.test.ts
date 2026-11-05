@@ -437,4 +437,98 @@ describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Dro
 
     cleanup();
   });
+
+  it('(6) 20s Outage Recovery with Controlled Pacing: verifies decoder & pacer never drop frames when server paces burst within targetBufferMs (Issue 26)', async () => {
+    let mockInit: any;
+    let hasKeyframe = false;
+    const mockDecoderInstance: any = {
+      configure: vi.fn(() => {
+        hasKeyframe = false;
+      }),
+      decode: vi.fn((chunk: any) => {
+        if (chunk.type === 'key') hasKeyframe = true;
+        if (hasKeyframe) {
+          mockInit?.output?.({
+            timestamp: chunk.timestamp,
+            close: vi.fn(),
+          });
+        }
+      }),
+      reset: vi.fn(() => {
+        hasKeyframe = false;
+      }),
+      close: vi.fn(),
+      decodeQueueSize: 0,
+      state: 'configured',
+    };
+
+    const mockConstructor: any = function (this: any, init: any) {
+      mockInit = init;
+      return mockDecoderInstance;
+    };
+    mockConstructor.isConfigSupported = vi.fn().mockResolvedValue({ supported: true });
+    (globalThis as any).VideoDecoder = mockConstructor;
+    (globalThis as any).EncodedVideoChunk = function (this: any, init: any) {
+      return init;
+    };
+
+    const renderedFrames: number[] = [];
+    const mockRenderer: any = {
+      render: vi.fn((frame: any) => {
+        renderedFrames.push(frame.timestamp);
+      }),
+      getFps: vi.fn(() => 30),
+      getLastRenderTime: vi.fn(() => performance.now()),
+    };
+
+    let droppedCount = 0;
+    const pacer = new FramePacer(mockRenderer, 30);
+    pacer.onFrameDropped = () => {
+      droppedCount++;
+    };
+
+    const decoder = new VideoStreamDecoder(
+      {
+        queueFrame: (f: VideoFrame) => pacer.queueFrame(f),
+        getQueueLength: () => pacer.getQueueLength(),
+      },
+      undefined,
+    );
+    decoder.setBufferDepth({ targetDurationMs: 10000 }); // 10秒 target (maxPendingDurationMs = 16000ms)
+
+    pacer.onFrameProcessed = () => {
+      decoder.pumpPendingPackets();
+    };
+
+    // Config + Keyframe setup in a single initial packet
+    const spsPpsKey = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
+    ]);
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 10_000_000n, spsPpsKey);
+
+    // サーバーからスライディングウィンドウによって送出された 10 秒分のフレーム (300 フレーム) を順次受信
+    const deltaPkt = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
+    for (let i = 1; i < 300; i++) {
+      const pts = 10_000_000n + BigInt(i * 33333);
+      await decoder.handlePacket(0, pts, deltaPkt);
+    }
+
+    // クライアント側でパケットがトリム（GOPドロップ）されず、全パケットが pending またはデコードキューに保持されていること
+    expect(decoder.getPendingPacketsCount()).toBeGreaterThan(250);
+    expect(droppedCount).toBe(0);
+
+    // 2秒分（約60フレーム）の再生を進める (タイマーステップとデコードポンプを連動)
+    for (let step = 0; step < 60; step++) {
+      vi.advanceTimersByTime(34);
+      await decoder.pumpPendingPackets();
+    }
+
+    // 再生が進むにつれてフレームが描画され、一切フレームがドロップされていないこと
+    expect(renderedFrames.length).toBeGreaterThanOrEqual(55);
+    expect(droppedCount).toBe(0);
+
+    pacer.destroy();
+    decoder.close();
+  });
 });

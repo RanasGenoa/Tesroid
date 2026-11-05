@@ -482,13 +482,16 @@ export class WebSocketHandler {
 
   /**
    * クライアントの手元にある確定未再生バッファ量（ミリ秒）を取得
+   *
+   * 【スライディングウィンドウ・In-Flight フロー制御】:
+   * - サーバー送信済み最新映像PTS (lastSentVideoPts) とクライアント再生済みPTS (lastAckPts) の差分により、
+   *   ネットワーク中およびクライアント未再生バッファの合計ミリ秒数をリアルタイムに算出する。
+   * - クライアントから報告された最新のローカルバッファ量 (bufferedMs) と比較し、より大きい方を採用することで、
+   *   フィードバック受信直後 (bufferedMs=0) でもバースト送出がクライアント許容上限 (targetBufferMs) を
+   *   突破しないよう確実に保護する (Issue 26)。
    */
   private getClientInFlightBufferMs(session: ClientSession): number {
-    // 1. クライアントからの定期フィードバック（実際のローカルバッファ秒数）がある場合はそれを第一基準とする
-    if (typeof session.bufferedMs === 'number' && session.bufferedMs >= 0) {
-      return session.bufferedMs;
-    }
-    // 2. 初回接続やテストなど、フィードバック未受信時のみ送信済みPTSとACKの差分で推定
+    let ptsInFlightMs = 0;
     if (
       session.lastSentVideoPts !== null &&
       session.lastSentVideoPts !== undefined &&
@@ -496,9 +499,13 @@ export class WebSocketHandler {
       session.lastAckPts !== undefined &&
       session.lastSentVideoPts > session.lastAckPts
     ) {
-      return Math.round(Number(session.lastSentVideoPts - session.lastAckPts) / 1000);
+      ptsInFlightMs = Math.round(Number(session.lastSentVideoPts - session.lastAckPts) / 1000);
     }
-    return 0;
+
+    const clientReportedMs =
+      typeof session.bufferedMs === 'number' && session.bufferedMs >= 0 ? session.bufferedMs : 0;
+
+    return Math.max(ptsInFlightMs, clientReportedMs);
   }
 
   /**
@@ -510,6 +517,17 @@ export class WebSocketHandler {
   ): void {
     session.mode = 'CATCHUP';
     session.playbackQueue = [...catchupData.frames];
+
+    // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
+    // キュー先頭の映像PTS（フォールバックとして先頭フレームPTS）でアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue 26)
+    const firstVideoPts =
+      catchupData.frames.find((f) => f.type === 'video')?.pts ?? catchupData.frames[0]?.pts;
+    if (
+      session.lastAckPts === null ||
+      (firstVideoPts !== undefined && firstVideoPts > session.lastAckPts)
+    ) {
+      session.lastAckPts = firstVideoPts ?? session.lastAckPts;
+    }
     session.lastSentVideoPts = session.lastAckPts;
     session.isFlowPaused = false;
     const burstEnv = process.env.BURST_CATCHUP_ENABLED;
@@ -662,8 +680,18 @@ export class WebSocketHandler {
     // In burst mode, deliver frames with minimal interval (e.g. 2-4ms) so 10s of buffer pre-fills within 1 second,
     // while keeping timer ticks non-blocking and preserving backpressure limits.
     const frame = session.playbackQueue.shift()!;
-    if (frame.type === 'video') {
-      session.lastSentVideoPts = frame.pts;
+    if (
+      frame.type === 'video' ||
+      session.lastSentVideoPts === null ||
+      session.lastSentVideoPts === undefined
+    ) {
+      if (
+        session.lastSentVideoPts === null ||
+        session.lastSentVideoPts === undefined ||
+        frame.pts > session.lastSentVideoPts
+      ) {
+        session.lastSentVideoPts = frame.pts;
+      }
     }
 
     const packet =

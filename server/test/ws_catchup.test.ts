@@ -493,7 +493,21 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     expect(session.mode).toBe('CATCHUP');
     expect(session.playbackQueue.length).toBeGreaterThan(500);
 
-    // バーストタイマーを進める (3ms ごとにフレーム送信)
+    // クライアントが再接続直後に BUFFER_FEEDBACK (手元バッファ 0ms) を送信 (Issue 26 の再現)
+    const feedbackPayload = Buffer.concat([
+      Buffer.from([WSS_CHANNEL.COMMAND]),
+      Buffer.from(
+        JSON.stringify({
+          type: 'BUFFER_FEEDBACK',
+          bufferedMs: 0,
+          targetBufferMs: 10000,
+          lastRenderedPts: '1000000',
+        }),
+      ),
+    ]);
+    await msgListener(feedbackPayload);
+
+    // バーストタイマーを進める (2ms ごとにフレーム送信)
     // 10秒分 = 約300フレーム 送出されるまで進める (~1000ms)
     vi.advanceTimersByTime(1200);
 
@@ -513,6 +527,175 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     vi.advanceTimersByTime(500);
     // キューがさらに消費されていること
     expect(session.playbackQueue.length).toBeLessThan(250);
+
+    handler.close();
+    vi.useRealTimers();
+  });
+
+  it('should prevent client buffer trim and skip on 25s outage recovery via sliding window (Issue 26)', async () => {
+    vi.useFakeTimers();
+
+    // 25秒分のバッファを用意 (30fps = 750フレーム, pts: 10s 〜 35s)
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 40 });
+    const spsPps = Buffer.from([0, 0, 0, 1, 0x67]);
+    const opusHead = Buffer.from('OpusHead');
+    const keyframe = Buffer.from([0, 0, 0, 1, 0x65]);
+
+    playbackBuffer.addVideo(VIDEO_FLAGS.CONFIG, 0n, spsPps);
+    playbackBuffer.addAudio(AUDIO_FLAGS.CONFIG, 0n, opusHead);
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 10_000_000n, keyframe); // PTS = 10s
+
+    for (let i = 1; i < 750; i++) {
+      const pts = 10_000_000n + BigInt(i * 33333);
+      playbackBuffer.addVideo(0, pts, Buffer.alloc(50));
+      if (i % 2 === 0) {
+        playbackBuffer.addAudio(0, pts, Buffer.alloc(20));
+      }
+    }
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer,
+    );
+
+    // アイドル状態 (CATCHUP 許可)
+    handler.setLastInputAt(Date.now() - 25000);
+
+    const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket);
+    const msgListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+
+    const session = handler.getClientSession(socket)!;
+    session.lastAckPts = 10_000_000n; // 10秒地点まで再生済みで切断された
+    session.targetBufferMs = 10000; // クライアント許容バッファは10秒
+
+    // 1. 回線回復・認証
+    await msgListener(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    expect(session.mode).toBe('CATCHUP');
+    const initialQueueCount = session.playbackQueue.length;
+    expect(initialQueueCount).toBeGreaterThanOrEqual(750);
+
+    // 2. クライアントから手元バッファ枯渇 (0ms) フィードバックが届く
+    await msgListener(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(
+          JSON.stringify({
+            type: 'BUFFER_FEEDBACK',
+            bufferedMs: 0,
+            targetBufferMs: 10000,
+            lastRenderedPts: '10000000',
+          }),
+        ),
+      ]),
+    );
+
+    // 3. バースト送出を進める (10秒分 = 約300映像フレームが送られるまで)
+    vi.advanceTimersByTime(1500);
+
+    // フロー制御が働き、In-Flight が 10秒に達したところで送出が一時停止すること
+    expect(session.isFlowPaused).toBe(true);
+    // サーバーのキューにはまだ残りの約15秒分（約450フレーム以上）が保持されていること！
+    expect(session.playbackQueue.length).toBeGreaterThan(400);
+
+    // In-Flight 時間が targetBufferMs (10000ms) を大きく超えていないことを検証
+    // (クライアントの trimPendingPackets 閾値 16000ms を絶対に超えない)
+    const inFlightMs = Number(session.lastSentVideoPts! - session.lastAckPts!) / 1000;
+    expect(inFlightMs).toBeGreaterThanOrEqual(9900);
+    expect(inFlightMs).toBeLessThanOrEqual(10100);
+
+    // 4. クライアントが 250ms 周期で再生を進め、フィードバックを返すステップをシミュレート
+    // 4秒間（16回 × 250ms）の再生進捗
+    for (let step = 1; step <= 16; step++) {
+      const currentPtsUs = 10_000_000n + BigInt(step * 250_000);
+      await msgListener(
+        Buffer.concat([
+          Buffer.from([WSS_CHANNEL.COMMAND]),
+          Buffer.from(
+            JSON.stringify({
+              type: 'BUFFER_FEEDBACK',
+              bufferedMs: 9750, // 手元バッファは約10秒維持
+              targetBufferMs: 10000,
+              lastRenderedPts: currentPtsUs.toString(),
+            }),
+          ),
+        ]),
+      );
+      // 250ms 時間経過（サーバーが消費された 250ms 分を補充送出）
+      vi.advanceTimersByTime(250);
+
+      // In-Flight 時間が常に 10.5 秒以下に収まっていること（決して 16 秒に達しない）
+      const currentInFlight = Number(session.lastSentVideoPts! - session.lastAckPts!) / 1000;
+      expect(currentInFlight).toBeLessThanOrEqual(10500);
+    }
+
+    // 4秒分（約120映像 + 60音声 = 約180フレーム）がサーバーからさらに消費されていること (674 -> 494)
+    expect(session.playbackQueue.length).toBeLessThan(550);
+    expect(session.playbackQueue.length).toBeGreaterThan(450);
+
+    handler.close();
+    vi.useRealTimers();
+  });
+
+  it('should adapt sliding window flow control to client targetBufferMs (e.g. 2000ms for MCU2)', async () => {
+    vi.useFakeTimers();
+
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 15 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(100));
+
+    for (let i = 1; i < 300; i++) {
+      playbackBuffer.addVideo(0, 1_000_000n + BigInt(i * 33333), Buffer.alloc(50));
+    }
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer,
+    );
+
+    handler.setLastInputAt(Date.now() - 10000);
+
+    const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket);
+    const msgListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+
+    const session = handler.getClientSession(socket)!;
+    session.lastAckPts = 1_000_000n;
+    session.targetBufferMs = 2000; // MCU2: 2秒バッファ
+
+    await msgListener(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    await msgListener(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(
+          JSON.stringify({
+            type: 'BUFFER_FEEDBACK',
+            bufferedMs: 0,
+            targetBufferMs: 2000,
+            lastRenderedPts: '1000000',
+          }),
+        ),
+      ]),
+    );
+
+    // バースト送出を進める
+    vi.advanceTimersByTime(500);
+
+    // 2秒分（約60フレーム）送出された時点で一時停止すること
+    expect(session.isFlowPaused).toBe(true);
+    const inFlightMs = Number(session.lastSentVideoPts! - session.lastAckPts!) / 1000;
+    expect(inFlightMs).toBeGreaterThanOrEqual(1900);
+    expect(inFlightMs).toBeLessThanOrEqual(2100);
+
+    // キューにはまだ約240フレーム残っていること
+    expect(session.playbackQueue.length).toBeGreaterThanOrEqual(230);
 
     handler.close();
     vi.useRealTimers();
