@@ -72,7 +72,7 @@ if [ -n "$DEPLOY_PASS" ]; then
   fi
   RSYNC_RSH="sshpass -p '${DEPLOY_PASS}' ssh -p ${DEPLOY_PORT} -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o PubkeyAuthentication=no -o PreferredAuthentications=password -o ConnectTimeout=10"
   run_ssh() {
-    sshpass -p "${DEPLOY_PASS}" ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"
+    sshpass -p "${DEPLOY_PASS}" ssh -p "${DEPLOY_PORT}" -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o PubkeyAuthentication=no -o PreferredAuthentications=password -o ConnectTimeout=10 "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"
   }
 else
   RSYNC_RSH="ssh -p ${DEPLOY_PORT} -o ConnectTimeout=10"
