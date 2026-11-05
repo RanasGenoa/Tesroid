@@ -15,6 +15,7 @@ import { browserRestart, encoderRestart, resume, sleep } from './power-actions.j
 
 const PACKET_STALL_WARN_THRESHOLD_MS = 400;
 const PACKET_LOSS_TIMEOUT_MS = 1200;
+const RTT_WARN_THRESHOLD_MS = 90;
 
 export function renderStreamingView(
   container: HTMLElement,
@@ -154,7 +155,7 @@ export function renderStreamingView(
   let browserPowerState: BrowserPowerState = 'active';
 
   let instantRtt = 0;
-  let minRtt = 999;
+  let minRtt = Number.POSITIVE_INFINITY;
   let rttHistory: number[] = [];
   let lastPacketReceivedTime = performance.now();
   let pingId = 0;
@@ -490,7 +491,7 @@ export function renderStreamingView(
       if (hudConn) {
         hudConn.title = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
       }
-    } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= 90) {
+    } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
       // パケット到着間隔の拡大、または回線RTTが警告レベル
       connDot.className = 'status-dot status-warning';
       connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
@@ -888,7 +889,7 @@ export function renderStreamingView(
       } else {
         // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ
         if (instantRtt === 0) {
-          instantRtt = minRtt < 999 ? minRtt : rawRtt;
+          instantRtt = Number.isFinite(minRtt) ? minRtt : rawRtt;
         }
       }
       metricsCollector.updateRtt(instantRtt);
@@ -993,7 +994,7 @@ export function renderStreamingView(
 
     lastPacketReceivedTime = performance.now();
     instantRtt = 0;
-    minRtt = 999;
+    minRtt = Number.POSITIVE_INFINITY;
     rttHistory = [];
 
     if (connText) connText.textContent = '接続中';
