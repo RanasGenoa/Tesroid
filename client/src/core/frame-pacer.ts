@@ -54,6 +54,13 @@ export class FramePacer {
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
+  // A/V Sync PLL constants:
+  // Deadband threshold (ms) within which lip-sync differences are imperceptible to human eyes.
+  // Prevents micro-hunting (jittering between +nudge and -nudge) during steady-state playback.
+  private static readonly AV_SYNC_DEADBAND_MS = 45;
+  // Maximum smoothing nudge applied per frame (ms) for minor sync drifts (45ms ~ 150ms).
+  // Kept small (<= 0.75ms) so playback speed changes by at most ~2%, preserving frame pacing smoothness.
+  private static readonly AV_SYNC_MAX_NUDGE_MS = 0.75;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -532,9 +539,11 @@ export class FramePacer {
                 }
               }
               totalShift += pllShift;
-            } else if (Math.abs(syncErrorMs) >= 45) {
-              // 45ms〜150msのズレのみ、毎フレーム最大±0.75msずつスムーズに吸着（45ms未満はデッドバンドでハンチング防止）
-              const rawNudge = Math.sign(syncErrorMs) * Math.min(0.75, Math.abs(syncErrorMs) * 0.1);
+            } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
+              // 45ms〜150msのズレのみ、毎フレーム最大±0.75msずつスムーズに吸着（デッドバンド未満はハンチング防止）
+              const rawNudge =
+                Math.sign(syncErrorMs) *
+                Math.min(FramePacer.AV_SYNC_MAX_NUDGE_MS, Math.abs(syncErrorMs) * 0.1);
               const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
               const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {
