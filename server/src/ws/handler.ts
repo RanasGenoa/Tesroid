@@ -519,8 +519,9 @@ export class WebSocketHandler {
     session.playbackQueue = [...catchupData.frames];
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
-    // キュー先頭の映像PTSでアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue 26)
-    const firstVideoPts = catchupData.frames.find((f) => f.type === 'video')?.pts;
+    // キュー先頭の映像PTS（フォールバックとして先頭フレームPTS）でアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue 26)
+    const firstVideoPts =
+      catchupData.frames.find((f) => f.type === 'video')?.pts ?? catchupData.frames[0]?.pts;
     if (
       session.lastAckPts === null ||
       (firstVideoPts !== undefined && firstVideoPts > session.lastAckPts)
@@ -679,7 +680,11 @@ export class WebSocketHandler {
     // In burst mode, deliver frames with minimal interval (e.g. 2-4ms) so 10s of buffer pre-fills within 1 second,
     // while keeping timer ticks non-blocking and preserving backpressure limits.
     const frame = session.playbackQueue.shift()!;
-    if (frame.type === 'video') {
+    if (
+      frame.type === 'video' ||
+      session.lastSentVideoPts === null ||
+      session.lastSentVideoPts === undefined
+    ) {
       if (
         session.lastSentVideoPts === null ||
         session.lastSentVideoPts === undefined ||
