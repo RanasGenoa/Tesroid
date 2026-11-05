@@ -1,0 +1,130 @@
+name: AI PR Reviewer (Gemini 3.8 Flash)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Code Review (Self-hosted Antigravity)
+    runs-on: [self-hosted, antigravity]
+    # ドラフトPRはレビューをスキップ
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract PR Diff
+        id: prepare_diff
+        run: |
+          # ベースブランチとPRブランチを確実に fetch
+          git fetch origin ${{ github.base_ref }} || true
+          if [ -n "${{ github.head_ref }}" ]; then
+            git fetch origin ${{ github.head_ref }} || true
+          fi
+
+          # 差分比較対象の参照を特定 (head_ref が origin にあれば優先、無ければ HEAD)
+          if git rev-parse --verify origin/${{ github.head_ref }} >/dev/null 2>&1; then
+            TARGET_REF="origin/${{ github.head_ref }}"
+          else
+            TARGET_REF="HEAD"
+          fi
+
+          # 差分の抽出 (ロックファイル・ビルド成果物を除外)
+          git diff origin/${{ github.base_ref }}...$TARGET_REF \
+            -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > /tmp/pr_diff.patch
+
+          DIFF_LINES=$(wc -l < /tmp/pr_diff.patch)
+          DIFF_SIZE=$(wc -c < /tmp/pr_diff.patch)
+          echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
+
+          if [ "$DIFF_LINES" -eq 0 ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No meaningful code changes detected. Skipping review."
+            exit 0
+          fi
+
+          # 差分が極端に巨大な場合の安全保護 (先頭 2500 行で切り詰め)
+          if [ "$DIFF_SIZE" -gt 150000 ]; then
+            head -n 2500 /tmp/pr_diff.patch > /tmp/truncated_diff.patch
+            echo -e "\n\n... (差分が上限を超えたため一部省略されました)" >> /tmp/truncated_diff.patch
+            mv /tmp/truncated_diff.patch /tmp/pr_diff.patch
+          fi
+
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+
+      - name: Execute Antigravity Review
+        if: steps.prepare_diff.outputs.has_changes == 'true'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          cat << 'EOF' > /tmp/prompt.txt
+          あなたは Tesroid プロジェクトのシニアソフトウェアエンジニア兼コードレビュアーです。
+          以下の Pull Request 差分を日本語で精査し、厳格かつ建設的なレビューを行ってください。
+
+          ## PR 情報
+          EOF
+          echo "- **タイトル**: $PR_TITLE" >> /tmp/prompt.txt
+          echo "- **説明**: $PR_BODY" >> /tmp/prompt.txt
+          echo "- **ベースブランチ**: $BASE_REF" >> /tmp/prompt.txt
+          echo "- **PRブランチ**: $HEAD_REF" >> /tmp/prompt.txt
+
+          cat << 'EOF' >> /tmp/prompt.txt
+
+          ## 重点レビュー観点 (AGENTS.md 厳守)
+          以下の項目に違反がある場合は【CRITICAL】判定としてください：
+          1. 【車載制約】クライアント側 (client/) で <video> タグが追加・使用されていないか？（テスラ車載OSのDレンジ動画停止ガードを回避するため、必ず <canvas desynchronized> + WebCodecs API を維持すること）
+          2. 【描画制約】Xvfb 環境の Chrome 起動引数に --enable-gpu-rasterization や --enable-zero-copy が追加されていないか？（Mesa llvmpipe と VAAPI が競合して画面下部が黒くフリーズするのを防ぐため）
+          3. 【入力制約】タッチ入力が mousedown 1 などのマウスエミュレーションに戻っていないか？（CdpTouchBridge による CDP Input.dispatchTouchEvent を維持すること）
+          4. 【通信制約】WebSocket バックプレッシャーが単一閾値でフレームドロップされていないか？（High: 768KB, Low: 128KB のヒステリシスを保つこと）
+          5. 【セキュリティ】平文パスワード、SSH鍵、固定IP、ホスト固有パスがハードコードされていないか？
+          6. 【品質】TypeScript 型安全性、Promise 未処理、リソース解放漏れがないか？
+
+          ## 出力フォーマット (Markdown 形式)
+          ### 1. 総合判定
+          `LGTM` / `COMMENT` / `CHANGES_REQUESTED` のいずれかを太字で記載し、2〜3行で概要を要約してください。
+
+          ### 2. 重要指摘事項 (Critical / High)
+          ※動作不能、テスラ固有制約違反、セキュリティ上の問題など（なければ「なし」）
+          - **対象**: `ファイルパス:行番号`
+          - **問題点**:
+          - **推奨修正コード例**:
+
+          ### 3. 改善提案 (Medium / Low)
+          ※可読性、型安全性、パフォーマンス改善の提案（なければ「なし」）
+
+          ### 4. 良かった点 (Good Points)
+          ※設計的に優れている点や工夫されている点
+
+          ---
+          ## コード差分 (Diff):
+          EOF
+          cat /tmp/pr_diff.patch >> /tmp/prompt.txt
+
+          # Self-hosted Runner 内の Antigravity CLI (Gemini 3.8 Flash) を実行
+          agy -p "$(cat /tmp/prompt.txt)" --model gemini-3.8-flash > /tmp/review_comment.md
+
+      - name: Post Comment to PR
+        if: steps.prepare_diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          cat << 'EOF' >> /tmp/review_comment.md
+
+          ---
+          *🤖 Reviewed by **Antigravity CLI** (`gemini-3.8-flash`) on HomeLab Self-hosted Runner*
+          EOF
+
+          gh pr comment "$PR_URL" --body-file /tmp/review_comment.md
