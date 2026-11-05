@@ -11,6 +11,10 @@ permissions:
   pull-requests: write
   issues: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   review:
     name: Code Review (Antigravity)
@@ -193,10 +197,13 @@ jobs:
               -F body=@"$WORKDIR/final_comment.md" > /dev/null
           else
             echo "Creating new review comment..."
-            gh pr comment "$PR_URL" --body-file "$WORKDIR/final_comment.md"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$WORKDIR/final_comment.md"
           fi
 
-      - name: Cleanup Workdir
-        if: always() && steps.prepare_diff.outputs.workdir != ''
+      - name: Cleanup Workdir & Restore Permissions
+        if: always()
         run: |
-          rm -rf "${{ steps.prepare_diff.outputs.workdir }}"
+          chmod u+w ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true
+          if [ -n "${{ steps.prepare_diff.outputs.workdir }}" ]; then
+            rm -rf "${{ steps.prepare_diff.outputs.workdir }}"
+          fi
