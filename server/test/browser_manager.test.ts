@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
 import vm from 'node:vm';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserManager, isSafeHttpUrl } from '../src/browser/manager.js';
 import * as processTree from '../src/utils/processTree.js';
 
@@ -33,7 +33,9 @@ describe('BrowserManager Core Lifecycle, Profile Lock Cleanup & Security', () =>
     expect(isSafeHttpUrl(null)).toBe(false);
 
     const bm = new BrowserManager({ profileDir });
-    await expect(bm.navigate('file:///etc/shadow')).rejects.toThrow(/Only http:\/\/ and https:\/\//);
+    await expect(bm.navigate('file:///etc/shadow')).rejects.toThrow(
+      /Only http:\/\/ and https:\/\//,
+    );
   });
 
   it('sends SIGSTOP leaf-to-root on pause() and SIGCONT root-to-leaf on resume()', () => {
@@ -80,7 +82,7 @@ describe('BrowserManager Core Lifecycle, Profile Lock Cleanup & Security', () =>
     fs.writeFileSync(
       prefsFile,
       JSON.stringify({ profile: { exit_type: 'Crashed', exited_cleanly: false } }),
-      'utf-8'
+      'utf-8',
     );
 
     (bm as any).cleanProfileLocks();

@@ -55,7 +55,11 @@ export const ICONS = {
  * Non-blocking In-Car Toast Notification system.
  * Replaces disruptive native window.alert() calls on Tesla browser.
  */
-export function showToast(message: string, type: 'info' | 'success' | 'error' = 'info', durationMs = 2800): void {
+export function showToast(
+  message: string,
+  type: 'info' | 'success' | 'error' = 'info',
+  durationMs = 2800,
+): void {
   let container = document.getElementById('tesroid-toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -76,8 +80,14 @@ export function showToast(message: string, type: 'info' | 'success' | 'error' = 
   }
 
   const toast = document.createElement('div');
-  const bg = type === 'error' ? 'rgba(232, 33, 39, 0.92)' : type === 'success' ? 'rgba(52, 199, 89, 0.92)' : 'rgba(30, 30, 35, 0.92)';
-  const border = type === 'error' ? '#ff453a' : type === 'success' ? '#34c759' : 'rgba(255, 255, 255, 0.2)';
+  const bg =
+    type === 'error'
+      ? 'rgba(232, 33, 39, 0.92)'
+      : type === 'success'
+        ? 'rgba(52, 199, 89, 0.92)'
+        : 'rgba(30, 30, 35, 0.92)';
+  const border =
+    type === 'error' ? '#ff453a' : type === 'success' ? '#34c759' : 'rgba(255, 255, 255, 0.2)';
   const icon = type === 'error' ? ICONS.alert : type === 'success' ? ICONS.check : ICONS.zap;
 
   toast.style.cssText = `

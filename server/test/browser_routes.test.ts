@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
 import fastify from 'fastify';
-import { registerBrowserRoutes } from '../src/routes/browser.js';
-import type { BrowserManager } from '../src/browser/manager.js';
+import { describe, expect, it, vi } from 'vitest';
 import type { AuthService } from '../src/auth.js';
+import type { BrowserManager } from '../src/browser/manager.js';
 import type { VaapiEncoder } from '../src/encoder/ffmpeg.js';
+import { registerBrowserRoutes } from '../src/routes/browser.js';
 
 describe('Browser Routes - Encoder Synchronization', () => {
   const setupTestEnv = () => {
@@ -22,8 +22,12 @@ describe('Browser Routes - Encoder Synchronization', () => {
 
     let running = true;
     const encoder = {
-      stop: vi.fn().mockImplementation(() => { running = false; }),
-      start: vi.fn().mockImplementation(() => { running = true; }),
+      stop: vi.fn().mockImplementation(() => {
+        running = false;
+      }),
+      start: vi.fn().mockImplementation(() => {
+        running = true;
+      }),
       restart: vi.fn().mockResolvedValue(undefined),
       isRunning: vi.fn().mockImplementation(() => running),
     } as unknown as VaapiEncoder;

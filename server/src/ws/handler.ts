@@ -1,14 +1,14 @@
 import type { WebSocket } from 'ws';
-import { WSS_CHANNEL, VIDEO_FLAGS, AUDIO_FLAGS } from './protocol.js';
-import { MessageMultiplexer } from './multiplexer.js';
-import { AuthService } from '../auth.js';
-import { BrowserManager } from '../browser/manager.js';
-import { VaapiEncoder } from '../encoder/ffmpeg.js';
-import { X11InputManager } from '../input/xdotool.js';
-import { ConfigStore } from '../config.js';
+import type { AuthService } from '../auth.js';
+import type { BrowserManager } from '../browser/manager.js';
+import type { ConfigStore } from '../config.js';
+import type { VaapiEncoder } from '../encoder/ffmpeg.js';
+import { type BufferedFrame, PlaybackBuffer } from '../encoder/playback-buffer.js';
+import type { X11InputManager } from '../input/xdotool.js';
 import { MetricsManager } from '../metrics/manager.js';
 import { TelemetryManager } from '../telemetry/manager.js';
-import { PlaybackBuffer, type BufferedFrame } from '../encoder/playback-buffer.js';
+import { MessageMultiplexer } from './multiplexer.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS, WSS_CHANNEL } from './protocol.js';
 
 export interface ClientSession {
   socket: WebSocket;
@@ -62,7 +62,7 @@ export class WebSocketHandler {
     encoder: VaapiEncoder,
     inputManager: X11InputManager,
     configStore: ConfigStore,
-    playbackBuffer?: PlaybackBuffer
+    playbackBuffer?: PlaybackBuffer,
   ) {
     this.authService = authService;
     this.browserManager = browserManager;
@@ -202,7 +202,9 @@ export class WebSocketHandler {
         this.clientSessions.delete(socket);
       }
 
-      console.log(`[WebSocketHandler] Client disconnected. Remaining auth: ${this.authenticatedClients.size}, total: ${this.allClients.size}`);
+      console.log(
+        `[WebSocketHandler] Client disconnected. Remaining auth: ${this.authenticatedClients.size}, total: ${this.allClients.size}`,
+      );
 
       // If no authenticated clients remain, schedule auto-sleep to save resources
       if (this.authenticatedClients.size === 0) {
@@ -224,7 +226,9 @@ export class WebSocketHandler {
     if (socket) {
       const session = this.clientSessions.get(socket);
       if (session && session.mode === 'CATCHUP') {
-        console.log('[WebSocketHandler] Auto-Hybrid: User input detected during CATCHUP. Switching immediately to LIVE mode.');
+        console.log(
+          '[WebSocketHandler] Auto-Hybrid: User input detected during CATCHUP. Switching immediately to LIVE mode.',
+        );
         this.abortCatchupAndSwitchToLive(session);
       }
     } else {
@@ -240,7 +244,9 @@ export class WebSocketHandler {
    * 配信プロセス（FFmpeg Video/Audio + サーバーリングバッファ + 全クライアントセッション）を完全にクリーン再起動する
    */
   public async restartStream(): Promise<void> {
-    console.log('[WebSocketHandler] Clean restarting entire streaming pipeline (FFmpeg Video/Audio + Buffers + Client Sessions)...');
+    console.log(
+      '[WebSocketHandler] Clean restarting entire streaming pipeline (FFmpeg Video/Audio + Buffers + Client Sessions)...',
+    );
     this.playbackBuffer.clear();
     this.lastKnownAckPts = null;
 
@@ -288,14 +294,16 @@ export class WebSocketHandler {
         isStale = this.encoder.isKeyframeStale(2000000n);
       } else if (typeof (this.encoder as any).getCurrentPts === 'function') {
         const currentPts = (this.encoder as any).getCurrentPts();
-        isStale = (currentPts - cachedKeyframe.pts) >= 2000000n;
+        isStale = currentPts - cachedKeyframe.pts >= 2000000n;
       }
     } else {
       isStale = true;
     }
 
     if (isStale) {
-      console.log('[WebSocketHandler] Live jump on input: cached keyframe is stale. Restarting encoder...');
+      console.log(
+        '[WebSocketHandler] Live jump on input: cached keyframe is stale. Restarting encoder...',
+      );
       this.encoder.restart().catch((err) => {
         console.error('[WebSocketHandler] Failed to restart encoder on input interrupt:', err);
       });
@@ -308,8 +316,8 @@ export class WebSocketHandler {
         MessageMultiplexer.packVideo(
           VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG,
           cachedKeyframe.pts,
-          cachedKeyframe.data
-        )
+          cachedKeyframe.data,
+        ),
       );
     }
   }
@@ -347,7 +355,11 @@ export class WebSocketHandler {
         this.sendControl(socket, { type: 'AUTH_SUCCESS', token: authRes.token || 'session_token' });
         this.onClientAuthenticated(socket);
       } catch (err: any) {
-        this.sendControl(socket, { type: 'AUTH_FAILED', error: err.message, remainingAttempts: 10 });
+        this.sendControl(socket, {
+          type: 'AUTH_FAILED',
+          error: err.message,
+          remainingAttempts: 10,
+        });
       }
       return;
     }
@@ -375,8 +387,12 @@ export class WebSocketHandler {
     } else if (this.browserManager.getState() === 'stopped') {
       this.browserManager.start().catch((err) => console.error('Start error:', err));
     } else if (!this.browserManager.isChromeAlive()) {
-      console.warn('[WebSocketHandler] Browser is marked running but Chrome is not alive. Restarting Chrome...');
-      this.browserManager.restartChrome().catch((err) => console.error('Restart Chrome error:', err));
+      console.warn(
+        '[WebSocketHandler] Browser is marked running but Chrome is not alive. Restarting Chrome...',
+      );
+      this.browserManager
+        .restartChrome()
+        .catch((err) => console.error('Restart Chrome error:', err));
     }
 
     // Ensure FFmpeg encoder is running if it was stopped during idle sleep
@@ -390,15 +406,18 @@ export class WebSocketHandler {
 
     // 要件4: now - lastInputAt > IDLE_TO_BUFFER_SECONDS（既定5秒、環境変数）なら CATCHUP 許可状態
     const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
-    const isIdle = (Date.now() - this.lastInputAt) > idleThresholdMs;
+    const isIdle = Date.now() - this.lastInputAt > idleThresholdMs;
 
-    const catchupData = (isIdle && lastAckPts !== null && lastAckPts > 0n)
-      ? this.playbackBuffer.getFramesToCatchup(lastAckPts)
-      : null;
+    const catchupData =
+      isIdle && lastAckPts !== null && lastAckPts > 0n
+        ? this.playbackBuffer.getFramesToCatchup(lastAckPts)
+        : null;
 
     if (catchupData && catchupData.frames.length > 0 && session) {
       // 要件6: CATCHUP 許可状態での再接続 = バッファから lastAckPts 以降を再生
-      console.log(`[WebSocketHandler] Client reconnected in idle state. Starting CATCHUP playback (${catchupData.frames.length} frames from lastAckPts=${lastAckPts})...`);
+      console.log(
+        `[WebSocketHandler] Client reconnected in idle state. Starting CATCHUP playback (${catchupData.frames.length} frames from lastAckPts=${lastAckPts})...`,
+      );
       this.startCatchup(session, catchupData);
     } else {
       // 要件5: LIVE 状態での再接続 = 現挙動のまま（stale判定→restart→ライブ）
@@ -428,17 +447,23 @@ export class WebSocketHandler {
         isStale = this.encoder.isKeyframeStale(2000000n);
       } else if (typeof (this.encoder as any).getCurrentPts === 'function') {
         const currentPts = (this.encoder as any).getCurrentPts();
-        isStale = (currentPts - cachedKeyframe.pts) >= 2000000n;
+        isStale = currentPts - cachedKeyframe.pts >= 2000000n;
       }
     }
 
     if (isStale) {
-      console.log('[WebSocketHandler] Cached keyframe is stale (>= 2s). Restarting video encoder for fresh IDR keyframe...');
+      console.log(
+        '[WebSocketHandler] Cached keyframe is stale (>= 2s). Restarting video encoder for fresh IDR keyframe...',
+      );
       this.encoder.restart().catch((err) => {
         console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
       });
     } else if (cachedKeyframe && socket.readyState === 1) {
-      const packet = MessageMultiplexer.packVideo(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG, cachedKeyframe.pts, cachedKeyframe.data);
+      const packet = MessageMultiplexer.packVideo(
+        VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG,
+        cachedKeyframe.pts,
+        cachedKeyframe.data,
+      );
       socket.send(packet);
     } else {
       const cachedSpsPps = this.encoder.getCachedSpsPps();
@@ -481,7 +506,7 @@ export class WebSocketHandler {
    */
   private startCatchup(
     session: ClientSession,
-    catchupData: { frames: BufferedFrame[]; configVideo?: Buffer; configAudio?: Buffer }
+    catchupData: { frames: BufferedFrame[]; configVideo?: Buffer; configAudio?: Buffer },
   ): void {
     session.mode = 'CATCHUP';
     session.playbackQueue = [...catchupData.frames];
@@ -492,10 +517,14 @@ export class WebSocketHandler {
 
     // クライアントの VideoDecoder / AudioPlayer を確実に初期化するための CONFIG パケットを送出
     if (catchupData.configVideo && session.socket.readyState === 1) {
-      session.socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, catchupData.configVideo));
+      session.socket.send(
+        MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, catchupData.configVideo),
+      );
     }
     if (catchupData.configAudio && session.socket.readyState === 1) {
-      session.socket.send(MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, catchupData.configAudio));
+      session.socket.send(
+        MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, catchupData.configAudio),
+      );
     }
 
     // ペーシングループ開始 (バーストまたは1x)
@@ -547,7 +576,9 @@ export class WebSocketHandler {
       return;
     }
     if (session.playbackQueue.length === 0) {
-      console.log('[WebSocketHandler] CATCHUP playback queue empty on resume check. Transitioning to LIVE mode.');
+      console.log(
+        '[WebSocketHandler] CATCHUP playback queue empty on resume check. Transitioning to LIVE mode.',
+      );
       session.mode = 'LIVE';
       session.isFlowPaused = false;
       return;
@@ -635,14 +666,17 @@ export class WebSocketHandler {
       session.lastSentVideoPts = frame.pts;
     }
 
-    const packet = frame.type === 'video'
-      ? MessageMultiplexer.packVideo(frame.flags, frame.pts, frame.data)
-      : MessageMultiplexer.packAudio(frame.flags, frame.pts, frame.data);
+    const packet =
+      frame.type === 'video'
+        ? MessageMultiplexer.packVideo(frame.flags, frame.pts, frame.data)
+        : MessageMultiplexer.packAudio(frame.flags, frame.pts, frame.data);
 
     session.socket.send(packet);
 
     if (session.playbackQueue.length === 0) {
-      console.log('[WebSocketHandler] CATCHUP playback finished after sending last frame. Transitioning to LIVE mode.');
+      console.log(
+        '[WebSocketHandler] CATCHUP playback finished after sending last frame. Transitioning to LIVE mode.',
+      );
       session.mode = 'LIVE';
       session.isFlowPaused = false;
       return;
@@ -703,7 +737,9 @@ export class WebSocketHandler {
       return;
     }
 
-    console.log(`[WebSocketHandler] Client requested resize: ${requestedW}x${requestedH} (dpr=${dpr.toFixed(2)}) -> effective ${width}x${height}`);
+    console.log(
+      `[WebSocketHandler] Client requested resize: ${requestedW}x${requestedH} (dpr=${dpr.toFixed(2)}) -> effective ${width}x${height}`,
+    );
 
     if (this.resizeTimer) {
       clearTimeout(this.resizeTimer);
@@ -754,7 +790,7 @@ export class WebSocketHandler {
     if (buf.length <= 1) return;
     if (buf.length > WebSocketHandler.MAX_TELEMETRY_PAYLOAD_BYTES) {
       console.warn(
-        `[WebSocketHandler] Dropping oversized telemetry payload (${buf.length} bytes > ${WebSocketHandler.MAX_TELEMETRY_PAYLOAD_BYTES}).`
+        `[WebSocketHandler] Dropping oversized telemetry payload (${buf.length} bytes > ${WebSocketHandler.MAX_TELEMETRY_PAYLOAD_BYTES}).`,
       );
       return;
     }
@@ -802,7 +838,8 @@ export class WebSocketHandler {
           const session = this.clientSessions.get(socket);
           if (session) {
             session.bufferedMs = typeof cmd.bufferedMs === 'number' ? cmd.bufferedMs : 0;
-            session.targetBufferMs = typeof cmd.targetBufferMs === 'number' ? cmd.targetBufferMs : 10000;
+            session.targetBufferMs =
+              typeof cmd.targetBufferMs === 'number' ? cmd.targetBufferMs : 10000;
             this.lastKnownTargetBufferMs = session.targetBufferMs || 10000;
             session.isInteractive = Boolean(cmd.isInteractive);
             session.lastBufferFeedbackAt = Date.now();
@@ -826,9 +863,10 @@ export class WebSocketHandler {
 
         case 'PING': {
           const session = this.clientSessions.get(socket);
-          const latestPts = typeof (this.encoder as any).getCurrentPts === 'function'
-            ? Number((this.encoder as any).getCurrentPts())
-            : 0;
+          const latestPts =
+            typeof (this.encoder as any).getCurrentPts === 'function'
+              ? Number((this.encoder as any).getCurrentPts())
+              : 0;
           // 1. サーバー側送出待ちキューの秒数
           let catchupQueueMs = 0;
           if (session && session.playbackQueue.length > 0) {
@@ -861,17 +899,19 @@ export class WebSocketHandler {
           // 物理送出キューと未達残余バッファの大きい方を serverBufferMs とする
           const serverBufferMs = Math.max(catchupQueueMs, serverRemainingMs);
 
-          socket.send(MessageMultiplexer.packControl({
-            type: 'PONG',
-            id: cmd.id,
-            clientTime: cmd.clientTime,
-            serverTime: performance.now(),
-            latestPts,
-            serverMode: session?.mode || 'LIVE',
-            catchupQueueMs,
-            serverBufferMs,
-            serverLagMs,
-          }));
+          socket.send(
+            MessageMultiplexer.packControl({
+              type: 'PONG',
+              id: cmd.id,
+              clientTime: cmd.clientTime,
+              serverTime: performance.now(),
+              latestPts,
+              serverMode: session?.mode || 'LIVE',
+              catchupQueueMs,
+              serverBufferMs,
+              serverLagMs,
+            }),
+          );
           break;
         }
 
@@ -879,7 +919,9 @@ export class WebSocketHandler {
           this.recordInputActivity(socket);
           const session = this.clientSessions.get(socket);
           if (session) {
-            console.log('[WebSocketHandler] Explicit JUMP_TO_LIVE requested by client. Switching immediately to LIVE.');
+            console.log(
+              '[WebSocketHandler] Explicit JUMP_TO_LIVE requested by client. Switching immediately to LIVE.',
+            );
             this.abortCatchupAndSwitchToLive(session);
           }
           this.sendControl(socket, { type: 'LIVE_JUMPED', timestamp: Date.now() });
@@ -915,7 +957,10 @@ export class WebSocketHandler {
         case 'NAVIGATE':
           this.recordInputActivity(socket);
           if (!cmd.url || typeof cmd.url !== 'string' || !/^https?:\/\//i.test(cmd.url.trim())) {
-            this.sendControl(socket, { type: 'ERROR', message: 'Invalid URL: Only http:// and https:// URLs are permitted.' });
+            this.sendControl(socket, {
+              type: 'ERROR',
+              message: 'Invalid URL: Only http:// and https:// URLs are permitted.',
+            });
             break;
           }
           // 要件8: ページ移動・再ナビゲーション時はバッファ消去＋LIVE
@@ -926,7 +971,11 @@ export class WebSocketHandler {
             }
           }
           await this.browserManager.navigate(cmd.url);
-          this.broadcastControl({ type: 'BROWSER_STATUS', url: cmd.url, state: this.browserManager.getState() });
+          this.broadcastControl({
+            type: 'BROWSER_STATUS',
+            url: cmd.url,
+            state: this.browserManager.getState(),
+          });
           break;
 
         case 'NAVIGATE_BACK':
@@ -1023,101 +1072,114 @@ export class WebSocketHandler {
 
   private bindEncoderEvents(): void {
     // Video packet from FFmpeg
-    this.encoder.on('video', ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
-      // 要件2: 'video' イベント時にバッファへ追記
-      this.playbackBuffer.addVideo(flags, pts, data);
+    this.encoder.on(
+      'video',
+      ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
+        // 要件2: 'video' イベント時にバッファへ追記
+        this.playbackBuffer.addVideo(flags, pts, data);
 
-      if (this.authenticatedClients.size === 0) return;
+        if (this.authenticatedClients.size === 0) return;
 
-      const packet = MessageMultiplexer.packVideo(flags, pts, data);
-      this.videoFramesSent++;
-      this.videoBytesSent += packet.length;
+        const packet = MessageMultiplexer.packVideo(flags, pts, data);
+        this.videoFramesSent++;
+        this.videoBytesSent += packet.length;
 
-      const isKeyframe = (flags & VIDEO_FLAGS.KEYFRAME) !== 0;
-      const bps = this.configStore.getConfig().stream?.bitrate || 1000000;
-      // Hysteresis backpressure watermarks: must be large enough (512KB-1536KB) so a 60KB IDR keyframe
-      // never triggers false GOP dropping on mobile LTE connections!
-      const HIGH_WATER_MARK = Math.max(512 * 1024, Math.min(1536 * 1024, Math.round((bps / 8) * 3.0)));
-      const LOW_WATER_MARK = Math.max(96 * 1024, Math.round(HIGH_WATER_MARK * 0.2));
+        const isKeyframe = (flags & VIDEO_FLAGS.KEYFRAME) !== 0;
+        const bps = this.configStore.getConfig().stream?.bitrate || 1000000;
+        // Hysteresis backpressure watermarks: must be large enough (512KB-1536KB) so a 60KB IDR keyframe
+        // never triggers false GOP dropping on mobile LTE connections!
+        const HIGH_WATER_MARK = Math.max(
+          512 * 1024,
+          Math.min(1536 * 1024, Math.round((bps / 8) * 3.0)),
+        );
+        const LOW_WATER_MARK = Math.max(96 * 1024, Math.round(HIGH_WATER_MARK * 0.2));
 
-      for (const client of this.authenticatedClients) {
-        if (client.readyState === 1) { // OPEN
-          const session = this.clientSessions.get(client);
-          if (!session) continue;
+        for (const client of this.authenticatedClients) {
+          if (client.readyState === 1) {
+            // OPEN
+            const session = this.clientSessions.get(client);
+            if (!session) continue;
 
-          const buffered = (client as any).bufferedAmount || 0;
+            const buffered = (client as any).bufferedAmount || 0;
 
-          // 1. CATCHUP クライアント: キュー末尾へ追記（追いつくまでバッファ優先）
-          if (session.mode === 'CATCHUP') {
-            session.playbackQueue.push({ type: 'video', flags, pts, data });
-            if (session.playbackQueue.length > 3000) {
-              this.pruneSessionQueue(session);
-            }
-            this.checkAndResumeCatchup(session);
-            continue;
-          }
-
-          // 2. LIVE クライアントの通信悪化検知 (アイドル動画視聴中、ソケット詰まり発生時に CATCHUP へ切り替え):
-          const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
-          const isIdle = (Date.now() - this.lastInputAt) > idleThresholdMs;
-          const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
-
-          // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 512KB) が発生した場合、
-          // 送信をストップして未送信フレームを CATCHUP キューへ安全に蓄積する
-          if (wantsBuffer && isIdle && !session.isInteractive && buffered > 512 * 1024) {
-            console.log(`[WebSocketHandler] Network congestion detected (buffered=${Math.round(buffered / 1024)}KB). Switching session to CATCHUP buffer mode.`);
-            this.transitionLiveSessionToCatchup(session);
-            session.playbackQueue.push({ type: 'video', flags, pts, data });
-            continue;
-          }
-
-          // 3. LIVE 送信（ヒステリシスバックプレッシャー）
-          if (buffered > HIGH_WATER_MARK) {
-            (client as any)._droppingGop = true;
-          }
-
-          if ((client as any)._droppingGop) {
-            if (!isKeyframe || buffered > LOW_WATER_MARK) {
+            // 1. CATCHUP クライアント: キュー末尾へ追記（追いつくまでバッファ優先）
+            if (session.mode === 'CATCHUP') {
+              session.playbackQueue.push({ type: 'video', flags, pts, data });
+              if (session.playbackQueue.length > 3000) {
+                this.pruneSessionQueue(session);
+              }
+              this.checkAndResumeCatchup(session);
               continue;
             }
-            (client as any)._droppingGop = false;
-          }
 
-          session.lastSentVideoPts = pts;
-          client.send(packet);
-        }
-      }
-    });
+            // 2. LIVE クライアントの通信悪化検知 (アイドル動画視聴中、ソケット詰まり発生時に CATCHUP へ切り替え):
+            const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
+            const isIdle = Date.now() - this.lastInputAt > idleThresholdMs;
+            const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
 
-    // Audio packet from FFmpeg
-    this.encoder.on('audio', ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
-      // 要件2: 'audio' イベント時にバッファへ追記
-      this.playbackBuffer.addAudio(flags, pts, data);
+            // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 512KB) が発生した場合、
+            // 送信をストップして未送信フレームを CATCHUP キューへ安全に蓄積する
+            if (wantsBuffer && isIdle && !session.isInteractive && buffered > 512 * 1024) {
+              console.log(
+                `[WebSocketHandler] Network congestion detected (buffered=${Math.round(buffered / 1024)}KB). Switching session to CATCHUP buffer mode.`,
+              );
+              this.transitionLiveSessionToCatchup(session);
+              session.playbackQueue.push({ type: 'video', flags, pts, data });
+              continue;
+            }
 
-      if (this.authenticatedClients.size === 0) return;
+            // 3. LIVE 送信（ヒステリシスバックプレッシャー）
+            if (buffered > HIGH_WATER_MARK) {
+              (client as any)._droppingGop = true;
+            }
 
-      const packet = MessageMultiplexer.packAudio(flags, pts, data);
-      this.audioPacketsSent++;
+            if ((client as any)._droppingGop) {
+              if (!isKeyframe || buffered > LOW_WATER_MARK) {
+                continue;
+              }
+              (client as any)._droppingGop = false;
+            }
 
-      for (const client of this.authenticatedClients) {
-        if (client.readyState === 1) { // OPEN
-          const session = this.clientSessions.get(client);
-          if (!session) continue;
-
-          // 1. CATCHUP クライアント: 映像と同様にキューへ格納
-          if (session.mode === 'CATCHUP') {
-            session.playbackQueue.push({ type: 'audio', flags, pts, data });
-            continue;
-          }
-
-          // 2. LIVE クライアント: リアルタイム送信 (音声はドロップせず 2MB まで許容)
-          const buffered = (client as any).bufferedAmount || 0;
-          if (buffered <= 2 * 1024 * 1024) {
+            session.lastSentVideoPts = pts;
             client.send(packet);
           }
         }
-      }
-    });
+      },
+    );
+
+    // Audio packet from FFmpeg
+    this.encoder.on(
+      'audio',
+      ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
+        // 要件2: 'audio' イベント時にバッファへ追記
+        this.playbackBuffer.addAudio(flags, pts, data);
+
+        if (this.authenticatedClients.size === 0) return;
+
+        const packet = MessageMultiplexer.packAudio(flags, pts, data);
+        this.audioPacketsSent++;
+
+        for (const client of this.authenticatedClients) {
+          if (client.readyState === 1) {
+            // OPEN
+            const session = this.clientSessions.get(client);
+            if (!session) continue;
+
+            // 1. CATCHUP クライアント: 映像と同様にキューへ格納
+            if (session.mode === 'CATCHUP') {
+              session.playbackQueue.push({ type: 'audio', flags, pts, data });
+              continue;
+            }
+
+            // 2. LIVE クライアント: リアルタイム送信 (音声はドロップせず 2MB まで許容)
+            const buffered = (client as any).bufferedAmount || 0;
+            if (buffered <= 2 * 1024 * 1024) {
+              client.send(packet);
+            }
+          }
+        }
+      },
+    );
   }
 
   private scheduleAutoSleep(): void {
@@ -1129,11 +1191,15 @@ export class WebSocketHandler {
       return;
     }
     const delayMs = Math.max(15000, autoSleepMins * 60 * 1000);
-    console.log(`[WebSocketHandler] No clients connected. Scheduling auto-sleep in ${delayMs / 1000}s...`);
+    console.log(
+      `[WebSocketHandler] No clients connected. Scheduling auto-sleep in ${delayMs / 1000}s...`,
+    );
 
     this.autoSleepTimer = setTimeout(() => {
       if (this.authenticatedClients.size === 0) {
-        console.log('[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder and pausing browser (True CPU 0%).');
+        console.log(
+          '[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder and pausing browser (True CPU 0%).',
+        );
         this.encoder.stop();
         this.browserManager.pause();
       }

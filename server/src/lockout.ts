@@ -23,7 +23,7 @@ export class LockoutManager {
     if (this.state.isLocked || this.state.consecutiveFailures >= MAX_FAILED_ATTEMPTS) {
       console.error(
         '[CRITICAL SECURITY ALERT] System is locked due to 10 consecutive failed PIN attempts in previous run.\n' +
-        'To unlock, delete /data/lockout.json or restart the container after resetting the file.'
+          'To unlock, delete /data/lockout.json or restart the container after resetting the file.',
       );
       process.exit(1);
     }
@@ -55,8 +55,8 @@ export class LockoutManager {
 
     console.warn(
       `[SECURITY WARNING] Invalid PIN attempt recorded. ` +
-      `Failed: ${this.state.consecutiveFailures}/${MAX_FAILED_ATTEMPTS}. ` +
-      `Remaining attempts: ${this.getRemainingAttempts()}`
+        `Failed: ${this.state.consecutiveFailures}/${MAX_FAILED_ATTEMPTS}. ` +
+        `Remaining attempts: ${this.getRemainingAttempts()}`,
     );
 
     if (this.state.consecutiveFailures >= MAX_FAILED_ATTEMPTS) {
@@ -65,10 +65,10 @@ export class LockoutManager {
 
       console.error(
         '\n=========================================================================\n' +
-        '[FATAL SECURITY LOCKOUT] 10 consecutive failed PIN attempts detected!\n' +
-        'Terminating Tesroid Server immediately to defend against brute-force attacks.\n' +
-        'The container will stop and require manual intervention from the administrator.\n' +
-        '=========================================================================\n'
+          '[FATAL SECURITY LOCKOUT] 10 consecutive failed PIN attempts detected!\n' +
+          'Terminating Tesroid Server immediately to defend against brute-force attacks.\n' +
+          'The container will stop and require manual intervention from the administrator.\n' +
+          '=========================================================================\n',
       );
 
       // Force flush logs and terminate process

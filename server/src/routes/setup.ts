@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { ConfigStore } from '../config.js';
-import { AuthService } from '../auth.js';
-import { LockoutManager } from '../lockout.js';
-import { BrowserManager } from '../browser/manager.js';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { AuthService } from '../auth.js';
+import type { BrowserManager } from '../browser/manager.js';
+import type { ConfigStore } from '../config.js';
+import type { LockoutManager } from '../lockout.js';
 
 interface SetupBody {
   pin: string;
@@ -15,7 +15,7 @@ export function registerSetupRoutes(
   configStore: ConfigStore,
   authService: AuthService,
   lockoutManager: LockoutManager,
-  browserManager: BrowserManager
+  browserManager: BrowserManager,
 ) {
   // Public status check
   app.get('/api/status', async (_req: FastifyRequest, _reply: FastifyReply) => {

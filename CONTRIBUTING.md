@@ -87,6 +87,9 @@ git checkout -b feat/your-feature-name
 コード変更後は、**必ず以下の自動テストとビルドが成功すること** を確認してください：
 
 ```bash
+# Biome リント・フォーマット & TypeScript 厳格型チェック
+npm run check
+
 # 全テストスイートの実行 (client & server)
 npm test
 
@@ -113,6 +116,7 @@ git push -u origin feat/your-feature-name
 
 #### Pull Request 作成時の確認項目
 - [ ] 変更内容の概要と目的が記載されているか
+- [ ] `npm run check`（リント・フォーマット・型チェック）がエラーなく通っているか
 - [ ] `npm test` がエラーなく通っているか
 - [ ] `npm run build` が警告・エラーなく完了するか
 - [ ] 車載環境（`<video>` タグの不使用、Canvas2D描画の維持）の制約を遵守しているか

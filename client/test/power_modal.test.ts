@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderStreamingView } from '../src/views/streaming.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProtocol } from '../src/transport/protocol.js';
+import { renderStreamingView } from '../src/views/streaming.js';
 
 // クラスを new されるモックは arrow でなく正規関数コンストラクタで書く
 vi.mock('../src/core/canvas-renderer.js', () => {
@@ -195,7 +195,14 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(a) hud-stop-btn クリックでモーダルが出る・即停止は起きぬ（wsClient.send が呼ばれぬ）', () => {
-    renderStreamingView(mockContainer, mockWsClient, mockAudioPlayer, mockAvSync, onOpenSettings, testToken);
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
 
     const stopBtn = elementRegistry.get('hud-stop-btn');
     expect(stopBtn).toBeDefined();
@@ -215,7 +222,14 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(b)「⚡再エンコード」クリックで fetch が /api/encoder/restart・POST・Bearer 付きで呼ばれる', async () => {
-    renderStreamingView(mockContainer, mockWsClient, mockAudioPlayer, mockAvSync, onOpenSettings, testToken);
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
 
     // HUD 停止ボタンをクリックしてモーダルを開く
     const stopBtn = elementRegistry.get('hud-stop-btn');
@@ -240,7 +254,14 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(c)「ワンタップ停止」で wsClient.send が1回呼ばれる', () => {
-    renderStreamingView(mockContainer, mockWsClient, mockAudioPlayer, mockAvSync, onOpenSettings, testToken);
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
 
     // HUD 停止ボタンをクリックしてモーダルを開く
     const stopBtn = elementRegistry.get('hud-stop-btn');

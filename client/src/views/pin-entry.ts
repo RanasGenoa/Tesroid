@@ -4,16 +4,20 @@ export function renderPinEntry(
   container: HTMLElement,
   remainingAttempts: number,
   onSubmit: (pin: string) => void,
-  onOpenSettings: () => void
+  onOpenSettings: () => void,
 ): void {
   let pin = '';
 
   const updateDisplay = () => {
     const dotsEl = document.getElementById('pin-dots');
     if (dotsEl) {
-      dotsEl.innerHTML = pin.length > 0
-        ? pin.split('').map(() => '●').join(' ')
-        : '<span style="color: #666; font-size: 24px;">PINを入力</span>';
+      dotsEl.innerHTML =
+        pin.length > 0
+          ? pin
+              .split('')
+              .map(() => '●')
+              .join(' ')
+          : '<span style="color: #666; font-size: 24px;">PINを入力</span>';
     }
     const submitBtn = document.getElementById('pin-submit-btn') as HTMLButtonElement;
     if (submitBtn) {

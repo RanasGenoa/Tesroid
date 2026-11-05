@@ -48,7 +48,8 @@ export class MetricsManager {
   private history: ClientQualityMetrics[] = [];
   private readonly maxEntries: number;
 
-  constructor(maxEntries = 360) { // 360 entries * 10s = 1 hour of history
+  constructor(maxEntries = 360) {
+    // 360 entries * 10s = 1 hour of history
     this.maxEntries = maxEntries;
   }
 
@@ -87,9 +88,9 @@ export class MetricsManager {
 
     console.log(
       `[ClientMetrics] FPS: ${entry.renderFps} (min: ${entry.minFps}, max: ${entry.maxFps}) | ` +
-      `RTT: ${entry.rttMs}ms | Bitrate: ${entry.bitrateKbps}kbps | ` +
-      `Drops: ${entry.droppedFrames} | DecErrors: ${entry.decoderErrors} | ` +
-      `AV-Drift: ${entry.avDriftMs}ms`
+        `RTT: ${entry.rttMs}ms | Bitrate: ${entry.bitrateKbps}kbps | ` +
+        `Drops: ${entry.droppedFrames} | DecErrors: ${entry.decoderErrors} | ` +
+        `AV-Drift: ${entry.avDriftMs}ms`,
     );
   }
 

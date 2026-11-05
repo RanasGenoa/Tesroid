@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { MetricsManager } from '../src/metrics/manager.js';
 
 describe('MetricsManager Tests', () => {

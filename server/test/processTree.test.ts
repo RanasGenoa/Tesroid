@@ -1,14 +1,14 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+  findProcessesByName,
   getProcessMap,
-  getProcessTree,
   getProcessState,
+  getProcessTree,
+  type ProcessTreeDeps,
   sendSignal,
   sendSignalToTree,
-  findProcessesByName,
-  type ProcessTreeDeps,
 } from '../src/utils/processTree.js';
 
 const hasProcessTableAccess = (() => {
@@ -134,7 +134,7 @@ describe('processTree deterministic unit tests (Linux /proc & Darwin ps)', () =>
           err.code = 'EPERM';
           throw err;
         },
-      })
+      }),
     ).toThrow('Operation not permitted');
   });
 
@@ -175,18 +175,23 @@ if (hasProcessTableAccess) {
       });
       spawnedProcesses.push(child);
 
-      const pids = await new Promise<{ childPid: number; grandchildPid: number }>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout waiting for child ready')), 5000);
-        child.stdout?.once('data', (data) => {
-          clearTimeout(timeout);
-          try {
-            resolve(JSON.parse(data.toString().trim()));
-          } catch (e) {
-            reject(e);
-          }
-        });
-        child.once('error', reject);
-      });
+      const pids = await new Promise<{ childPid: number; grandchildPid: number }>(
+        (resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error('Timeout waiting for child ready')),
+            5000,
+          );
+          child.stdout?.once('data', (data) => {
+            clearTimeout(timeout);
+            try {
+              resolve(JSON.parse(data.toString().trim()));
+            } catch (e) {
+              reject(e);
+            }
+          });
+          child.once('error', reject);
+        },
+      );
 
       await new Promise((r) => setTimeout(r, 100));
 
@@ -223,7 +228,10 @@ if (hasProcessTableAccess) {
       if (fs.existsSync(`/proc/${pid}/stat`)) {
         const statContent = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
         const lastParen = statContent.lastIndexOf(')');
-        const stateDirect = statContent.slice(lastParen + 2).trimStart().split(/\s+/)[0];
+        const stateDirect = statContent
+          .slice(lastParen + 2)
+          .trimStart()
+          .split(/\s+/)[0];
         expect(stateDirect).toBe('T');
       }
 

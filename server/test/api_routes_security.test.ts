@@ -1,16 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthService } from '../src/auth.js';
 import { ConfigStore } from '../src/config.js';
 import { LockoutManager } from '../src/lockout.js';
-import { AuthService } from '../src/auth.js';
-import { registerHealthRoutes } from '../src/routes/health.js';
-import { registerSetupRoutes } from '../src/routes/setup.js';
-import { registerSettingsRoutes } from '../src/routes/settings.js';
 import { registerBrowserRoutes } from '../src/routes/browser.js';
+import { registerHealthRoutes } from '../src/routes/health.js';
 import { registerMetricsRoutes } from '../src/routes/metrics.js';
+import { registerSettingsRoutes } from '../src/routes/settings.js';
+import { registerSetupRoutes } from '../src/routes/setup.js';
 import { registerSoundRoutes } from '../src/routes/sound.js';
 
 describe('REST API Routes & Security Boundaries (setup, health, metrics, browser, settings, sound)', () => {
@@ -178,11 +178,26 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
 
     // Unauthenticated POST /api/audio/test & /api/browser/navigate -> 401
     expect((await app.inject({ method: 'POST', url: '/api/audio/test' })).statusCode).toBe(401);
-    expect((await app.inject({ method: 'POST', url: '/api/browser/navigate', payload: { url: 'https://example.com' } })).statusCode).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/browser/navigate',
+          payload: { url: 'https://example.com' },
+        })
+      ).statusCode,
+    ).toBe(401);
 
     // Missing URL & dangerous URL schemes (file://, javascript:, chrome://) -> 400
     expect(
-      (await app.inject({ method: 'POST', url: '/api/browser/navigate', headers: authHeaders, payload: {} })).statusCode
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/browser/navigate',
+          headers: authHeaders,
+          payload: {},
+        })
+      ).statusCode,
     ).toBe(400);
 
     for (const unsafeUrl of ['file:///etc/passwd', 'javascript:alert(1)', 'chrome://settings']) {
@@ -228,10 +243,19 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     await authService.setPin('1234');
 
     // POST /api/auth/verify error & success
-    expect((await app.inject({ method: 'POST', url: '/api/auth/verify', payload: {} })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'POST', url: '/api/auth/verify', payload: { pin: '9999' } })).statusCode).toBe(401);
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/auth/verify', payload: {} })).statusCode,
+    ).toBe(400);
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/auth/verify', payload: { pin: '9999' } }))
+        .statusCode,
+    ).toBe(401);
 
-    const verifyOk = await app.inject({ method: 'POST', url: '/api/auth/verify', payload: { pin: '1234' } });
+    const verifyOk = await app.inject({
+      method: 'POST',
+      url: '/api/auth/verify',
+      payload: { pin: '1234' },
+    });
     expect(verifyOk.statusCode).toBe(200);
     const token = verifyOk.json().token as string;
     const authHeaders = { authorization: `Bearer ${token}` };
@@ -257,15 +281,29 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
 
     // System sleep / resume / restart-browser
     mockEncoder.isRunning.mockReturnValue(false);
-    expect((await app.inject({ method: 'POST', url: '/api/system/sleep', headers: authHeaders })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/system/sleep', headers: authHeaders }))
+        .statusCode,
+    ).toBe(200);
     expect(mockEncoder.stop).toHaveBeenCalled();
     expect(mockBrowser.pause).toHaveBeenCalled();
 
-    expect((await app.inject({ method: 'POST', url: '/api/system/resume', headers: authHeaders })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/system/resume', headers: authHeaders }))
+        .statusCode,
+    ).toBe(200);
     expect(mockBrowser.resume).toHaveBeenCalled();
     expect(mockEncoder.start).toHaveBeenCalled();
 
-    expect((await app.inject({ method: 'POST', url: '/api/system/restart-browser', headers: authHeaders })).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/system/restart-browser',
+          headers: authHeaders,
+        })
+      ).statusCode,
+    ).toBe(200);
     expect(mockBrowser.restartChrome).toHaveBeenCalled();
   });
 });

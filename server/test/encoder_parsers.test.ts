@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VaapiEncoder } from '../src/encoder/ffmpeg.js';
-import { VIDEO_FLAGS, AUDIO_FLAGS } from '../src/ws/protocol.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS } from '../src/ws/protocol.js';
 
 function buildOggPage(segments: Buffer[], magic: string = 'OggS'): Buffer {
   const segmentTable: number[] = [];
@@ -96,7 +96,10 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
 
   it('parses OggOpus pages (OpusHead, OpusTags skip, >255B multi-lacing audio, chunk splits, and OggS resync)', () => {
     const opusHead = Buffer.concat([Buffer.from('OpusHead', 'ascii'), Buffer.alloc(11, 0x02)]); // 19 bytes
-    const opusTags = Buffer.concat([Buffer.from('OpusTags', 'ascii'), Buffer.from('TesroidEncoder')]);
+    const opusTags = Buffer.concat([
+      Buffer.from('OpusTags', 'ascii'),
+      Buffer.from('TesroidEncoder'),
+    ]);
     const smallAudio = Buffer.alloc(80, 0xaa);
     const largeMultiSegmentAudio = Buffer.alloc(300, 0x55); // 255 + 45 lacing segments
 

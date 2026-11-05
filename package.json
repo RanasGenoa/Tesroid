@@ -5,8 +5,18 @@
   "private": true,
   "description": "Tesla in-car browser optimized self-hosted Cloud Browser streaming system",
   "scripts": {
+    "prepare": "husky",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
+    "typecheck:client": "npm --prefix client run typecheck",
+    "typecheck:server": "npm --prefix server run typecheck",
+    "typecheck": "npm run typecheck:client && npm run typecheck:server",
+    "lint": "biome check .",
+    "lint:ci": "biome ci --reporter=github",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "check": "npm run lint && npm run typecheck",
+    "check:ci": "npm run lint:ci && npm run typecheck",
     "build": "npm --prefix client run build && npm --prefix server run build",
     "test": "./server/node_modules/.bin/vitest run client/test server/test",
     "proxy": "node scripts/pc-proxy.mjs",
@@ -16,5 +26,15 @@
     "docker:logs": "docker compose logs -f",
     "deploy": "bash scripts/deploy.sh",
     "start": "npm --prefix server run start"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs,json}": [
+      "biome check --write --no-errors-on-unmatched"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0"
   }
 }

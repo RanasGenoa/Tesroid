@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Readable } from 'node:stream';
 
@@ -14,12 +14,12 @@ export const AUDIO_FLAGS = {
 
 export interface EncoderOptions {
   displayNum?: string; // ':99'
-  width?: number;      // 1280
-  height?: number;     // 720
-  fps?: number;        // 30
-  bitrate?: string;    // '4M'
-  vaapiDevice?: string;// '/dev/dri/renderD128'
-  audioSink?: string;  // 'virtual_sink.monitor'
+  width?: number; // 1280
+  height?: number; // 720
+  fps?: number; // 30
+  bitrate?: string; // '4M'
+  vaapiDevice?: string; // '/dev/dri/renderD128'
+  audioSink?: string; // 'virtual_sink.monitor'
 }
 
 export class VaapiEncoder extends EventEmitter {
@@ -115,7 +115,7 @@ export class VaapiEncoder extends EventEmitter {
   public isKeyframeStale(thresholdUs: bigint = 2000000n): boolean {
     if (!this.cachedKeyframe) return true;
     const currentPts = this.getCurrentPts();
-    return (currentPts - this.cachedKeyframe.pts) >= thresholdUs;
+    return currentPts - this.cachedKeyframe.pts >= thresholdUs;
   }
 
   public isRunning(): boolean {
@@ -145,28 +145,48 @@ export class VaapiEncoder extends EventEmitter {
 
     const videoArgs = [
       '-hide_banner',
-      '-loglevel', 'error',
-      '-thread_queue_size', '64',
-      '-f', 'x11grab',
-      '-draw_mouse', '0',
-      '-framerate', `${this.fps}`,
-      '-video_size', `${this.width}x${this.height}`,
-      '-i', `${this.displayNum}.0`,
-      '-vaapi_device', this.vaapiDevice,
-      '-vf', 'format=nv12,hwupload',
-      '-c:v', 'h264_vaapi',
-      '-compression_level', '4',
-      '-b:v', `${Math.round(bps / 1000)}k`,
-      '-maxrate', `${Math.round((bps * 1.3) / 1000)}k`,
-      '-bufsize', `${Math.round((bps * 0.6) / 1000)}k`,
-      '-g', `${gop}`,
-      '-bf', '0',
-      '-bsf:v', 'h264_metadata=aud=insert',
-      '-f', 'h264',
+      '-loglevel',
+      'error',
+      '-thread_queue_size',
+      '64',
+      '-f',
+      'x11grab',
+      '-draw_mouse',
+      '0',
+      '-framerate',
+      `${this.fps}`,
+      '-video_size',
+      `${this.width}x${this.height}`,
+      '-i',
+      `${this.displayNum}.0`,
+      '-vaapi_device',
+      this.vaapiDevice,
+      '-vf',
+      'format=nv12,hwupload',
+      '-c:v',
+      'h264_vaapi',
+      '-compression_level',
+      '4',
+      '-b:v',
+      `${Math.round(bps / 1000)}k`,
+      '-maxrate',
+      `${Math.round((bps * 1.3) / 1000)}k`,
+      '-bufsize',
+      `${Math.round((bps * 0.6) / 1000)}k`,
+      '-g',
+      `${gop}`,
+      '-bf',
+      '0',
+      '-bsf:v',
+      'h264_metadata=aud=insert',
+      '-f',
+      'h264',
       'pipe:1',
     ];
 
-    console.log(`[VaapiEncoder] Spawning dedicated Video FFmpeg encoder: ffmpeg ${videoArgs.join(' ')}`);
+    console.log(
+      `[VaapiEncoder] Spawning dedicated Video FFmpeg encoder: ffmpeg ${videoArgs.join(' ')}`,
+    );
 
     const proc = spawn('ffmpeg', videoArgs, {
       stdio: ['ignore', 'pipe', 'inherit'],
@@ -182,7 +202,9 @@ export class VaapiEncoder extends EventEmitter {
 
     proc.on('exit', (code, signal) => {
       if (this.videoProcess !== proc) {
-        console.log(`[VaapiEncoder] Superseded Video FFmpeg process exited cleanly (code=${code}, signal=${signal}).`);
+        console.log(
+          `[VaapiEncoder] Superseded Video FFmpeg process exited cleanly (code=${code}, signal=${signal}).`,
+        );
         return;
       }
       console.warn(`[VaapiEncoder] Video FFmpeg exited (code=${code}, signal=${signal})`);
@@ -223,24 +245,40 @@ export class VaapiEncoder extends EventEmitter {
 
     const audioArgs = [
       '-hide_banner',
-      '-loglevel', 'error',
-      '-f', 'pulse',
-      '-server', 'unix:/tmp/pulse-socket',
-      '-fragment_size', '1920',
-      '-frame_size', '1920',
-      '-i', this.audioSink,
-      '-c:a', 'libopus',
-      '-b:a', '128k',
-      '-vbr', 'on',
-      '-application', 'lowdelay',
-      '-frame_duration', '20',
-      '-page_duration', '20000',
-      '-flush_packets', '1',
-      '-f', 'opus',
+      '-loglevel',
+      'error',
+      '-f',
+      'pulse',
+      '-server',
+      'unix:/tmp/pulse-socket',
+      '-fragment_size',
+      '1920',
+      '-frame_size',
+      '1920',
+      '-i',
+      this.audioSink,
+      '-c:a',
+      'libopus',
+      '-b:a',
+      '128k',
+      '-vbr',
+      'on',
+      '-application',
+      'lowdelay',
+      '-frame_duration',
+      '20',
+      '-page_duration',
+      '20000',
+      '-flush_packets',
+      '1',
+      '-f',
+      'opus',
       'pipe:1',
     ];
 
-    console.log(`[VaapiEncoder] Spawning dedicated Audio FFmpeg encoder: ffmpeg ${audioArgs.join(' ')}`);
+    console.log(
+      `[VaapiEncoder] Spawning dedicated Audio FFmpeg encoder: ffmpeg ${audioArgs.join(' ')}`,
+    );
 
     const proc = spawn('ffmpeg', audioArgs, {
       stdio: ['ignore', 'pipe', 'inherit'],
@@ -257,7 +295,9 @@ export class VaapiEncoder extends EventEmitter {
 
     proc.on('exit', (code, signal) => {
       if (this.audioProcess !== proc) {
-        console.log(`[VaapiEncoder] Superseded Audio FFmpeg process exited cleanly (code=${code}, signal=${signal}).`);
+        console.log(
+          `[VaapiEncoder] Superseded Audio FFmpeg process exited cleanly (code=${code}, signal=${signal}).`,
+        );
         return;
       }
       console.warn(`[VaapiEncoder] Audio FFmpeg exited (code=${code}, signal=${signal})`);
@@ -320,7 +360,9 @@ export class VaapiEncoder extends EventEmitter {
     }
     const elapsedMs = performance.now() - this.lastVideoEmitTime;
     if (elapsedMs >= this.watchdogTimeoutMs) {
-      console.warn(`[VaapiEncoder] watchdog: No video frame emitted for ${Math.round(elapsedMs)}ms (>= ${this.watchdogTimeoutMs}ms). Restarting video encoder...`);
+      console.warn(
+        `[VaapiEncoder] watchdog: No video frame emitted for ${Math.round(elapsedMs)}ms (>= ${this.watchdogTimeoutMs}ms). Restarting video encoder...`,
+      );
       this.lastVideoEmitTime = performance.now();
       this.restart().catch((err) => {
         console.error('[VaapiEncoder] watchdog: Restart error:', err);
@@ -357,12 +399,17 @@ export class VaapiEncoder extends EventEmitter {
    * Restart FFmpeg video encoder, optionally with new resolution, fps, or bitrate.
    * Audio encoder is completely undisturbed to guarantee zero audio dropout during resize or settings change.
    */
-  public async restart(width?: number, height?: number, fps?: number, bitrate?: string | number): Promise<void> {
+  public async restart(
+    width?: number,
+    height?: number,
+    fps?: number,
+    bitrate?: string | number,
+  ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
-      `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
-      `fps=${fps || this.fps}, ` +
-      `bitrate=${bitrate || this.bitrate})...`
+        `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
+        `fps=${fps || this.fps}, ` +
+        `bitrate=${bitrate || this.bitrate})...`,
     );
     this.stopVideo();
 
@@ -394,8 +441,15 @@ export class VaapiEncoder extends EventEmitter {
    * Completely restart both Video and Audio FFmpeg streaming processes from scratch.
    * Clears all stream caches, remainder buffers, and resets the PTS timeline baseline.
    */
-  public async restartAll(width?: number, height?: number, fps?: number, bitrate?: string | number): Promise<void> {
-    console.log('[VaapiEncoder] Performing full clean restart of Video and Audio streaming processes...');
+  public async restartAll(
+    width?: number,
+    height?: number,
+    fps?: number,
+    bitrate?: string | number,
+  ): Promise<void> {
+    console.log(
+      '[VaapiEncoder] Performing full clean restart of Video and Audio streaming processes...',
+    );
     this.stopAudio();
     this.cachedOpusHead = null;
     this.oggRemainder = Buffer.alloc(0);
@@ -411,7 +465,12 @@ export class VaapiEncoder extends EventEmitter {
   /**
    * Dynamically update streaming settings (FPS / Bitrate) and restart video encoder.
    */
-  public async updateConfig(config: { fps?: number; bitrate?: string | number; width?: number; height?: number }): Promise<void> {
+  public async updateConfig(config: {
+    fps?: number;
+    bitrate?: string | number;
+    width?: number;
+    height?: number;
+  }): Promise<void> {
     await this.restart(config.width, config.height, config.fps, config.bitrate);
   }
 
@@ -459,7 +518,12 @@ export class VaapiEncoder extends EventEmitter {
     if (nalWithPrefix.length < 5) return;
 
     let offset = 3;
-    if (nalWithPrefix[0] === 0 && nalWithPrefix[1] === 0 && nalWithPrefix[2] === 0 && nalWithPrefix[3] === 1) {
+    if (
+      nalWithPrefix[0] === 0 &&
+      nalWithPrefix[1] === 0 &&
+      nalWithPrefix[2] === 0 &&
+      nalWithPrefix[3] === 1
+    ) {
       offset = 4;
     }
 
@@ -469,7 +533,7 @@ export class VaapiEncoder extends EventEmitter {
     // 1. Explicit AUD (Type 9)
     // 2. Fallback: new slice (Type 1 or 5) or SPS (Type 7) when we already accumulated a slice
     const hasExistingSlice = this.currentAuNals.some((buf) => {
-      const off = (buf[0] === 0 && buf[1] === 0 && buf[2] === 0 && buf[3] === 1) ? 4 : 3;
+      const off = buf[0] === 0 && buf[1] === 0 && buf[2] === 0 && buf[3] === 1 ? 4 : 3;
       const t = buf[off] & 0x1f;
       return t === 1 || t === 5;
     });
@@ -497,9 +561,10 @@ export class VaapiEncoder extends EventEmitter {
     this.currentAuNals = [];
 
     const nowUs = BigInt(Math.round(performance.now() * 1000));
-    this.videoPts = this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-      ? nowUs - this.streamStartTimeUs
-      : this.videoPts + this.videoFrameDurationUs;
+    this.videoPts =
+      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
+        ? nowUs - this.streamStartTimeUs
+        : this.videoPts + this.videoFrameDurationUs;
 
     let flags = 0;
     if (this.currentAuHasConfig) {
@@ -534,7 +599,7 @@ export class VaapiEncoder extends EventEmitter {
         this.oggRemainder[0] !== 0x4f || // 'O'
         this.oggRemainder[1] !== 0x67 || // 'g'
         this.oggRemainder[2] !== 0x67 || // 'g'
-        this.oggRemainder[3] !== 0x53    // 'S'
+        this.oggRemainder[3] !== 0x53 // 'S'
       ) {
         const nextSync = this.oggRemainder.indexOf('OggS', 1);
         if (nextSync === -1) {
@@ -601,9 +666,10 @@ export class VaapiEncoder extends EventEmitter {
     }
 
     const nowUs = BigInt(Math.round(performance.now() * 1000));
-    this.audioPts = this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-      ? nowUs - this.streamStartTimeUs
-      : this.audioPts + this.audioFrameDurationUs;
+    this.audioPts =
+      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
+        ? nowUs - this.streamStartTimeUs
+        : this.audioPts + this.audioFrameDurationUs;
     this.emit('audio', {
       flags: AUDIO_FLAGS.KEYFRAME,
       pts: this.audioPts,

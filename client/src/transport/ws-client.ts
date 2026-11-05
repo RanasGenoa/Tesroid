@@ -153,9 +153,11 @@ export class WsClient {
   }
 
   private scheduleReconnect(): void {
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, this.maxReconnectDelay);
     this.reconnectAttempts++;
-    console.log(`[WsClient] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+    console.log(
+      `[WsClient] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})...`,
+    );
     setTimeout(() => {
       if (!this.isExplicitlyClosed) {
         this.connect();

@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TelemetryCollector } from '../src/core/telemetry.js';
-import { FramePacer } from '../src/core/frame-pacer.js';
-import { CanvasRenderer } from '../src/core/canvas-renderer.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AvSyncController } from '../src/core/av-sync.js';
+import { CanvasRenderer } from '../src/core/canvas-renderer.js';
+import { FramePacer } from '../src/core/frame-pacer.js';
+import { TelemetryCollector } from '../src/core/telemetry.js';
 
 describe('TelemetryCollector (Client)', () => {
   let collector: TelemetryCollector;
@@ -11,9 +11,15 @@ describe('TelemetryCollector (Client)', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => mockStorage[key] ?? null,
-      setItem: (key: string, val: string) => { mockStorage[key] = val; },
-      removeItem: (key: string) => { delete mockStorage[key]; },
-      clear: () => { Object.keys(mockStorage).forEach((k) => delete mockStorage[k]); },
+      setItem: (key: string, val: string) => {
+        mockStorage[key] = val;
+      },
+      removeItem: (key: string) => {
+        delete mockStorage[key];
+      },
+      clear: () => {
+        Object.keys(mockStorage).forEach((k) => delete mockStorage[k]);
+      },
     });
     mockStorage['tesroid_detailed_telemetry'] = 'false';
     collector = new TelemetryCollector();
@@ -173,11 +179,15 @@ describe('TelemetryCollector (Client)', () => {
     pacer.destroy();
     vi.useRealTimers();
 
-    const shiftEvent = recordedEvents.find((e) => e.type === 'av_sync' && e.event === 'large_shift');
+    const shiftEvent = recordedEvents.find(
+      (e) => e.type === 'av_sync' && e.event === 'large_shift',
+    );
     expect(shiftEvent).toBeDefined();
     expect(shiftEvent.data.syncErrorMs).toBeGreaterThan(150);
 
-    const nudgeEvents = recordedEvents.filter((e) => e.type === 'av_sync' && e.event === 'pll_nudge');
+    const nudgeEvents = recordedEvents.filter(
+      (e) => e.type === 'av_sync' && e.event === 'pll_nudge',
+    );
     expect(nudgeEvents.length).toBeLessThanOrEqual(2);
   });
 });

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import WebSocket from 'ws';
 
 export interface TouchEventData {
@@ -555,7 +555,9 @@ class CdpTouchBridge {
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      try { this.ws.close(); } catch {}
+      try {
+        this.ws.close();
+      } catch {}
       this.ws = null;
     }
   }
@@ -638,8 +640,14 @@ export class X11InputManager {
     if (!e.screenWidth || !e.screenHeight) return;
 
     // Scale client coordinate to X11 display resolution (CSS pixels)
-    const targetX = Math.max(0, Math.min(this.displayWidth - 1, Math.round((e.x / e.screenWidth) * this.displayWidth)));
-    const targetY = Math.max(0, Math.min(this.displayHeight - 1, Math.round((e.y / e.screenHeight) * this.displayHeight)));
+    const targetX = Math.max(
+      0,
+      Math.min(this.displayWidth - 1, Math.round((e.x / e.screenWidth) * this.displayWidth)),
+    );
+    const targetY = Math.max(
+      0,
+      Math.min(this.displayHeight - 1, Math.round((e.y / e.screenHeight) * this.displayHeight)),
+    );
 
     // Try native CDP touch injection first (flawless native mobile/tablet touch)
     if (this.cdpBridge.handleTouch(e.action, e.pointerId, targetX, targetY)) {

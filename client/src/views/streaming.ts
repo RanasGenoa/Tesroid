@@ -1,17 +1,17 @@
-import { WsClient } from '../transport/ws-client.js';
-import { ClientProtocol } from '../transport/protocol.js';
+import { AdaptiveJitterController } from '../core/adaptive-jitter.js';
+import type { AudioPlayer } from '../core/audio-player.js';
+import type { AvSyncController } from '../core/av-sync.js';
 import { CanvasRenderer } from '../core/canvas-renderer.js';
-import { FramePacer } from '../core/frame-pacer.js';
 import { VideoStreamDecoder } from '../core/decoder.js';
-import { AudioPlayer } from '../core/audio-player.js';
-import { AvSyncController } from '../core/av-sync.js';
-import { DynamicLatencyController, LatencyMode } from '../core/latency.js';
-import { TouchMapper } from '../input/touch-mapper.js';
+import { FramePacer } from '../core/frame-pacer.js';
+import { DynamicLatencyController, type LatencyMode } from '../core/latency.js';
 import { MetricsCollector } from '../core/metrics.js';
 import { TelemetryCollector } from '../core/telemetry.js';
-import { AdaptiveJitterController } from '../core/adaptive-jitter.js';
+import { TouchMapper } from '../input/touch-mapper.js';
+import { ClientProtocol } from '../transport/protocol.js';
+import type { WsClient } from '../transport/ws-client.js';
 import { ICONS, showToast } from './icons.js';
-import { sleep, resume, encoderRestart, browserRestart } from './power-actions.js';
+import { browserRestart, encoderRestart, resume, sleep } from './power-actions.js';
 
 export function renderStreamingView(
   container: HTMLElement,
@@ -19,7 +19,7 @@ export function renderStreamingView(
   audioPlayer: AudioPlayer,
   avSync: AvSyncController,
   onOpenSettings: () => void,
-  authToken?: string | null
+  authToken?: string | null,
 ): () => void {
   container.innerHTML = `
     <div id="screen-container">
@@ -230,7 +230,10 @@ export function renderStreamingView(
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packMetrics(metrics));
     } else {
-      const token = authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
+      const token =
+        authToken ||
+        localStorage.getItem('tesroid_token') ||
+        sessionStorage.getItem('tesroid_token');
       fetch('/api/metrics/report', {
         method: 'POST',
         headers: {
@@ -254,7 +257,8 @@ export function renderStreamingView(
   });
 
   // Sync settings on startup
-  const effectiveToken = authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
+  const effectiveToken =
+    authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
   if (effectiveToken) {
     fetch('/api/settings', {
       headers: { Authorization: `Bearer ${effectiveToken}` },
@@ -279,7 +283,10 @@ export function renderStreamingView(
   const triggerSaveSettings = () => {
     if (saveSettingsTimer) clearTimeout(saveSettingsTimer);
     saveSettingsTimer = setTimeout(async () => {
-      const token = authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
+      const token =
+        authToken ||
+        localStorage.getItem('tesroid_token') ||
+        sessionStorage.getItem('tesroid_token');
       if (!token) return;
       try {
         await fetch('/api/settings', {
@@ -298,9 +305,12 @@ export function renderStreamingView(
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
             detail: { stream: { maxFps: currentFps, bitrate: currentBitrate } },
-          })
+          }),
         );
-        showToast(`画質設定を更新しました: ${currentFps}FPS / ${formatBitrateLabel(currentBitrate)}`, 'success');
+        showToast(
+          `画質設定を更新しました: ${currentFps}FPS / ${formatBitrateLabel(currentBitrate)}`,
+          'success',
+        );
       } catch (err) {
         console.error('[HUD] Failed to update stream settings:', err);
       }
@@ -391,7 +401,7 @@ export function renderStreamingView(
     },
     (ptsUs: number) => {
       lastDecodedPts = ptsUs;
-    }
+    },
   );
 
   if (typeof decoder.setBufferDepth === 'function') {
@@ -414,7 +424,7 @@ export function renderStreamingView(
 
   if (typeof decoder.setDownstreamQueueLengthProvider === 'function') {
     decoder.setDownstreamQueueLengthProvider(() =>
-      typeof framePacer.getQueueLength === 'function' ? framePacer.getQueueLength() : 0
+      typeof framePacer.getQueueLength === 'function' ? framePacer.getQueueLength() : 0,
     );
   }
 
@@ -438,23 +448,37 @@ export function renderStreamingView(
   };
 
   const getTotalBufferedBehindMs = () => {
-    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
-    const decoderBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const audioBufferedMs = typeof audioPlayer.getBufferedAudioMs === 'function' ? audioPlayer.getBufferedAudioMs() : 0;
+    const pacerBufferedMs =
+      typeof framePacer.getBufferedDurationMs === 'function'
+        ? framePacer.getBufferedDurationMs()
+        : 0;
+    const decoderBufferedMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const audioBufferedMs =
+      typeof audioPlayer.getBufferedAudioMs === 'function' ? audioPlayer.getBufferedAudioMs() : 0;
     // Notice: Do NOT use raw `(serverLatestPts - lastDecodedPts)` as "buffered behind" because on a static screen
     // FFmpeg does not emit new frames while server wall-clock advances, which previously caused false 2-3s catch-up display!
-    const clientBufferedMs = Math.max(pacerBufferedMs + decoderBufferedMs, Math.max(0, audioBufferedMs - 160));
+    const clientBufferedMs = Math.max(
+      pacerBufferedMs + decoderBufferedMs,
+      Math.max(0, audioBufferedMs - 160),
+    );
     return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
 
-    const isBuffering = typeof framePacer.getIsBuffering === 'function' ? framePacer.getIsBuffering() : false;
-    const isInteractive = typeof framePacer.getMode === 'function' && framePacer.getMode() === 'ACTIVE_INTERACTION';
+    const isBuffering =
+      typeof framePacer.getIsBuffering === 'function' ? framePacer.getIsBuffering() : false;
+    const isInteractive =
+      typeof framePacer.getMode === 'function' && framePacer.getMode() === 'ACTIVE_INTERACTION';
 
-    const pacerMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
-    const decoderMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerMs =
+      typeof framePacer.getBufferedDurationMs === 'function'
+        ? framePacer.getBufferedDurationMs()
+        : 0;
+    const decoderMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
     const localMs = pacerMs + decoderMs;
     const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
 
@@ -479,7 +503,8 @@ export function renderStreamingView(
       hudLiveBtn.title = `キャッシュ再生中 (ローカル: ${localSec}秒, サーバー: ${serverSec}秒) — タップで最新LIVEへ同期`;
     } else {
       hudLiveDot.className = 'status-dot status-online';
-      const cushionMs = typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
+      const cushionMs =
+        typeof framePacer.getAutoCushionMs === 'function' ? framePacer.getAutoCushionMs() : 0;
       hudLiveText.textContent = cushionMs > 50 ? `LIVE (+${Math.round(cushionMs)}ms)` : 'LIVE';
       hudLiveBtn.title = 'リアルタイム再生中 (タップで最新フレームへ同期)';
     }
@@ -609,7 +634,11 @@ export function renderStreamingView(
 
   const showSleepingScreen = () => {
     browserPowerState = 'sleeping';
-    showOverlay('省電力一時停止中 (CPU/GPU 0%)', 'ブラウザと配信は休止中です。再開ボタンまたは画面タップで即時復帰します。', false);
+    showOverlay(
+      '省電力一時停止中 (CPU/GPU 0%)',
+      'ブラウザと配信は休止中です。再開ボタンまたは画面タップで即時復帰します。',
+      false,
+    );
     if (noticeActionBox && noticeActionBtn) {
       noticeActionBtn.textContent = '再開する (タップで復帰)';
       noticeActionBox.style.display = 'flex';
@@ -693,7 +722,11 @@ export function renderStreamingView(
       closePowerModal();
     });
 
-    const token = authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token') || '';
+    const token =
+      authToken ||
+      localStorage.getItem('tesroid_token') ||
+      sessionStorage.getItem('tesroid_token') ||
+      '';
 
     overlay.querySelector('#power-quick-stop-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -736,7 +769,10 @@ export function renderStreamingView(
     openPowerModal();
   });
 
-  const resetClientStreamPipeline = (reasonTitle = '配信プロセスを再起動中...', reasonDesc = 'クリーンな映像・音声ストリームを再構築しています...') => {
+  const resetClientStreamPipeline = (
+    reasonTitle = '配信プロセスを再起動中...',
+    reasonDesc = 'クリーンな映像・音声ストリームを再構築しています...',
+  ) => {
     decoder.reset();
     if (typeof framePacer.reset === 'function') {
       framePacer.reset();
@@ -780,7 +816,8 @@ export function renderStreamingView(
       }
       if (connText) connText.textContent = `${currentRtt}ms`;
       if (connDot) {
-        connDot.className = currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
+        connDot.className =
+          currentRtt < 90 ? 'status-dot status-online' : 'status-dot status-warning';
       }
       updateHudLiveStatus();
     } else if (msg.type === 'AUTH_SUCCESS') {
@@ -791,7 +828,10 @@ export function renderStreamingView(
       serverMode = 'LIVE';
       updateHudLiveStatus();
     } else if (msg.type === 'STREAM_RESET') {
-      resetClientStreamPipeline('配信プロセスを再起動中...', 'エンコーダとバッファをクリーンに再初期化しています...');
+      resetClientStreamPipeline(
+        '配信プロセスを再起動中...',
+        'エンコーダとバッファをクリーンに再初期化しています...',
+      );
     } else if (msg.type === 'BROWSER_STATUS') {
       if (healthBrowser) {
         if (msg.state === 'paused') {
@@ -819,15 +859,19 @@ export function renderStreamingView(
   const sendBufferFeedback = (force = false) => {
     if (!wsClient.isConnected()) return;
 
-    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const pendingBufferedMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs =
+      typeof framePacer.getBufferedDurationMs === 'function'
+        ? framePacer.getBufferedDurationMs()
+        : 0;
     const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
     const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
 
-    const actualRenderedPts = typeof framePacer.getLastRenderedPtsUs === 'function'
-      ? framePacer.getLastRenderedPtsUs()
-      : 0;
-    const reportedPts = actualRenderedPts > 0 ? actualRenderedPts : (lastDecodedPts > 0 ? lastDecodedPts : undefined);
+    const actualRenderedPts =
+      typeof framePacer.getLastRenderedPtsUs === 'function' ? framePacer.getLastRenderedPtsUs() : 0;
+    const reportedPts =
+      actualRenderedPts > 0 ? actualRenderedPts : lastDecodedPts > 0 ? lastDecodedPts : undefined;
 
     const ptsChanged = reportedPts !== undefined && reportedPts !== lastAckSentPts;
     const bufferDelta = Math.abs(totalBufferedMs - lastReportedBufferedMs);
@@ -840,7 +884,7 @@ export function renderStreamingView(
         targetBufferMs,
         lastRenderedPts: reportedPts,
         isInteractive,
-      })
+      }),
     );
     if (reportedPts !== undefined) {
       lastAckSentPts = reportedPts;
@@ -854,15 +898,21 @@ export function renderStreamingView(
       disconnectSurvivalTimer = null;
     }
 
-    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const pendingBufferedMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs =
+      typeof framePacer.getBufferedDurationMs === 'function'
+        ? framePacer.getBufferedDurationMs()
+        : 0;
     const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
 
     if (totalBufferedMs <= 0) {
       decoder.reset();
       jitterController.reset();
     } else {
-      console.log(`[StreamingView] Reconnected with ${totalBufferedMs}ms buffer active. Seamlessly resuming...`);
+      console.log(
+        `[StreamingView] Reconnected with ${totalBufferedMs}ms buffer active. Seamlessly resuming...`,
+      );
     }
 
     if (connText) connText.textContent = '接続中';
@@ -885,13 +935,19 @@ export function renderStreamingView(
     if (connText) connText.textContent = '一時切断';
     if (connDot) connDot.className = 'status-dot status-warning';
 
-    const pendingBufferedMs = typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs = typeof framePacer.getBufferedDurationMs === 'function' ? framePacer.getBufferedDurationMs() : 0;
+    const pendingBufferedMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
+    const pacerBufferedMs =
+      typeof framePacer.getBufferedDurationMs === 'function'
+        ? framePacer.getBufferedDurationMs()
+        : 0;
     const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
 
     if (totalBufferedMs > 250) {
       // Survive temporary network drops by playing through local prefetch buffer
-      console.log(`[StreamingView] Disconnected, surviving stall with ${totalBufferedMs}ms local prefetch buffer...`);
+      console.log(
+        `[StreamingView] Disconnected, surviving stall with ${totalBufferedMs}ms local prefetch buffer...`,
+      );
       if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
       disconnectSurvivalTimer = setTimeout(() => {
         disconnectSurvivalTimer = null;
@@ -955,7 +1011,10 @@ export function renderStreamingView(
       fpsBadge.textContent = `${fps} FPS`;
       const healthyThreshold = Math.round(targetFps * 0.8);
       fpsBadge.style.color = fps >= healthyThreshold ? '#34c759' : '#ff9500';
-      fpsBadge.title = jitterDelay > 0 ? `実測描画フレームレート (ジッタバッファ: +${jitterDelay}ms)` : '実測描画フレームレート';
+      fpsBadge.title =
+        jitterDelay > 0
+          ? `実測描画フレームレート (ジッタバッファ: +${jitterDelay}ms)`
+          : '実測描画フレームレート';
     }
 
     updateHudLiveStatus();
@@ -1045,10 +1104,12 @@ export function renderStreamingView(
       const searchUrl = /^https?:\/\//i.test(text)
         ? text
         : `https://www.youtube.com/results?search_query=${encodeURIComponent(text)}`;
-      wsClient.send(ClientProtocol.packCommand({
-        type: 'NAVIGATE',
-        url: searchUrl,
-      }));
+      wsClient.send(
+        ClientProtocol.packCommand({
+          type: 'NAVIGATE',
+          url: searchUrl,
+        }),
+      );
       searchInput.value = '';
       searchInput.blur();
       showToast(`YouTube検索へ移動中: "${text}"`, 'info');
@@ -1067,7 +1128,11 @@ export function renderStreamingView(
   // Tap-to-resume handlers
   let lastResumeTrigger = 0;
   const onOverlayTap = (e: Event) => {
-    if ((e.target as HTMLElement).id === 'notice-action-btn' || (e.target as HTMLElement).id === 'notice-disconnect-btn') return;
+    if (
+      (e.target as HTMLElement).id === 'notice-action-btn' ||
+      (e.target as HTMLElement).id === 'notice-disconnect-btn'
+    )
+      return;
     if (browserPowerState === 'sleeping') {
       const now = performance.now();
       if (now - lastResumeTrigger < 800) return;

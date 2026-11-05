@@ -1,17 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
-import { WebSocketHandler } from '../src/ws/handler.js';
-import { MessageMultiplexer } from '../src/ws/multiplexer.js';
-import { WSS_CHANNEL, VIDEO_FLAGS, AUDIO_FLAGS } from '../src/ws/protocol.js';
-import { ConfigStore } from '../src/config.js';
-import { LockoutManager } from '../src/lockout.js';
-import { AuthService } from '../src/auth.js';
-import { MetricsManager } from '../src/metrics/manager.js';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProtocol, TOUCH_EVENT_ACTION } from '../../client/src/transport/protocol.js';
 import { WsClient } from '../../client/src/transport/ws-client.js';
+import { AuthService } from '../src/auth.js';
+import { ConfigStore } from '../src/config.js';
+import { LockoutManager } from '../src/lockout.js';
+import { MetricsManager } from '../src/metrics/manager.js';
+import { WebSocketHandler } from '../src/ws/handler.js';
+import { MessageMultiplexer } from '../src/ws/multiplexer.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS, WSS_CHANNEL } from '../src/ws/protocol.js';
 
 class MockEncoder extends EventEmitter {
   private running = true;
@@ -108,7 +108,7 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
       mockBrowser,
       mockEncoder as any,
       mockInput,
-      configStore
+      configStore,
     );
   });
 
@@ -126,14 +126,17 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     wsHandler.handleConnection(client as any);
 
     // Attempt touch before authentication -> blocked with AUTH_REQUIRED, inputManager untouched
-    await sendClientMsg(client, ClientProtocol.packTouch({
-      action: TOUCH_EVENT_ACTION.DOWN,
-      pointerId: 1,
-      x: 500,
-      y: 300,
-      screenWidth: 1280,
-      screenHeight: 720,
-    }));
+    await sendClientMsg(
+      client,
+      ClientProtocol.packTouch({
+        action: TOUCH_EVENT_ACTION.DOWN,
+        pointerId: 1,
+        x: 500,
+        y: 300,
+        screenWidth: 1280,
+        screenHeight: 720,
+      }),
+    );
     expect(mockInput.handleTouchEvent).not.toHaveBeenCalled();
     const preAuthControls = parseControlMessages(client.sentPackets);
     expect(preAuthControls.some((c) => c.type === 'AUTH_REQUIRED')).toBe(true);
@@ -210,12 +213,12 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     const packedVideo = MessageMultiplexer.packVideo(
       VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG,
       9_876_543_210n,
-      Buffer.from(videoRaw)
+      Buffer.from(videoRaw),
     );
     const packedAudio = MessageMultiplexer.packAudio(
       AUDIO_FLAGS.KEYFRAME,
       9_876_560_000n,
-      Buffer.from(audioRaw)
+      Buffer.from(audioRaw),
     );
 
     (wsClient as any).handleMessage(toArrayBuffer(packedVideo));
@@ -264,7 +267,11 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     // 3. Keyframe arrives while bufferedAmount is STILL above LOW_WATER_MARK (e.g. 250KB):
     // MUST still drop so socket can drain cleanly!
     client.bufferedAmount = 250 * 1024;
-    mockEncoder.emit('video', { flags: VIDEO_FLAGS.KEYFRAME, pts: 500_000n, data: Buffer.alloc(64) });
+    mockEncoder.emit('video', {
+      flags: VIDEO_FLAGS.KEYFRAME,
+      pts: 500_000n,
+      data: Buffer.alloc(64),
+    });
     expect(client.sentPackets).toHaveLength(0);
 
     // 4. Socket drains below LOW_WATER_MARK (e.g. 32KB), but next frame is a delta P-frame:
@@ -274,14 +281,22 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     expect(client.sentPackets).toHaveLength(0);
 
     // 5. Clean IDR keyframe arrives while <= LOW_WATER_MARK -> recovers and resumes P-frames!
-    mockEncoder.emit('video', { flags: VIDEO_FLAGS.KEYFRAME, pts: 1_000_000n, data: Buffer.alloc(64) });
+    mockEncoder.emit('video', {
+      flags: VIDEO_FLAGS.KEYFRAME,
+      pts: 1_000_000n,
+      data: Buffer.alloc(64),
+    });
     mockEncoder.emit('video', { flags: 0, pts: 1_033_000n, data: Buffer.alloc(64) });
     expect(client.sentPackets).toHaveLength(2);
 
     // 6. Audio 2MB extreme buffer guard
     client.sentPackets = [];
     client.bufferedAmount = 3 * 1024 * 1024;
-    mockEncoder.emit('audio', { flags: AUDIO_FLAGS.KEYFRAME, pts: 1_000_000n, data: Buffer.alloc(32) });
+    mockEncoder.emit('audio', {
+      flags: AUDIO_FLAGS.KEYFRAME,
+      pts: 1_000_000n,
+      data: Buffer.alloc(32),
+    });
     expect(client.sentPackets).toHaveLength(0);
   });
 
@@ -344,22 +359,34 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     client.sentPackets = [];
 
     // Unsafe file:// NAVIGATE must be blocked before reaching browserManager.navigate
-    await sendClientMsg(client, ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'file:///etc/passwd' }));
+    await sendClientMsg(
+      client,
+      ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'file:///etc/passwd' }),
+    );
     expect(mockBrowser.navigate).not.toHaveBeenCalled();
     expect(parseControlMessages(client.sentPackets).some((c) => c.type === 'ERROR')).toBe(true);
 
     // Valid https:// NAVIGATE succeeds
-    await sendClientMsg(client, ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'https://www.netflix.com' }));
+    await sendClientMsg(
+      client,
+      ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'https://www.netflix.com' }),
+    );
     expect(mockBrowser.navigate).toHaveBeenCalledWith('https://www.netflix.com');
 
     // SET_ZOOM, KEY, TYPE_TEXT, PAUSE_BROWSER, RESUME_BROWSER, RESTART_BROWSER
-    await sendClientMsg(client, ClientProtocol.packCommand({ type: 'SET_ZOOM', displayScale: 135 }));
+    await sendClientMsg(
+      client,
+      ClientProtocol.packCommand({ type: 'SET_ZOOM', displayScale: 135 }),
+    );
     expect(mockBrowser.setDisplayScale).toHaveBeenCalledWith(135);
 
     await sendClientMsg(client, ClientProtocol.packCommand({ type: 'KEY', key: 'BackSpace' }));
     expect(mockInput.sendKey).toHaveBeenCalledWith('BackSpace');
 
-    await sendClientMsg(client, ClientProtocol.packCommand({ type: 'TYPE_TEXT', text: 'Tesla', enter: false }));
+    await sendClientMsg(
+      client,
+      ClientProtocol.packCommand({ type: 'TYPE_TEXT', text: 'Tesla', enter: false }),
+    );
     expect(mockBrowser.typeText).toHaveBeenCalledWith('Tesla', false);
 
     await sendClientMsg(client, ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));

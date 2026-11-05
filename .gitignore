@@ -24,7 +24,9 @@ debug_screen.png
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 .cursor/
 .claude/
 

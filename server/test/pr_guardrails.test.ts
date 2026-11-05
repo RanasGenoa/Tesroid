@@ -1,16 +1,16 @@
-import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describe, expect, it } from 'vitest';
 import {
-  WSS_CHANNEL as SERVER_WSS_CHANNEL,
-  VIDEO_FLAGS as SERVER_VIDEO_FLAGS,
-  AUDIO_FLAGS as SERVER_AUDIO_FLAGS,
-} from '../src/ws/protocol.js';
-import {
-  WSS_CHANNEL as CLIENT_WSS_CHANNEL,
-  VIDEO_FLAGS as CLIENT_VIDEO_FLAGS,
   AUDIO_FLAGS as CLIENT_AUDIO_FLAGS,
+  VIDEO_FLAGS as CLIENT_VIDEO_FLAGS,
+  WSS_CHANNEL as CLIENT_WSS_CHANNEL,
 } from '../../client/src/transport/protocol.js';
+import {
+  AUDIO_FLAGS as SERVER_AUDIO_FLAGS,
+  VIDEO_FLAGS as SERVER_VIDEO_FLAGS,
+  WSS_CHANNEL as SERVER_WSS_CHANNEL,
+} from '../src/ws/protocol.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 
@@ -38,7 +38,10 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
   });
 
   it('enforces Xvfb + VAAPI hybrid rendering rules and forbids compositor-deadlocking Chrome flags', () => {
-    const managerSrc = fs.readFileSync(path.join(REPO_ROOT, 'server/src/browser/manager.ts'), 'utf-8');
+    const managerSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/manager.ts'),
+      'utf-8',
+    );
     const codeOnly = managerSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
     // Forbidden anti-patterns (AGENTS.md §5.1 & docs/OPTIMIZATION_KNOWLEDGE.md §2, §6)
@@ -59,8 +62,14 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
 
   it('preserves PulseAudio UNIX socket and zero-latency FFmpeg encoding invariants', () => {
     const dockerfile = fs.readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf-8');
-    const managerSrc = fs.readFileSync(path.join(REPO_ROOT, 'server/src/browser/manager.ts'), 'utf-8');
-    const ffmpegSrc = fs.readFileSync(path.join(REPO_ROOT, 'server/src/encoder/ffmpeg.ts'), 'utf-8');
+    const managerSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/manager.ts'),
+      'utf-8',
+    );
+    const ffmpegSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/encoder/ffmpeg.ts'),
+      'utf-8',
+    );
 
     // Dedicated /etc/pulse/tesroid.pa & UNIX socket /tmp/pulse-socket + virtual_sink
     expect(dockerfile).toContain('/etc/pulse/tesroid.pa');
@@ -77,10 +86,13 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
 
   it('preserves dual-watermark hysteresis backpressure and CDP native touch priority', () => {
     const wsHandlerSrc = fs.readFileSync(path.join(REPO_ROOT, 'server/src/ws/handler.ts'), 'utf-8');
-    const xdotoolSrc = fs.readFileSync(path.join(REPO_ROOT, 'server/src/input/xdotool.ts'), 'utf-8');
+    const xdotoolSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/input/xdotool.ts'),
+      'utf-8',
+    );
     const canvasRendererSrc = fs.readFileSync(
       path.join(REPO_ROOT, 'client/src/core/canvas-renderer.ts'),
-      'utf-8'
+      'utf-8',
     );
 
     expect(wsHandlerSrc).toContain('HIGH_WATER_MARK');
@@ -95,8 +107,9 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     const files = walkWorkspaceFiles(REPO_ROOT);
     const selfPath = path.resolve(__filename);
 
-    const privateKeyPattern = new RegExp('-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----');
-    const localHomePathPattern = new RegExp('\\/(Users|home)\\/(?!ubuntu|chrome|node|runner|user\\b)[a-zA-Z0-9_-]+\\/');
+    const privateKeyPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+    const localHomePathPattern =
+      /\/(Users|home)\/(?!ubuntu|chrome|node|runner|user\b)[a-zA-Z0-9_-]+\//;
 
     for (const filePath of files) {
       if (path.resolve(filePath) === selfPath) continue;
@@ -112,12 +125,14 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
       const rel = path.relative(REPO_ROOT, filePath);
 
       expect(content, `Private key material detected in ${rel}`).not.toMatch(privateKeyPattern);
-      expect(content, `Hardcoded host user path detected in ${rel}`).not.toMatch(localHomePathPattern);
+      expect(content, `Hardcoded host user path detected in ${rel}`).not.toMatch(
+        localHomePathPattern,
+      );
 
       if (rel.startsWith('.github/workflows/') || rel.startsWith('scripts/')) {
         expect(
           content,
-          `Forbidden public container registry push detected in ${rel} (Google Chrome redistribution rule)`
+          `Forbidden public container registry push detected in ${rel} (Google Chrome redistribution rule)`,
         ).not.toMatch(/\bdocker\s+push\b/);
       }
     }

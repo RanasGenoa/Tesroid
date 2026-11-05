@@ -1,4 +1,4 @@
-import { VIDEO_FLAGS, AUDIO_FLAGS } from '../ws/protocol.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS } from '../ws/protocol.js';
 
 export interface BufferedFrame {
   type: 'video' | 'audio';
@@ -142,7 +142,7 @@ export class PlaybackBuffer {
     while (this.videoFrames.length > 1) {
       const newestPts = this.videoFrames[this.videoFrames.length - 1].pts;
       const oldestPts = this.videoFrames[0].pts;
-      const durationExceeded = (newestPts - oldestPts) > maxDurationUs;
+      const durationExceeded = newestPts - oldestPts > maxDurationUs;
       const bytesExceeded = this.currentBytes > this.maxBytes;
 
       if (!durationExceeded && !bytesExceeded) {
@@ -172,7 +172,10 @@ export class PlaybackBuffer {
       // 音声も新しい最古 video PTS より古いものを破棄
       const minVideoPts = this.videoFrames[0].pts;
       let audioDropCount = 0;
-      while (audioDropCount < this.audioFrames.length && this.audioFrames[audioDropCount].pts < minVideoPts) {
+      while (
+        audioDropCount < this.audioFrames.length &&
+        this.audioFrames[audioDropCount].pts < minVideoPts
+      ) {
         this.currentBytes -= this.audioFrames[audioDropCount].data.length;
         audioDropCount++;
       }
@@ -209,9 +212,10 @@ export class PlaybackBuffer {
     if (targetKeyframeIdx === -1) {
       const oldestKeyframe = this.videoFrames[0];
       if ((oldestKeyframe.flags & VIDEO_FLAGS.KEYFRAME) !== 0) {
-        const diffUs = oldestKeyframe.pts > lastAckPts
-          ? (oldestKeyframe.pts - lastAckPts)
-          : (lastAckPts - oldestKeyframe.pts);
+        const diffUs =
+          oldestKeyframe.pts > lastAckPts
+            ? oldestKeyframe.pts - lastAckPts
+            : lastAckPts - oldestKeyframe.pts;
         // 5秒以内の乖離ならバッファ先頭から開始可能
         if (diffUs <= 5_000_000n) {
           targetKeyframeIdx = 0;

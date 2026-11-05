@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { ConfigStore } from './config.js';
-import { LockoutManager } from './lockout.js';
+import type { ConfigStore } from './config.js';
+import type { LockoutManager } from './lockout.js';
 
 export interface AuthSession {
   token: string;
@@ -37,7 +37,9 @@ export class AuthService {
     this.lockoutManager.recordSuccess();
   }
 
-  public async verifyPin(pin: string): Promise<{ success: boolean; token?: string; remainingAttempts: number }> {
+  public async verifyPin(
+    pin: string,
+  ): Promise<{ success: boolean; token?: string; remainingAttempts: number }> {
     const config = this.configStore.getConfig();
     if (!config.isSetupCompleted || !config.pinHash) {
       return { success: false, remainingAttempts: this.lockoutManager.getRemainingAttempts() };

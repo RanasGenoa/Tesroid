@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AudioPlayer } from '../src/core/audio-player.js';
 import { AvSyncController } from '../src/core/av-sync.js';
 import { FramePacer } from '../src/core/frame-pacer.js';
-import { AudioPlayer } from '../src/core/audio-player.js';
 import { TelemetryCollector } from '../src/core/telemetry.js';
 import { AUDIO_FLAGS } from '../src/transport/protocol.js';
 
@@ -131,7 +131,7 @@ describe('A/V Sync Hunting Prevention & Rate Limiting (Issue #15)', () => {
     };
 
     const avSync = new AvSyncController();
-    let ctxTimeSec = 10.0;
+    const ctxTimeSec = 10.0;
     avSync.setAudioContextTimeProvider(() => ctxTimeSec);
 
     // Audio is playing PTS 1,000,000us (1.0s)
@@ -170,7 +170,7 @@ describe('A/V Sync Hunting Prevention & Rate Limiting (Issue #15)', () => {
     };
 
     const avSync = new AvSyncController();
-    let ctxTimeSec = 5.0;
+    const ctxTimeSec = 5.0;
     avSync.setAudioContextTimeProvider(() => ctxTimeSec);
 
     // Audio is playing PTS 1,000,000us (lags ~2000ms behind upcoming video)
@@ -311,7 +311,7 @@ describe('A/V Sync Hunting Prevention & Rate Limiting (Issue #15)', () => {
   });
 
   it('AudioPlayer.syncWithVideo preserves chunks on <=1500ms jitter and cleanly resyncs within 60ms on >1500ms GOP jump', async () => {
-    let ctxTime = 2.0;
+    const ctxTime = 2.0;
     const { emitFrame } = setupMockWebAudioEnv(() => ctxTime);
 
     const avSync = new AvSyncController();
@@ -340,7 +340,9 @@ describe('A/V Sync Hunting Prevention & Rate Limiting (Issue #15)', () => {
     avSync.updateVideoPts(2_175_000); // targetAudioPtsUs = 2,175,000 + 25,000 = 2,200,000 (1200ms > 1,000,000)
     player.syncWithVideo();
     collector.flush();
-    expect(events.filter((e) => e.type === 'audio' && e.event === 'drop_stale_audio')).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'audio' && e.event === 'drop_stale_audio')).toHaveLength(
+      0,
+    );
 
     // 2. Major GOP jump (> 1500ms lag): hold another batch up to 4.50s, then jump video to 4.20s
     avSync.setVideoBuffering(true);

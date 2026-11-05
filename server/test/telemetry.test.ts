@@ -1,13 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
-import Fastify, { FastifyInstance } from 'fastify';
-import { TelemetryManager } from '../src/telemetry/manager.js';
-import { registerTelemetryRoutes } from '../src/routes/telemetry.js';
+import path from 'node:path';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../src/auth.js';
 import { ConfigStore } from '../src/config.js';
 import { LockoutManager } from '../src/lockout.js';
+import { registerTelemetryRoutes } from '../src/routes/telemetry.js';
+import { TelemetryManager } from '../src/telemetry/manager.js';
 import { WebSocketHandler } from '../src/ws/handler.js';
 import { WSS_CHANNEL } from '../src/ws/protocol.js';
 
@@ -81,7 +81,11 @@ describe('TelemetryManager, Routes & WS Channel Tests', () => {
     expect(sessions[0].eventCount).toBe(2);
 
     // Simulate server restart with a fresh TelemetryManager instance pointing at the same logDir
-    const restartedManager = new TelemetryManager({ logDir, maxSessions: 3, maxFileSizeBytes: 1024 });
+    const restartedManager = new TelemetryManager({
+      logDir,
+      maxSessions: 3,
+      maxFileSizeBytes: 1024,
+    });
     const recoveredSessions = await restartedManager.listSessions();
     expect(recoveredSessions.length).toBe(1);
     expect(recoveredSessions[0].eventCount).toBe(2);
@@ -284,7 +288,11 @@ describe('TelemetryManager, Routes & WS Channel Tests', () => {
       // Unauthenticated 0x15 telemetry packet must be rejected
       const telemetryBuf = Buffer.concat([
         Buffer.from([WSS_CHANNEL.TELEMETRY]),
-        Buffer.from(JSON.stringify([{ timestamp: 500, type: 'av_sync', event: 'large_shift', data: { shift: 220 } }])),
+        Buffer.from(
+          JSON.stringify([
+            { timestamp: 500, type: 'av_sync', event: 'large_shift', data: { shift: 220 } },
+          ]),
+        ),
       ]);
       await messageListener(telemetryBuf);
       expect(fs.existsSync(wsTelemetryDir)).toBe(false);

@@ -1,6 +1,6 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { MetricsManager, ClientQualityMetrics } from '../metrics/manager.js';
-import { AuthService } from '../auth.js';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { AuthService } from '../auth.js';
+import { type ClientQualityMetrics, MetricsManager } from '../metrics/manager.js';
 
 export function registerMetricsRoutes(app: FastifyInstance, authService?: AuthService) {
   const metricsManager = MetricsManager.getInstance();
@@ -36,7 +36,7 @@ export function registerMetricsRoutes(app: FastifyInstance, authService?: AuthSe
         count: history.length,
         history,
       };
-    }
+    },
   );
 
   // POST /api/metrics/report - Client report submission via HTTP
@@ -49,6 +49,6 @@ export function registerMetricsRoutes(app: FastifyInstance, authService?: AuthSe
       }
       metricsManager.addMetrics(req.body);
       return { success: true };
-    }
+    },
   );
 }

@@ -1,13 +1,13 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { AuthService } from '../auth.js';
 import { TelemetryManager } from '../telemetry/manager.js';
-import { AuthService } from '../auth.js';
 
 export function registerTelemetryRoutes(
   app: FastifyInstance,
   authService?: AuthService,
-  customManager?: TelemetryManager
+  customManager?: TelemetryManager,
 ) {
   const telemetryManager = customManager || TelemetryManager.getInstance();
 
@@ -34,17 +34,21 @@ export function registerTelemetryRoutes(
   });
 
   // GET /api/telemetry/sessions/latest/download - Download latest session jsonl
-  app.get('/api/telemetry/sessions/latest/download', { preHandler: checkAuth }, async (_req, reply) => {
-    const latestFilePath = await telemetryManager.getLatestSessionFile();
-    if (!latestFilePath) {
-      return reply.status(404).send({ error: 'No telemetry session logs found.' });
-    }
+  app.get(
+    '/api/telemetry/sessions/latest/download',
+    { preHandler: checkAuth },
+    async (_req, reply) => {
+      const latestFilePath = await telemetryManager.getLatestSessionFile();
+      if (!latestFilePath) {
+        return reply.status(404).send({ error: 'No telemetry session logs found.' });
+      }
 
-    const filename = path.basename(latestFilePath);
-    reply.header('Content-Type', 'application/x-ndjson; charset=utf-8');
-    reply.header('Content-Disposition', `attachment; filename="${filename}"`);
-    return reply.send(fs.createReadStream(latestFilePath));
-  });
+      const filename = path.basename(latestFilePath);
+      reply.header('Content-Type', 'application/x-ndjson; charset=utf-8');
+      reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+      return reply.send(fs.createReadStream(latestFilePath));
+    },
+  );
 
   // GET /api/telemetry/sessions/:sessionId/download - Download specific session jsonl
   app.get<{ Params: { sessionId: string } }>(
@@ -61,7 +65,7 @@ export function registerTelemetryRoutes(
       reply.header('Content-Type', 'application/x-ndjson; charset=utf-8');
       reply.header('Content-Disposition', `attachment; filename="${filename}"`);
       return reply.send(fs.createReadStream(filePath));
-    }
+    },
   );
 
   // DELETE /api/telemetry/sessions - Clear all stored telemetry logs

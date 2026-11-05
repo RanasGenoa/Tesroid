@@ -25,7 +25,9 @@ const server = http.createServer((req, res) => {
   proxyReq.on('error', (err) => {
     console.error('[PC-Proxy] Request error:', err.message);
     res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end(`Proxy connection error to target host (${TARGET_HOST}:${TARGET_PORT}): ${err.message}`);
+    res.end(
+      `Proxy connection error to target host (${TARGET_HOST}:${TARGET_PORT}): ${err.message}`,
+    );
   });
 
   req.pipe(proxyReq);
@@ -35,10 +37,10 @@ server.on('upgrade', (req, clientSocket, head) => {
   const targetSocket = net.connect(TARGET_PORT, TARGET_HOST, () => {
     targetSocket.write(
       `${req.method} ${req.url} HTTP/1.1\r\n` +
-      Object.entries(req.headers)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join('\r\n') +
-      '\r\n\r\n'
+        Object.entries(req.headers)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\r\n') +
+        '\r\n\r\n',
     );
     if (head && head.length > 0) {
       targetSocket.write(head);

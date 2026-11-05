@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EdgeGuard } from '../src/input/edge-guard.js';
-import { TouchMapper } from '../src/input/touch-mapper.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DynamicLatencyController } from '../src/core/latency.js';
 import { MetricsCollector } from '../src/core/metrics.js';
+import { EdgeGuard } from '../src/input/edge-guard.js';
+import { TouchMapper } from '../src/input/touch-mapper.js';
+import { TOUCH_EVENT_ACTION, WSS_CHANNEL } from '../src/transport/protocol.js';
 import { WsClient } from '../src/transport/ws-client.js';
-import { WSS_CHANNEL, TOUCH_EVENT_ACTION } from '../src/transport/protocol.js';
 
 function unpackTouchPacket(pkt: Uint8Array) {
   const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
@@ -44,9 +44,9 @@ describe('EdgeGuard, TouchMapper, WsClient, DynamicLatencyController & MetricsCo
 
     const canvasListeners = new Map<string, Function>();
     const windowListeners = new Map<string, Function>();
-    let objectFitMode = 'contain';
+    const objectFitMode = 'contain';
     // Canvas element occupies 1600x720 on screen while video stream is 1280x720 (pillarboxed: 160px black bars left & right!)
-    let rect = { left: 0, top: 0, width: 1600, height: 720 };
+    const rect = { left: 0, top: 0, width: 1600, height: 720 };
 
     const mockCanvas: any = {
       width: 1280,
@@ -84,7 +84,13 @@ describe('EdgeGuard, TouchMapper, WsClient, DynamicLatencyController & MetricsCo
     };
 
     // 1. Right-click mouse (button=2) & unpaired hover MOVE ignored
-    fire('pointerdown', { pointerType: 'mouse', button: 2, pointerId: 1, clientX: 500, clientY: 300 });
+    fire('pointerdown', {
+      pointerType: 'mouse',
+      button: 2,
+      pointerId: 1,
+      clientX: 500,
+      clientY: 300,
+    });
     fire('pointermove', { pointerId: 99, clientX: 500, clientY: 300 });
     expect(sentPackets).toHaveLength(0);
 

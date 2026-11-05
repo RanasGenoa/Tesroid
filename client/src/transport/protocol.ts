@@ -97,7 +97,8 @@ export class ClientProtocol {
       type: 'BUFFER_FEEDBACK',
       bufferedMs: feedback.bufferedMs,
       targetBufferMs: feedback.targetBufferMs,
-      lastRenderedPts: feedback.lastRenderedPts !== undefined ? String(feedback.lastRenderedPts) : undefined,
+      lastRenderedPts:
+        feedback.lastRenderedPts !== undefined ? String(feedback.lastRenderedPts) : undefined,
       isInteractive: feedback.isInteractive ?? false,
       stallCount: feedback.stallCount ?? 0,
     });
@@ -116,13 +117,13 @@ export class ClientProtocol {
 
     // offset into 32B touch buffer starts at byte 1
     view.setUint8(1, 2); // type = INJECT_TOUCH_EVENT
-    view.setUint8(2, e.action & 0xFF);
+    view.setUint8(2, e.action & 0xff);
     view.setBigInt64(3, BigInt(e.pointerId), false);
     view.setInt32(11, Math.round(e.x), false);
     view.setInt32(15, Math.round(e.y), false);
     view.setUint16(19, Math.round(e.screenWidth), false);
     view.setUint16(21, Math.round(e.screenHeight), false);
-    view.setUint16(23, e.pressure ?? 0xFFFF, false);
+    view.setUint16(23, e.pressure ?? 0xffff, false);
     view.setInt32(25, 0, false); // actionButton
     view.setInt32(29, 0, false); // buttons
 
