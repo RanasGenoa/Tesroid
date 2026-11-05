@@ -51,7 +51,7 @@ jobs:
           fi
 
           # ベースブランチと PR の最新コミット (pr-head) の差分を抽出 (ロックファイル・ビルド成果物を除外)
-          git diff "$BASE_REF...pr-head" \
+          git diff "origin/$BASE_REF...pr-head" \
             -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
           DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
