@@ -181,7 +181,7 @@ jobs:
           EOF
 
           # 既存のレビューコメントが存在するか検索 (マーカー一致、全ページ走査、最新を対象)
-          EXISTING_COMMENT_ID=$(gh api --paginate -F per_page=100 "repos/$REPO/issues/$PR_NUMBER/comments" \
+          EXISTING_COMMENT_ID=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
             --jq '.[] | select(.body | contains("<!-- antigravity-pr-review -->")) | .id' | tail -n 1)
 
           if [ -n "$EXISTING_COMMENT_ID" ]; then
