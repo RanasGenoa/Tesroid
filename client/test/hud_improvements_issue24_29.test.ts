@@ -243,6 +243,37 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
     expect(elementRegistry.get('browser-restart-btn')).toBeDefined();
   });
 
+  it('Issue 29: HUDバッファ状態（hud-live-btn）連打時に再エンコードAPIが重複実行されないこと（連打ガード）', async () => {
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
+
+    const hudLiveBtn = elementRegistry.get('hud-live-btn');
+    expect(hudLiveBtn).toBeDefined();
+
+    // 連続で3回タップ
+    hudLiveBtn.click();
+    hudLiveBtn.click();
+    hudLiveBtn.click();
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // 連打ガードにより、/api/encoder/restart は 1 回だけ呼ばれること
+    const restartCalls = (globalThis.fetch as any).mock.calls.filter(
+      (call: any[]) => call[0] === '/api/encoder/restart',
+    );
+    expect(restartCalls.length).toBe(1);
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/encoder/restart', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${testToken}` },
+    });
+  });
+
   it('Issue 24: CATCHUPモードやキュー遅延発生時にrawRttが跳ね上がっても、HUDの瞬間RTTが肥大化しないこと', () => {
     renderStreamingView(
       mockContainer,

@@ -582,10 +582,16 @@ export function renderStreamingView(
     }
   };
 
+  let isRestartingEncoder = false;
+
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
     resetHudDimTimer();
     executeJumpToLive(true);
+
+    if (isRestartingEncoder) return;
+    isRestartingEncoder = true;
+
     const token =
       authToken ||
       localStorage.getItem('tesroid_token') ||
@@ -595,6 +601,10 @@ export function renderStreamingView(
       await encoderRestart(token);
     } catch (err: any) {
       console.error('[StreamingView] Failed to restart encoder on live tap:', err);
+    } finally {
+      setTimeout(() => {
+        isRestartingEncoder = false;
+      }, 1000);
     }
   });
 
