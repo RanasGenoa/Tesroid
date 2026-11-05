@@ -1,5 +1,6 @@
 import { H264Parser } from './h264-parser.js';
 import { VIDEO_FLAGS } from '../transport/protocol.js';
+import type { TelemetryCollector } from './telemetry.js';
 
 export type FrameOutputTarget =
   | { queueFrame: (frame: VideoFrame) => void; getQueueLength?: () => number }
@@ -36,6 +37,11 @@ export class VideoStreamDecoder {
 
   private onFrameDecoded?: (pts: number) => void;
   public onDecoderError?: () => void;
+  private telemetry?: TelemetryCollector;
+
+  public setTelemetryCollector(telemetry?: TelemetryCollector): void {
+    this.telemetry = telemetry;
+  }
 
   public getDecodeQueueSize(): number {
     return (this.decoder ? this.decoder.decodeQueueSize : 0) + this.pendingPackets.length;
@@ -176,6 +182,14 @@ export class VideoStreamDecoder {
       }
 
       if (nextKf > 0) {
+        if (this.telemetry?.isEnabled()) {
+          this.telemetry.recordDecoder('trim_gop', {
+            droppedCount: nextKf,
+            remainingCount: this.pendingPackets.length - nextKf,
+            durationMs: Math.round(durationMs),
+            pendingBytes: this.pendingBytes,
+          });
+        }
         // Drop frames from 0 to nextKf - 1
         for (let i = 0; i < nextKf; i++) {
           this.pendingBytes = Math.max(0, this.pendingBytes - this.pendingPackets[i].data.length);
@@ -185,6 +199,12 @@ export class VideoStreamDecoder {
         // No keyframe found ahead, but limit is exceeded: drop head and await next keyframe
         const removed = this.pendingPackets.shift()!;
         this.pendingBytes = Math.max(0, this.pendingBytes - removed.data.length);
+        if (this.telemetry?.isEnabled()) {
+          this.telemetry.recordDecoder('trim_head_await_keyframe', {
+            remainingCount: this.pendingPackets.length,
+            pendingBytes: this.pendingBytes,
+          });
+        }
         this.waitingForKeyframe = true;
         break;
       }
@@ -413,6 +433,14 @@ export class VideoStreamDecoder {
       },
       error: (e: DOMException) => {
         console.error('[VideoStreamDecoder] WebCodecs error:', e);
+        if (this.telemetry?.isEnabled()) {
+          this.telemetry.recordDecoder('decoder_error', {
+            name: e?.name,
+            message: e?.message,
+            pendingPacketsCount: this.pendingPackets.length,
+            pendingBytes: this.pendingBytes,
+          });
+        }
         this.onDecoderError?.();
         this.isConfigured = false;
         this.waitingForKeyframe = true;

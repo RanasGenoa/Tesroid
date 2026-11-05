@@ -146,14 +146,39 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
         <div id="metrics-display" style="background: rgba(0,0,0,0.3); border-radius: 8px; padding: 14px; font-family: monospace; font-size: 13px; line-height: 1.6;">
           読み込み中...
         </div>
+
+        <!-- Developer Telemetry Options (Load Reduction) -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+          <h4 style="font-size: 14px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+            <span>🛠️ 開発者向けオプション: 詳細テレメトリ収集</span>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; font-size: 13px; font-weight: normal;">
+              <input type="checkbox" id="cfg-telemetry-toggle" style="width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent-primary, #38bdf8);" />
+              <span>有効化 (ON)</span>
+            </label>
+          </h4>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
+            A/V同期シフト量、バッファリング出入、デコーダ・FramePacerのミリ秒トレースをサーバーへJSONL形式で記録します。<br/>
+            <strong style="color: #fbbf24;">※ 通常運用時はクライアント・サーバー双方の負荷低減のため「OFF」を推奨します。</strong>
+          </p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="cfg-telemetry-download-btn" class="btn btn-secondary" style="font-size: 12px; padding: 7px 12px; display: flex; align-items: center; gap: 6px;">
+              ${ICONS.download} 直近のセッションログを保存 (.jsonl)
+            </button>
+            <button id="cfg-telemetry-clear-btn" class="btn btn-secondary" style="font-size: 12px; padding: 7px 12px; display: flex; align-items: center; gap: 6px; color: #f87171;">
+              ${ICONS.trash} サーバーログ全消去
+            </button>
+          </div>
+          <div id="telemetry-action-msg" style="font-size: 12px; margin-top: 8px; min-height: 18px;"></div>
+        </div>
       </div>
     </div>
   `;
 
   container.appendChild(overlay);
 
-  // Metrics polling timer
+  // Metrics polling timer & clear confirmation timer
   let metricsTimer: any = null;
+  let clearConfirmTimer: any = null;
 
   const updateMetricsDisplay = async () => {
     const displayEl = overlay.querySelector('#metrics-display');
@@ -257,6 +282,10 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       clearInterval(metricsTimer);
       metricsTimer = null;
     }
+    if (clearConfirmTimer) {
+      clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = null;
+    }
     overlay.remove();
     onClose();
   };
@@ -338,6 +367,107 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
   if (overlay.querySelector('#cfg-buffer-depth')) {
     (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement).value = savedBufferDepth;
   }
+
+  // Developer Telemetry options handler
+  const telemetryToggle = overlay.querySelector('#cfg-telemetry-toggle') as HTMLInputElement | null;
+  if (telemetryToggle) {
+    const savedTelemetry = localStorage.getItem('tesroid_detailed_telemetry');
+    telemetryToggle.checked = savedTelemetry === 'true' || savedTelemetry === '1';
+    telemetryToggle.addEventListener('change', () => {
+      const isChecked = telemetryToggle.checked;
+      localStorage.setItem('tesroid_detailed_telemetry', isChecked ? 'true' : 'false');
+      window.dispatchEvent(
+        new CustomEvent('tesroid:settings-updated', {
+          detail: { telemetryEnabled: isChecked },
+        })
+      );
+      showToast(
+        isChecked
+          ? '詳細テレメトリ収集を有効化しました (ON)'
+          : '詳細テレメトリ収集を停止しました (OFF: 負荷低減)',
+        'info'
+      );
+    });
+  }
+
+  overlay.querySelector('#cfg-telemetry-download-btn')?.addEventListener('click', async () => {
+    const msgEl = overlay.querySelector('#telemetry-action-msg') as HTMLElement;
+    try {
+      if (msgEl) msgEl.textContent = '直近のセッションログを準備中...';
+      const res = await fetch('/api/telemetry/sessions/latest/download', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        if (res.status === 404) {
+          if (msgEl) msgEl.innerHTML = '<span style="color: #fbbf24;">記録されたセッションログがまだありません。</span>';
+          return;
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tesroid-telemetry-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      if (msgEl) msgEl.innerHTML = '<span style="color: #4ade80;">ログのダウンロードが完了しました。</span>';
+    } catch (err: any) {
+      if (msgEl) msgEl.innerHTML = `<span style="color: var(--accent-danger);">ダウンロード失敗: ${err.message}</span>`;
+    }
+  });
+
+  const clearBtn = overlay.querySelector('#cfg-telemetry-clear-btn') as HTMLButtonElement | null;
+  let isClearConfirmPending = false;
+  const resetClearConfirm = () => {
+    isClearConfirmPending = false;
+    if (clearConfirmTimer) {
+      clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = null;
+    }
+    if (clearBtn) {
+      clearBtn.innerHTML = `${ICONS.trash} サーバーログ全消去`;
+      clearBtn.style.borderColor = '';
+      clearBtn.style.background = '';
+    }
+  };
+
+  clearBtn?.addEventListener('click', async () => {
+    const msgEl = overlay.querySelector('#telemetry-action-msg') as HTMLElement;
+    if (!isClearConfirmPending) {
+      isClearConfirmPending = true;
+      clearBtn.innerHTML = `${ICONS.trash} もう一度タップで全消去を実行`;
+      clearBtn.style.borderColor = '#f87171';
+      clearBtn.style.background = 'rgba(248, 113, 113, 0.15)';
+      if (msgEl) {
+        msgEl.innerHTML =
+          '<span style="color: #fbbf24;">本当にサーバー上の全セッションログを消去しますか？（5秒後にキャンセル）</span>';
+      }
+      clearConfirmTimer = setTimeout(() => {
+        resetClearConfirm();
+        if (msgEl) msgEl.textContent = '';
+      }, 5000);
+      return;
+    }
+
+    resetClearConfirm();
+    try {
+      const res = await fetch('/api/telemetry/sessions', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        if (msgEl) msgEl.innerHTML = '<span style="color: #4ade80;">すべてのセッションログを消去しました。</span>';
+        showToast('セッションログを消去しました', 'info');
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err: any) {
+      if (msgEl) msgEl.innerHTML = `<span style="color: var(--accent-danger);">消去失敗: ${err.message}</span>`;
+    }
+  });
 
   try {
     const res = await fetch('/api/settings', {

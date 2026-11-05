@@ -8,6 +8,7 @@ import { AvSyncController } from '../core/av-sync.js';
 import { DynamicLatencyController, LatencyMode } from '../core/latency.js';
 import { TouchMapper } from '../input/touch-mapper.js';
 import { MetricsCollector } from '../core/metrics.js';
+import { TelemetryCollector } from '../core/telemetry.js';
 import { AdaptiveJitterController } from '../core/adaptive-jitter.js';
 import { ICONS, showToast } from './icons.js';
 import { sleep, resume, encoderRestart, browserRestart } from './power-actions.js';
@@ -217,6 +218,13 @@ export function renderStreamingView(
   });
 
   // 1. Core Streaming Pipeline
+  const telemetryCollector = new TelemetryCollector();
+  telemetryCollector.onFlush = (events) => {
+    if (wsClient.isConnected()) {
+      wsClient.send(ClientProtocol.packTelemetry(events));
+    }
+  };
+
   const metricsCollector = new MetricsCollector();
   metricsCollector.onReport = (metrics) => {
     if (wsClient.isConnected()) {
@@ -339,6 +347,11 @@ export function renderStreamingView(
       }
       sendBufferFeedback(true);
     }
+    if (e.detail?.telemetryEnabled !== undefined) {
+      const enabled = Boolean(e.detail.telemetryEnabled);
+      telemetryCollector.setEnabled(enabled);
+      syncTelemetryAttachment(enabled);
+    }
     if (changed) {
       updateToggleButtons();
     }
@@ -385,6 +398,20 @@ export function renderStreamingView(
   if (typeof decoder.setBufferDepth === 'function') {
     decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
   }
+
+  const syncTelemetryAttachment = (enabled: boolean) => {
+    const activeCollector = enabled ? telemetryCollector : undefined;
+    if (typeof (framePacer as any).setTelemetryCollector === 'function') {
+      (framePacer as any).setTelemetryCollector(activeCollector);
+    }
+    if (typeof (audioPlayer as any).setTelemetryCollector === 'function') {
+      (audioPlayer as any).setTelemetryCollector(activeCollector);
+    }
+    if (typeof decoder.setTelemetryCollector === 'function') {
+      decoder.setTelemetryCollector(activeCollector);
+    }
+  };
+  syncTelemetryAttachment(telemetryCollector.isEnabled());
 
   if (typeof decoder.setDownstreamQueueLengthProvider === 'function') {
     decoder.setDownstreamQueueLengthProvider(() =>
@@ -1093,6 +1120,7 @@ export function renderStreamingView(
     wsClient.off('control', handleControl);
     wsClient.off('open', handleOpen);
     wsClient.off('close', handleClose);
+    telemetryCollector.destroy();
     metricsCollector.destroy();
     jitterController.destroy();
     framePacer.destroy();
