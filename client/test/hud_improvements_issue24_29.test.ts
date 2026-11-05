@@ -263,7 +263,17 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // 連打ガードにより、/api/encoder/restart は 1 回だけ呼ばれること
+    // 連打ガードにより、JUMP_TO_LIVE 送信および /api/encoder/restart は 1 回だけ呼ばれること
+    const jumpCalls = mockWsClient.send.mock.calls.filter((call: any[]) => {
+      try {
+        const payload = JSON.parse(new TextDecoder().decode(call[0].subarray(1)));
+        return payload.type === 'JUMP_TO_LIVE';
+      } catch {
+        return false;
+      }
+    });
+    expect(jumpCalls.length).toBe(1);
+
     const restartCalls = (globalThis.fetch as any).mock.calls.filter(
       (call: any[]) => call[0] === '/api/encoder/restart',
     );

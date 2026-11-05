@@ -13,6 +13,9 @@ import type { WsClient } from '../transport/ws-client.js';
 import { ICONS, showToast } from './icons.js';
 import { browserRestart, encoderRestart, resume, sleep } from './power-actions.js';
 
+const PACKET_STALL_WARN_THRESHOLD_MS = 400;
+const PACKET_LOSS_TIMEOUT_MS = 1200;
+
 export function renderStreamingView(
   container: HTMLElement,
   wsClient: WsClient,
@@ -480,14 +483,14 @@ export function renderStreamingView(
 
     const elapsed = performance.now() - lastPacketReceivedTime;
 
-    if (elapsed > 1200) {
+    if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
       // 1.2秒以上パケットが途絶えている（パケロス・電波瞬断）
       connDot.className = 'status-dot status-offline';
       connText.textContent = '瞬断中';
       if (hudConn) {
         hudConn.title = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
       }
-    } else if (elapsed > 400 || instantRtt >= 90) {
+    } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= 90) {
       // パケット到着間隔の拡大、または回線RTTが警告レベル
       connDot.className = 'status-dot status-warning';
       connText.textContent = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
@@ -587,10 +590,12 @@ export function renderStreamingView(
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
     resetHudDimTimer();
-    executeJumpToLive(true);
 
     if (isRestartingEncoder) return;
     isRestartingEncoder = true;
+
+    // バッファ破棄とエンコーダ再起動を一括実行
+    executeJumpToLive(true);
 
     const token =
       authToken ||
