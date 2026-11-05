@@ -78,6 +78,16 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
           getChannelData: (c: number) => chArrays[c],
         };
       }
+      public createGain() {
+        return {
+          gain: {
+            value: 1.0,
+            setValueAtTime: vi.fn((val: number) => {}),
+          },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
       public createBufferSource() {
         const src: any = {
           buffer: null,
@@ -245,5 +255,149 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
     expect(mockRenderer.render).toHaveBeenCalledWith(f2);
 
     pacer.destroy();
+  });
+
+  it('maintains consistent audio volume and MasterGain safety headroom across LIVE to buffer transition without limiter ducking', async () => {
+    let ctxTime = 1.0;
+    const scheduledSources: any[] = [];
+    let mockGainNode: any = null;
+
+    class MockGainContext {
+      public state = 'running';
+      public sampleRate = 48000;
+      public destination = { id: 'destination' };
+      public get currentTime() {
+        return ctxTime;
+      }
+      public resume = vi.fn(async () => {
+        this.state = 'running';
+      });
+      public close = vi.fn(async () => {
+        this.state = 'closed';
+      });
+      public createBuffer(channels: number, frames: number, rate: number) {
+        return {
+          numberOfChannels: channels,
+          length: frames,
+          sampleRate: rate,
+          duration: frames / rate,
+          getChannelData: () => new Float32Array(frames),
+        };
+      }
+      public createGain() {
+        mockGainNode = {
+          gain: {
+            value: 1.0,
+            setValueAtTime: vi.fn((val: number) => {
+              mockGainNode.gain.value = val;
+            }),
+          },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+        return mockGainNode;
+      }
+      public createBufferSource() {
+        const src: any = {
+          buffer: null,
+          playbackRate: { value: 1.0 },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(),
+          stop: vi.fn(),
+          onended: null,
+        };
+        scheduledSources.push(src);
+        return src;
+      }
+    }
+
+    let decoderOutputCb: any = null;
+    (globalThis as any).window = {
+      AudioContext: MockGainContext,
+      AudioDecoder: class {
+        constructor(init: any) {
+          decoderOutputCb = init.output;
+        }
+        public state = 'unconfigured';
+        public configure = vi.fn(() => {
+          this.state = 'configured';
+        });
+        public decode = vi.fn((chunk: any) => {
+          decoderOutputCb?.({
+            numberOfChannels: 2,
+            numberOfFrames: 960, // 20ms
+            sampleRate: 48000,
+            timestamp: chunk.timestamp,
+            format: 'f32-planar',
+            copyTo: vi.fn(),
+            close: vi.fn(),
+          });
+        });
+        public close = vi.fn();
+      },
+      EncodedAudioChunk: class {
+        constructor(public init: any) {}
+      },
+    };
+
+    const avSync = new AvSyncController();
+    const player = new AudioPlayer(avSync);
+    await player.unlock();
+
+    // 1. Verify MasterGainNode is created with safe headroom (default 0.88 = ~ -1.1dB)
+    expect(mockGainNode).not.toBeNull();
+    expect(mockGainNode.gain.value).toBe(0.88);
+    expect(mockGainNode.connect).toHaveBeenCalledWith(expect.objectContaining({ id: 'destination' }));
+
+    // Send CONFIG packet to initialize decoder
+    player.handleAudioPacket(AUDIO_FLAGS.CONFIG, 0n, new Uint8Array(19));
+
+    // 2. Simulate LIVE streaming: send 10 consecutive packets at 20ms intervals
+    for (let i = 0; i < 10; i++) {
+      const pts = 1_000_000 + i * 20_000;
+      ctxTime = 1.0 + i * 0.02;
+      avSync.updateVideoPts(pts);
+      player.handleAudioPacket(0, BigInt(pts), new Uint8Array(100));
+    }
+
+    // Verify initial sources connected to MasterGainNode (NOT directly to destination)
+    expect(scheduledSources.length).toBeGreaterThan(0);
+    for (const src of scheduledSources) {
+      expect(src.connect).toHaveBeenCalledWith(mockGainNode);
+      expect(src.playbackRate.value).toBe(1.0);
+    }
+
+    // Verify volume is constant throughout LIVE
+    expect(mockGainNode.gain.value).toBe(0.88);
+    expect(player.getVolume()).toBe(0.88);
+
+    // 3. Simulate transition to BUFFER mode (Prefetch Buffer accumulation):
+    // Video stalls or buffers while audio packets continue arriving (accumulating in buffer)
+    for (let i = 10; i < 25; i++) {
+      const pts = 1_000_000 + i * 20_000;
+      // Audio packets continue while currentTime advances
+      ctxTime = 1.0 + i * 0.02;
+      player.handleAudioPacket(0, BigInt(pts), new Uint8Array(100));
+    }
+
+    // Verify MasterGain gain has NOT dropped or ducked across the LIVE -> BUF boundary!
+    expect(mockGainNode.gain.value).toBe(0.88);
+
+    // 4. Verify volume control API
+    player.setVolume(0.75);
+    expect(mockGainNode.gain.value).toBe(0.75);
+    expect(player.getVolume()).toBe(0.75);
+
+    // 5. Verify mute control
+    player.toggleMute();
+    expect(player.getIsMuted()).toBe(true);
+    expect(mockGainNode.gain.setValueAtTime).toHaveBeenCalledWith(0, ctxTime);
+
+    player.toggleMute();
+    expect(player.getIsMuted()).toBe(false);
+    expect(mockGainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.75, ctxTime);
+
+    player.close();
   });
 });

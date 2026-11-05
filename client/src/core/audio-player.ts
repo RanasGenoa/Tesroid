@@ -13,6 +13,8 @@ export interface AudioStats {
 
 export class AudioPlayer {
   private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private volume: number = 0.88; // Safety headroom (~ -1.1dB) prevents digital clipping & OS/Blink limiter ducking
   private avSync: AvSyncController;
   private isUnlocked: boolean = false;
   private isMuted: boolean = false;
@@ -74,6 +76,8 @@ export class AudioPlayer {
         await this.ctx.resume();
       }
 
+      this.ensureMasterGain();
+
       this.isUnlocked = this.ctx.state === 'running';
       console.log(`[AudioPlayer] AudioContext state: ${this.ctx.state}, unlocked: ${this.isUnlocked}`);
       return this.isUnlocked;
@@ -83,12 +87,37 @@ export class AudioPlayer {
     }
   }
 
+  private ensureMasterGain(): void {
+    if (!this.ctx || this.masterGain) return;
+    try {
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.isMuted ? 0 : this.volume;
+      this.masterGain.connect(this.ctx.destination);
+    } catch (err) {
+      console.warn('[AudioPlayer] Failed to create MasterGainNode:', err);
+    }
+  }
+
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(this.isMuted ? 0 : this.volume, this.ctx.currentTime);
+    }
     if (this.isMuted) {
       this.resetJitterBuffer();
     }
     return this.isMuted;
+  }
+
+  public setVolume(vol: number): void {
+    this.volume = Math.max(0, Math.min(1.0, vol));
+    if (this.masterGain && this.ctx && !this.isMuted) {
+      this.masterGain.gain.setValueAtTime(this.volume, this.ctx.currentTime);
+    }
+  }
+
+  public getVolume(): number {
+    return this.volume;
   }
 
   public getIsMuted(): boolean {
@@ -361,9 +390,9 @@ export class AudioPlayer {
     const lastVideoPts = this.avSync.getLastVideoPts();
     if (lastVideoPts <= 0 || ptsUs <= 0) return false;
     const audioLeadMs = (ptsUs - lastVideoPts) / 1000;
-    // Allow audio to schedule comfortably ahead (up to 1000ms) without stalling,
-    // while preventing audio from running wildly ahead (> 25s) during genuine video stalls.
-    return audioLeadMs > 1000 && audioLeadMs < 25000;
+    // Allow audio to schedule comfortably ahead (up to 8000ms / 8s prefetch buffer window) without stalling,
+    // while preventing audio from running wildly ahead (> 35s) during genuine video stalls.
+    return audioLeadMs > 8000 && audioLeadMs < 35000;
   }
 
   private scheduleOrHold(buffer: AudioBuffer, ptsUs: number, now: number): void {
@@ -371,9 +400,6 @@ export class AudioPlayer {
     if (this.overflowQueue.length > 0 || isVideoBuffering || this.isAudioAheadOfVideo(ptsUs)) {
       this.overflowQueue.push({ buffer, ptsUs });
       this.trimOverflowIfNeeded();
-      if (!isVideoBuffering) {
-        this.pumpOverflowQueue(now);
-      }
       return;
     }
 
@@ -464,11 +490,17 @@ export class AudioPlayer {
     if (!this.ctx || this.ctx.state !== 'running') return;
 
     try {
+      this.ensureMasterGain();
+
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
       // Audio is master clock: playbackRate is always 1.0 (no pitch warping)
       source.playbackRate.value = 1.0;
-      source.connect(this.ctx.destination);
+      if (this.masterGain) {
+        source.connect(this.masterGain);
+      } else {
+        source.connect(this.ctx.destination);
+      }
       source.start(startAt);
 
       this.scheduledSources.add(source);
@@ -511,6 +543,12 @@ export class AudioPlayer {
 
   public close(): void {
     this.resetJitterBuffer();
+    if (this.masterGain) {
+      try {
+        this.masterGain.disconnect();
+      } catch {}
+      this.masterGain = null;
+    }
     if (this.audioDecoder) {
       try {
         this.audioDecoder.close();
