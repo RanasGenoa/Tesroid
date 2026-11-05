@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.base_ref }}
+          fetch-depth: 0
 
       - name: Extract PR Diff
         id: prepare_diff
@@ -39,14 +40,11 @@ jobs:
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
 
-          # ベースブランチを確実に fetch (失敗時は明示的にエラー終了)
-          if ! git fetch --no-tags --depth=1 origin "$BASE_REF"; then
-            echo "::error::Failed to fetch base branch origin/$BASE_REF"
-            exit 1
-          fi
+          # ベースブランチを確実に fetch
+          git fetch origin "$BASE_REF" || true
 
           # PR の head を fetch (同一リポジトリ・Fork 共通の refs/pull/<PR番号>/head を使用)
-          if ! git fetch --no-tags --depth=1 origin "pull/$PR_NUMBER/head:pr-head"; then
+          if ! git fetch origin "pull/$PR_NUMBER/head:pr-head"; then
             echo "::error::Failed to fetch PR head (pull/$PR_NUMBER/head)"
             exit 1
           fi
