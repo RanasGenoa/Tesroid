@@ -355,6 +355,15 @@ export class BrowserManager {
         if (!fs.existsSync('/etc/pulse/tesroid.pa')) {
           fs.writeFileSync('/etc/pulse/tesroid.pa', pulseConfig, 'utf-8');
         }
+        // Ensure flat-volumes = no to prevent stream volume changes from attenuating sink volume
+        if (!fs.existsSync('/etc/pulse/daemon.conf')) {
+          fs.writeFileSync('/etc/pulse/daemon.conf', 'flat-volumes = no\n', 'utf-8');
+        } else {
+          const daemonConf = fs.readFileSync('/etc/pulse/daemon.conf', 'utf-8');
+          if (!daemonConf.includes('flat-volumes')) {
+            fs.appendFileSync('/etc/pulse/daemon.conf', '\nflat-volumes = no\n', 'utf-8');
+          }
+        }
       } catch {}
 
       // 2. Clean up stale pid/runtime files and old socket
@@ -386,6 +395,13 @@ export class BrowserManager {
         }
         execSync(
           'pactl -s unix:/tmp/pulse-socket set-default-sink virtual_sink 2>/dev/null || true',
+        );
+        // Lock virtual_sink to full volume (100% / 0dB) and unmuted to prevent attenuation
+        execSync(
+          'pactl -s unix:/tmp/pulse-socket set-sink-volume virtual_sink 100% 2>/dev/null || true',
+        );
+        execSync(
+          'pactl -s unix:/tmp/pulse-socket set-sink-mute virtual_sink 0 2>/dev/null || true',
         );
       } catch {}
 

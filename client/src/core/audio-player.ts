@@ -29,12 +29,17 @@ export class AudioPlayer {
   private totalOverflowDurationSec: number = 0;
   private scheduledSources: Set<AudioBufferSourceNode> = new Set();
   private isPlaying: boolean = false;
+  private hasInitialPlaybackStarted: boolean = false;
+  private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
   // 160ms target initial buffer (~8 Opus packets). Absorbs network jitter and keeps seamless playback.
   private static readonly JITTER_BUFFER_TARGET_SEC = 0.16;
+  // Rebuffer cushion to rebuild before resuming play after an underrun (80ms = 4 Opus packets).
+  // Balances minimal latency recovery with enough buffer cushion to completely prevent stutter/chopping duty-cycle drop.
+  private static readonly REBUFFER_CUSHION_SEC = 0.08;
   // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
   private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.5;
   // Maximum catchup buffer before trimming oldest audio (30s)
@@ -386,16 +391,45 @@ export class AudioPlayer {
       return;
     }
 
-    // 1. Initial buffering or recovering from a major dropout (> 500ms)
+    // Underrun detection in PLAYING state:
+    // If nextPlayTime has been overtaken by hardware currentTime (buffer exhausted / underrun),
+    // do NOT schedule isolated 20ms chunks into future holes (which cuts effective volume by ~80%).
+    // Instead, seamlessly switch to cushion rebuilding mode so audio resumes with a healthy contiguous cushion!
+    if (this.isPlaying && this.nextPlayTime < now + 0.005) {
+      const gapMs = Math.round((now - this.nextPlayTime) * 1000);
+      if (gapMs > 500 && this.telemetry?.isEnabled()) {
+        this.telemetry.recordAudio('major_underrun', {
+          gapMs,
+          nextPlayTime: this.nextPlayTime,
+          currentTime: now,
+        });
+      }
+      this.isPlaying = false;
+      this.needsDeclickFadeIn = true;
+      this.stopAllScheduledSources();
+      this.avSync.clearAudioAnchor();
+    }
+
+    // 1. Initial buffering or recovering from an underrun:
     if (!this.isPlaying) {
       this.bufferQueue.push({ buffer, ptsUs });
       let queuedSec = 0;
       for (const item of this.bufferQueue) {
         queuedSec += item.buffer.duration;
       }
+      for (const item of this.overflowQueue) {
+        queuedSec += item.buffer.duration;
+      }
 
-      if (queuedSec >= targetBufferSec) {
+      // Differentiate initial playout cushion (targetBufferSec = 160ms) from fast underrun recovery (REBUFFER_CUSHION_SEC = 80ms)
+      const requiredCushion =
+        this.overflowQueue.length > 0 || this.hasInitialPlaybackStarted
+          ? AudioPlayer.REBUFFER_CUSHION_SEC
+          : targetBufferSec;
+
+      if (queuedSec >= requiredCushion) {
         this.isPlaying = true;
+        this.hasInitialPlaybackStarted = true;
         this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
 
         for (const item of this.bufferQueue) {
@@ -411,24 +445,6 @@ export class AudioPlayer {
     // Drain any overflow queue items that can now fit in the hardware schedule window
     this.pumpOverflowQueue(now);
 
-    // If underrun is large (> 500ms, e.g. prolonged network interruption) and overflowQueue is empty, rebuild cushion
-    if (now - this.nextPlayTime > 0.5 && this.overflowQueue.length === 0) {
-      const gapMs = Math.round((now - this.nextPlayTime) * 1000);
-      console.log(`[AudioPlayer] Major audio underrun (${gapMs}ms). Rebuilding cushion...`);
-      if (this.telemetry?.isEnabled()) {
-        this.telemetry.recordAudio('major_underrun', {
-          gapMs,
-          nextPlayTime: this.nextPlayTime,
-          currentTime: now,
-        });
-      }
-      this.isPlaying = false;
-      this.stopAllScheduledSources();
-      this.avSync.clearAudioAnchor();
-      this.bufferQueue = [{ buffer, ptsUs }];
-      return;
-    }
-
     this.scheduleOrHold(buffer, ptsUs, now);
   }
 
@@ -441,6 +457,22 @@ export class AudioPlayer {
     return audioLeadMs > 8000 && audioLeadMs < 35000;
   }
 
+  private applyDeclickFadeIn(buffer: AudioBuffer): void {
+    try {
+      // 1ms linear fade-in (~48 samples at 48kHz) to eliminate DC step / transient clicks
+      // that trigger OS / Chromium hardware limiter auto-ducking.
+      const fadeSamples = Math.min(48, Math.floor(buffer.length / 4));
+      if (fadeSamples <= 0) return;
+      const channels = buffer.numberOfChannels;
+      for (let ch = 0; ch < channels; ch++) {
+        const data = buffer.getChannelData(ch);
+        for (let i = 0; i < fadeSamples; i++) {
+          data[i] *= i / fadeSamples;
+        }
+      }
+    } catch {}
+  }
+
   private scheduleOrHold(buffer: AudioBuffer, ptsUs: number, now: number): void {
     const isVideoBuffering =
       typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
@@ -451,10 +483,9 @@ export class AudioPlayer {
     }
 
     let startAt = this.nextPlayTime;
-    // If nextPlayTime has been overtaken by hardware currentTime (underrun or initial frame),
-    // clamp safely to a healthy 80ms lookahead cushion so playback does not repeatedly underrun on minor jitter!
+    // Guard against slight sub-millisecond precision drift
     if (startAt < now + 0.005) {
-      startAt = now + 0.08;
+      startAt = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
     }
 
     const bufferedAhead = startAt - now;
@@ -478,10 +509,20 @@ export class AudioPlayer {
 
     const now = this.ctx.currentTime;
 
-    // バッファリング明け等で停止していた場合、overflowQueue があれば即座に再生再開
-    if (!this.isPlaying && this.overflowQueue.length > 0) {
+    // バッファリング明け等で停止していた場合、十分なクッション（REBUFFER_CUSHION_SEC以上）があれば即座に再生再開
+    if (
+      !this.isPlaying &&
+      (this.totalOverflowDurationSec >= AudioPlayer.REBUFFER_CUSHION_SEC ||
+        this.overflowQueue.length >= 4)
+    ) {
       this.isPlaying = true;
       this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
+      if (this.bufferQueue.length > 0) {
+        for (const item of this.bufferQueue) {
+          this.scheduleOrHold(item.buffer, item.ptsUs, now);
+        }
+        this.bufferQueue = [];
+      }
     }
 
     const lastVideoPts = this.avSync.getLastVideoPts();
@@ -530,7 +571,7 @@ export class AudioPlayer {
   private pumpOverflowQueue(now: number): void {
     const isVideoBuffering =
       typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
-    if (isVideoBuffering) return;
+    if (!this.isPlaying || isVideoBuffering) return;
 
     const maxScheduleWindow = AudioPlayer.MAX_SCHEDULE_AHEAD_SEC + this.additionalDelaySec;
     while (this.overflowQueue.length > 0) {
@@ -541,7 +582,7 @@ export class AudioPlayer {
 
       let startAt = this.nextPlayTime;
       if (startAt < now + 0.005) {
-        startAt = now + 0.08;
+        startAt = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
       }
       if (startAt - now > maxScheduleWindow) {
         break;
@@ -573,6 +614,11 @@ export class AudioPlayer {
 
     try {
       this.ensureMasterGain();
+
+      if (this.needsDeclickFadeIn) {
+        this.applyDeclickFadeIn(buffer);
+        this.needsDeclickFadeIn = false;
+      }
 
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
@@ -614,6 +660,8 @@ export class AudioPlayer {
 
   public resetJitterBuffer(): void {
     this.isPlaying = false;
+    this.hasInitialPlaybackStarted = false;
+    this.needsDeclickFadeIn = true;
     this.bufferQueue = [];
     this.overflowQueue = [];
     this.totalOverflowDurationSec = 0;

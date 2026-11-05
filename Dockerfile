@@ -84,6 +84,7 @@ RUN echo "default-server = unix:/tmp/pulse-socket" > /etc/pulse/client.conf && \
     echo "default-fragments = 2" > /etc/pulse/daemon.conf && \
     echo "default-fragment-size-msec = 10" >> /etc/pulse/daemon.conf && \
     echo "enable-deferred-volume = no" >> /etc/pulse/daemon.conf && \
+    echo "flat-volumes = no" >> /etc/pulse/daemon.conf && \
     echo "exit-idle-time = -1" >> /etc/pulse/daemon.conf && \
     echo "disallow-exit = yes" >> /etc/pulse/daemon.conf && \
     printf 'load-module module-native-protocol-unix socket=/tmp/pulse-socket auth-anonymous=1\nload-module module-native-protocol-tcp auth-anonymous=1 port=4713\nload-module module-null-sink sink_name=virtual_sink rate=48000 channels=2 format=s16le sink_properties=device.description=Virtual_Sink\nset-default-sink virtual_sink\n' > /etc/pulse/tesroid.pa
