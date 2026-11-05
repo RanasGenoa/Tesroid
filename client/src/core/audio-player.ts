@@ -1,5 +1,6 @@
 import { AvSyncController } from './av-sync.js';
 import { AUDIO_FLAGS } from '../transport/protocol.js';
+import type { TelemetryCollector } from './telemetry.js';
 
 export interface AudioStats {
   state: AudioContextState | 'uninitialized';
@@ -47,6 +48,11 @@ export class AudioPlayer {
   private lastPpsCalcTime = 0;
   private recentPacketsCount = 0;
   private recentPps = 0;
+  private telemetry?: TelemetryCollector;
+
+  public setTelemetryCollector(telemetry?: TelemetryCollector): void {
+    this.telemetry = telemetry;
+  }
 
   constructor(avSync: AvSyncController) {
     this.avSync = avSync;
@@ -376,7 +382,13 @@ export class AudioPlayer {
 
     // If underrun is large (> 500ms, e.g. prolonged network interruption) and overflowQueue is empty, rebuild cushion
     if (now - this.nextPlayTime > 0.5 && this.overflowQueue.length === 0) {
-      console.log(`[AudioPlayer] Major audio underrun (${Math.round((now - this.nextPlayTime) * 1000)}ms). Rebuilding cushion...`);
+      const gapMs = Math.round((now - this.nextPlayTime) * 1000);
+      console.log(`[AudioPlayer] Major audio underrun (${gapMs}ms). Rebuilding cushion...`);
+      this.telemetry?.recordAudio('major_underrun', {
+        gapMs,
+        nextPlayTime: this.nextPlayTime,
+        currentTime: now,
+      });
       this.isPlaying = false;
       this.stopAllScheduledSources();
       this.bufferQueue = [{ buffer, ptsUs }];
@@ -483,6 +495,11 @@ export class AudioPlayer {
     while (totalOverflowSec > AudioPlayer.MAX_CATCHUP_BUFFER_SEC && this.overflowQueue.length > 1) {
       const removed = this.overflowQueue.shift()!;
       totalOverflowSec -= removed.buffer.duration;
+      this.telemetry?.recordAudio('trim_overflow', {
+        droppedPtsUs: removed.ptsUs,
+        droppedDurationSec: removed.buffer.duration,
+        remainingOverflowSec: Math.round(totalOverflowSec * 10) / 10,
+      });
     }
   }
 

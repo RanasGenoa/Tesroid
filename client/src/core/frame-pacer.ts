@@ -1,6 +1,7 @@
 import { CanvasRenderer } from './canvas-renderer.js';
 import { LatencyMode } from './latency.js';
 import { AvSyncController } from './av-sync.js';
+import type { TelemetryCollector } from './telemetry.js';
 
 export interface QueuedVideoFrame {
   frame: VideoFrame;
@@ -47,6 +48,7 @@ export class FramePacer {
   private lastArrivalPtsUs: number = -1;
   private lastRenderedPtsUs: number = 0;
   private hasRenderedAny: boolean = false;
+  private telemetry?: TelemetryCollector;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -72,6 +74,10 @@ export class FramePacer {
 
   public setTargetFps(fps: number): void {
     this.targetFps = fps > 0 ? fps : 30;
+  }
+
+  public setTelemetryCollector(telemetry?: TelemetryCollector): void {
+    this.telemetry = telemetry;
   }
 
   public getTargetFps(): number {
@@ -232,6 +238,13 @@ export class FramePacer {
 
       if (isNetworkStall) {
         this.quietFramesCount = 0;
+        this.telemetry?.recordBuffering('network_stall', {
+          arrivalGapMs,
+          ptsGapMs,
+          transitDelayIncreaseMs,
+          autoCushionMs: this.autoCushionMs,
+          queueLength: this.frameQueue.length,
+        });
         // Raise adaptive client cushion to absorb ongoing instability
         this.autoCushionMs = Math.min(
           this.maxCushionMs,
@@ -308,6 +321,11 @@ export class FramePacer {
         try {
           dropped.frame.close();
         } catch {}
+        this.telemetry?.recordPacer('frame_dropped', {
+          ptsUs: dropped.ptsUs,
+          queueLength: this.frameQueue.length,
+          maxQueueSize: this.maxQueueSize,
+        });
         this.onFrameDropped?.();
         this.onFrameProcessed?.();
       }
@@ -325,6 +343,12 @@ export class FramePacer {
   private enterBufferingState(now: number): void {
     this.isBuffering = true;
     this.bufferingStartTimeMs = now;
+    this.telemetry?.recordBuffering('enter', {
+      autoCushionMs: this.autoCushionMs,
+      effectiveDelayMs: this.getEffectiveDelayMs(),
+      queueLength: this.frameQueue.length,
+      queuedPtsMs: this.getQueuedPtsSpanMs(),
+    });
     if (this.pacingTimer !== null) {
       clearTimeout(this.pacingTimer);
       this.pacingTimer = null;
@@ -361,6 +385,13 @@ export class FramePacer {
   private exitBufferingAndResume(now: number): void {
     if (!this.isBuffering) return;
     this.isBuffering = false;
+    const durationMs = Math.round(now - this.bufferingStartTimeMs);
+    this.telemetry?.recordBuffering('exit', {
+      durationMs,
+      queueLength: this.frameQueue.length,
+      queuedPtsMs: this.getQueuedPtsSpanMs(),
+      autoCushionMs: this.autoCushionMs,
+    });
     if (this.bufferingTimer) {
       clearTimeout(this.bufferingTimer);
       this.bufferingTimer = null;
@@ -445,6 +476,13 @@ export class FramePacer {
             if (Math.abs(syncErrorMs) > 150) {
               // 150ms以上の顕著なズレは、全フレームを一括で瞬時に音声へ吸着再同期！
               const shift = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+              this.telemetry?.recordAvSync('large_shift', {
+                syncErrorMs: Math.round(syncErrorMs),
+                shift: Math.round(shift),
+                nextVideoPts,
+                playingAudioPts,
+                queueLength: this.frameQueue.length,
+              });
               for (const item of this.frameQueue) {
                 item.scheduledRenderTime += shift;
               }
@@ -452,6 +490,12 @@ export class FramePacer {
             } else if (Math.abs(syncErrorMs) >= 15) {
               // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
               const nudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+              this.telemetry?.recordAvSync('pll_nudge', {
+                syncErrorMs: Math.round(syncErrorMs),
+                nudge: Math.round(nudge * 10) / 10,
+                nextVideoPts,
+                playingAudioPts,
+              });
               for (const item of this.frameQueue) {
                 item.scheduledRenderTime += nudge;
               }

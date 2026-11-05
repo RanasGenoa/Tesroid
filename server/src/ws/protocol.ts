@@ -7,7 +7,15 @@ export const WSS_CHANNEL = {
   AUTH: 0x12,
   COMMAND: 0x13,
   METRICS: 0x14,
+  TELEMETRY: 0x15,
 } as const;
+
+export interface TelemetryEvent {
+  timestamp: number;
+  type: 'av_sync' | 'buffering' | 'decoder' | 'pacer' | 'audio' | 'log';
+  event: string;
+  data?: Record<string, any>;
+}
 
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,

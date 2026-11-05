@@ -7,7 +7,15 @@ export const WSS_CHANNEL = {
   AUTH: 0x12,
   COMMAND: 0x13,
   METRICS: 0x14,
+  TELEMETRY: 0x15,
 } as const;
+
+export interface TelemetryEvent {
+  timestamp: number;
+  type: 'av_sync' | 'buffering' | 'decoder' | 'pacer' | 'audio' | 'log';
+  event: string;
+  data?: Record<string, any>;
+}
 
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
@@ -127,6 +135,16 @@ export class ClientProtocol {
     const jsonBytes = encoder.encode(jsonStr);
     const buf = new Uint8Array(1 + jsonBytes.length);
     buf[0] = WSS_CHANNEL.METRICS;
+    buf.set(jsonBytes, 1);
+    return buf;
+  }
+
+  public static packTelemetry(events: unknown[]): Uint8Array {
+    const jsonStr = JSON.stringify(events);
+    const encoder = new TextEncoder();
+    const jsonBytes = encoder.encode(jsonStr);
+    const buf = new Uint8Array(1 + jsonBytes.length);
+    buf[0] = WSS_CHANNEL.TELEMETRY;
     buf.set(jsonBytes, 1);
     return buf;
   }

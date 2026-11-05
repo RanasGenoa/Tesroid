@@ -7,10 +7,12 @@ import { VaapiEncoder } from '../encoder/ffmpeg.js';
 import { X11InputManager } from '../input/xdotool.js';
 import { ConfigStore } from '../config.js';
 import { MetricsManager } from '../metrics/manager.js';
+import { TelemetryManager } from '../telemetry/manager.js';
 import { PlaybackBuffer, type BufferedFrame } from '../encoder/playback-buffer.js';
 
 export interface ClientSession {
   socket: WebSocket;
+  sessionId: string;
   lastAckPts: bigint | null;
   lastSentVideoPts?: bigint | null;
   mode: 'LIVE' | 'CATCHUP';
@@ -101,8 +103,10 @@ export class WebSocketHandler {
 
     const ua = req?.headers?.['user-agent'] || 'unknown';
     this.allClients.add(socket);
+    const sessionId = TelemetryManager.getInstance().createSessionId();
     this.clientSessions.set(socket, {
       socket,
+      sessionId,
       lastAckPts: this.lastKnownAckPts,
       targetBufferMs: this.lastKnownTargetBufferMs,
       mode: 'LIVE',
@@ -164,6 +168,15 @@ export class WebSocketHandler {
         // 5. Metrics Channel (0x14)
         if (channel === WSS_CHANNEL.METRICS) {
           this.handleMetricsMessage(buf);
+          return;
+        }
+
+        // 6. Telemetry Channel (0x15)
+        if (channel === WSS_CHANNEL.TELEMETRY) {
+          const session = this.clientSessions.get(socket);
+          if (session) {
+            this.handleTelemetryMessage(session, buf);
+          }
           return;
         }
       } catch (err) {
@@ -734,6 +747,20 @@ export class WebSocketHandler {
       MetricsManager.getInstance().addMetrics(metrics);
     } catch (err) {
       console.warn('[WebSocketHandler] Failed to parse metrics message:', err);
+    }
+  }
+
+  private handleTelemetryMessage(session: ClientSession, buf: Buffer): void {
+    try {
+      const jsonStr = buf.subarray(1).toString('utf-8');
+      const events = JSON.parse(jsonStr);
+      if (Array.isArray(events)) {
+        TelemetryManager.getInstance().appendEvents(session.sessionId, events).catch((err) => {
+          console.warn('[WebSocketHandler] Error saving telemetry events:', err);
+        });
+      }
+    } catch (err) {
+      console.warn('[WebSocketHandler] Failed to parse telemetry message:', err);
     }
   }
 

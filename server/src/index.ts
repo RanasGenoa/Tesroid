@@ -18,6 +18,7 @@ import { registerBrowserRoutes } from './routes/browser.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerSoundRoutes } from './routes/sound.js';
 import { registerMetricsRoutes } from './routes/metrics.js';
+import { registerTelemetryRoutes } from './routes/telemetry.js';
 
 async function bootstrap() {
   const app = Fastify({
@@ -117,6 +118,7 @@ async function bootstrap() {
   registerSoundRoutes(app, authService);
   registerHealthRoutes(app);
   registerMetricsRoutes(app, authService);
+  registerTelemetryRoutes(app, authService);
 
   // 5. Start HTTP server
   const port = parseInt(process.env.PORT || '8080', 10);
