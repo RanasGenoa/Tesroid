@@ -887,7 +887,9 @@ export function renderStreamingView(
         minRtt = rttHistory.length > 0 ? Math.min(...rttHistory) : rawRtt;
         instantRtt = instantRtt === 0 ? rawRtt : Math.round(instantRtt * 0.7 + rawRtt * 0.3);
       } else {
-        // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ
+        // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ。
+        // 初回起動直後かつ最初から CATCHUP 状態であった場合（instantRtt未決定時）は、
+        // 過去の最小物理RTT（minRtt）またはフォールバック値を使用する。
         if (instantRtt === 0) {
           instantRtt = Number.isFinite(minRtt) ? minRtt : rawRtt;
         }
@@ -1256,6 +1258,7 @@ export function renderStreamingView(
   return () => {
     if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
     if (encoderRestartTimer) clearTimeout(encoderRestartTimer);
+    isRestartingEncoder = false;
     document.getElementById('power-menu-modal')?.remove();
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
