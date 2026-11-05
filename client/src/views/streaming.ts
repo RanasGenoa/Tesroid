@@ -466,7 +466,7 @@ export function renderStreamingView(
   };
 
   const updateHudConnStatus = () => {
-    if (!connText || !connDot) return;
+    if (!connText || !connDot || !hudSignal) return;
 
     let targetClass = '';
     let signalLevelClass = 'signal-meter signal-level-4';
