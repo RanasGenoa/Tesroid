@@ -32,8 +32,11 @@ jobs:
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
 
-          # ベースブランチを確実に fetch
-          git fetch origin -- "$BASE_REF" || true
+          # ベースブランチを確実に fetch (失敗時は明示的にエラー終了)
+          if ! git fetch --no-tags --depth=1 origin "$BASE_REF"; then
+            echo "::error::Failed to fetch base branch origin/$BASE_REF"
+            exit 1
+          fi
 
           # ベースブランチと PR の最新コミット (HEAD) の差分を抽出 (ロックファイル・ビルド成果物を除外)
           git diff "origin/$BASE_REF...HEAD" \
@@ -111,7 +114,10 @@ jobs:
           cat "$WORKDIR/pr_diff.patch" >> "$WORKDIR/prompt.txt"
 
           # Self-hosted Runner 内の Antigravity CLI (Gemini 3.8 Flash) を実行
-          agy -p "$(cat "$WORKDIR/prompt.txt")" --model gemini-3.8-flash > "$WORKDIR/review_comment.md"
+          if ! agy -p "$(cat "$WORKDIR/prompt.txt")" --model gemini-3.8-flash > "$WORKDIR/review_comment.md"; then
+            echo "::error::Antigravity review generation failed."
+            exit 1
+          fi
 
       - name: Post or Update PR Comment
         if: steps.prepare_diff.outputs.has_changes == 'true'
