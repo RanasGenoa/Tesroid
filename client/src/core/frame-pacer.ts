@@ -421,7 +421,8 @@ export class FramePacer {
 
       if (playingAudioPts !== null && playingAudioPts > 0) {
         const audioAlignedStart = now + (this.frameQueue[0].ptsUs - playingAudioPts) / 1000;
-        cursorTime = Math.max(now, audioAlignedStart);
+        // バッファリング明けに音声遅延があっても、映像の即時再生開始を妨げないよう1フレーム分以内に制限
+        cursorTime = Math.max(now, Math.min(now + this.getFrameIntervalMs(), audioAlignedStart));
       }
 
       for (let i = 0; i < this.frameQueue.length; i++) {
@@ -485,12 +486,19 @@ export class FramePacer {
             const syncErrorMs = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
 
             if (Math.abs(syncErrorMs) > 150) {
-              // 150ms以上の顕著なズレは、全フレームを一括で瞬時に音声へ吸着再同期！
-              const shift = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+              // 150ms以上の顕著なズレ:
+              // 重要: 未来方向 (syncErrorMs > 0) への無制限シフトは画面フリーズ (0〜4FPS落ち込み) を招くため、
+              // 1フレームあたりの最大遅延量 (maxPositiveShift) を厳格にクランプし、スムーズな描画を維持しながら音声吸着させる！
+              const maxPositiveShift = 2.5; // 最大+2.5ms/frame (約27.5fps以上を維持し、画面を一切止めずに音声へ収束)
+              const maxNegativeShift = -16.0; // 映像が遅れている場合は最大-16msまで引き寄せ加速
+              const shift = syncErrorMs > 0
+                ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+                : Math.max(maxNegativeShift, syncErrorMs);
+
               if (this.telemetry?.isEnabled()) {
                 this.telemetry.recordAvSync('large_shift', {
                   syncErrorMs: Math.round(syncErrorMs),
-                  shift: Math.round(shift),
+                  shift: Math.round(shift * 10) / 10,
                   nextVideoPts,
                   playingAudioPts,
                   queueLength: this.frameQueue.length,

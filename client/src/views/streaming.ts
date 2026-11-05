@@ -391,7 +391,6 @@ export function renderStreamingView(
     },
     (ptsUs: number) => {
       lastDecodedPts = ptsUs;
-      avSync.updateVideoPts(ptsUs);
     }
   );
 

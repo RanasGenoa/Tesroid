@@ -393,6 +393,7 @@ export class AudioPlayer {
       }
       this.isPlaying = false;
       this.stopAllScheduledSources();
+      this.avSync.clearAudioAnchor();
       this.bufferQueue = [{ buffer, ptsUs }];
       return;
     }
