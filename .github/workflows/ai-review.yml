@@ -32,21 +32,11 @@ jobs:
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
 
-          # ベースブランチとPRブランチを安全に fetch
+          # ベースブランチを確実に fetch
           git fetch origin -- "$BASE_REF" || true
-          if [ -n "$HEAD_REF" ]; then
-            git fetch origin -- "$HEAD_REF" || true
-          fi
 
-          # 差分比較対象の参照を特定 (head_ref が origin にあれば優先、無ければ HEAD)
-          if git rev-parse --verify "origin/$HEAD_REF" >/dev/null 2>&1; then
-            TARGET_REF="origin/$HEAD_REF"
-          else
-            TARGET_REF="HEAD"
-          fi
-
-          # 差分の抽出 (ロックファイル・ビルド成果物を除外)
-          git diff "origin/$BASE_REF...$TARGET_REF" \
+          # ベースブランチと PR の最新コミット (HEAD) の差分を抽出 (ロックファイル・ビルド成果物を除外)
+          git diff "origin/$BASE_REF...HEAD" \
             -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
           DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
@@ -159,7 +149,7 @@ jobs:
             gh api \
               --method PATCH \
               "repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
-              --field body=@"$WORKDIR/final_comment.md" > /dev/null
+              -F body=@"$WORKDIR/final_comment.md" > /dev/null
           else
             echo "Creating new review comment..."
             gh pr comment "$PR_URL" --body-file "$WORKDIR/final_comment.md"
