@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   review:
-    name: Code Review (Self-hosted Antigravity)
+    name: Code Review (Antigravity)
     runs-on: [self-hosted, antigravity]
     # ドラフトPRはレビューをスキップ
     if: github.event.pull_request.draft == false
@@ -124,7 +124,7 @@ jobs:
           cat << 'EOF' >> /tmp/review_comment.md
 
           ---
-          *🤖 Reviewed by **Antigravity CLI** (`gemini-3.8-flash`) on HomeLab Self-hosted Runner*
+          *🤖 Reviewed by **Antigravity** (`gemini-3.8-flash`)*
           EOF
 
           gh pr comment "$PR_URL" --body-file /tmp/review_comment.md
