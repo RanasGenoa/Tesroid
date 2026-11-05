@@ -51,7 +51,7 @@ jobs:
           fi
 
           # ベースブランチと PR の最新コミット (pr-head) の差分を抽出 (ロックファイル・ビルド成果物を除外)
-          git diff "origin/$BASE_REF...pr-head" \
+          git diff "$BASE_REF...pr-head" \
             -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
           DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
@@ -181,7 +181,7 @@ jobs:
           EOF
 
           # 既存のレビューコメントが存在するか検索 (マーカー一致、全ページ走査、最新を対象)
-          EXISTING_COMMENT_ID=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+          EXISTING_COMMENT_ID=$(gh api --paginate -F per_page=100 "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body | contains("<!-- antigravity-pr-review -->")) | .id' | tail -n 1)
 
           if [ -n "$EXISTING_COMMENT_ID" ]; then
