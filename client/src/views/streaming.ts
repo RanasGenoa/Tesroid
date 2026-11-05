@@ -16,6 +16,8 @@ import { browserRestart, encoderRestart, resume, sleep } from './power-actions.j
 const PACKET_STALL_WARN_THRESHOLD_MS = 400;
 const PACKET_LOSS_TIMEOUT_MS = 1200;
 const RTT_WARN_THRESHOLD_MS = 90;
+const ENCODER_RESTART_COOLDOWN_MS = 1000;
+const RTT_HISTORY_WINDOW_SIZE = 8;
 
 export function renderStreamingView(
   container: HTMLElement,
@@ -613,7 +615,7 @@ export function renderStreamingView(
       encoderRestartTimer = setTimeout(() => {
         isRestartingEncoder = false;
         encoderRestartTimer = null;
-      }, 1000);
+      }, ENCODER_RESTART_COOLDOWN_MS);
     }
   });
 
@@ -883,7 +885,7 @@ export function renderStreamingView(
       const hasQueueDelay = serverMode === 'CATCHUP' || serverCatchupQueueMs > 0;
       if (!hasQueueDelay) {
         rttHistory.push(rawRtt);
-        if (rttHistory.length > 8) rttHistory.shift();
+        if (rttHistory.length > RTT_HISTORY_WINDOW_SIZE) rttHistory.shift();
         minRtt = rttHistory.length > 0 ? Math.min(...rttHistory) : rawRtt;
         instantRtt = instantRtt === 0 ? rawRtt : Math.round(instantRtt * 0.7 + rawRtt * 0.3);
       } else {
