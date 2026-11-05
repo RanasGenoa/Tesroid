@@ -59,9 +59,9 @@ jobs:
             exit 0
           fi
 
-          # Linux カーネル引数長制限 (MAX_ARG_STRLEN: 128KB) 対策として 80KB で安全に切り詰め
+          # Linux カーネル引数長制限 (MAX_ARG_STRLEN: 128KB) 対策として 80KB で安全に切り詰め (バイト単位で確実に制限)
           if [ "$DIFF_SIZE" -gt 80000 ]; then
-            head -n 1500 "$WORKDIR/pr_diff.patch" > "$WORKDIR/truncated_diff.patch"
+            head -c 80000 "$WORKDIR/pr_diff.patch" > "$WORKDIR/truncated_diff.patch"
             echo -e "\n\n... (差分が上限を超えたため一部省略されました)" >> "$WORKDIR/truncated_diff.patch"
             mv "$WORKDIR/truncated_diff.patch" "$WORKDIR/pr_diff.patch"
           fi
@@ -83,10 +83,10 @@ jobs:
 
           ## PR 情報
           EOF
-          echo "- **タイトル**: $PR_TITLE" >> "$WORKDIR/prompt.txt"
-          echo "- **説明**: $PR_BODY" >> "$WORKDIR/prompt.txt"
-          echo "- **ベースブランチ**: $BASE_REF" >> "$WORKDIR/prompt.txt"
-          echo "- **PRブランチ**: $HEAD_REF" >> "$WORKDIR/prompt.txt"
+          printf -- "- **タイトル**: %s\n" "$PR_TITLE" >> "$WORKDIR/prompt.txt"
+          printf -- "- **説明**: %s\n" "$PR_BODY" >> "$WORKDIR/prompt.txt"
+          printf -- "- **ベースブランチ**: %s\n" "$BASE_REF" >> "$WORKDIR/prompt.txt"
+          printf -- "- **PRブランチ**: %s\n" "$HEAD_REF" >> "$WORKDIR/prompt.txt"
 
           cat << 'EOF' >> "$WORKDIR/prompt.txt"
 
@@ -150,8 +150,8 @@ jobs:
           *🤖 Reviewed by **Antigravity** (`gemini-3.8-flash`)*
           EOF
 
-          # 既存のレビューコメントが存在するか検索 (マーカー一致)
-          EXISTING_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+          # 既存のレビューコメントが存在するか検索 (マーカー一致、全ページ走査)
+          EXISTING_COMMENT_ID=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body | contains("<!-- antigravity-pr-review -->")) | .id' | head -n 1)
 
           if [ -n "$EXISTING_COMMENT_ID" ]; then
@@ -159,7 +159,7 @@ jobs:
             gh api \
               --method PATCH \
               "repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
-              --field body="$(cat "$WORKDIR/final_comment.md")" > /dev/null
+              --field body=@"$WORKDIR/final_comment.md" > /dev/null
           else
             echo "Creating new review comment..."
             gh pr comment "$PR_URL" --body-file "$WORKDIR/final_comment.md"
