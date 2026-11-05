@@ -1,6 +1,6 @@
-import { CanvasRenderer } from './canvas-renderer.js';
-import { LatencyMode } from './latency.js';
-import { AvSyncController } from './av-sync.js';
+import type { AvSyncController } from './av-sync.js';
+import type { CanvasRenderer } from './canvas-renderer.js';
+import type { LatencyMode } from './latency.js';
 import type { TelemetryCollector } from './telemetry.js';
 
 export interface QueuedVideoFrame {
@@ -63,7 +63,7 @@ export class FramePacer {
     renderer: CanvasRenderer,
     targetFps: number = 30,
     avSync?: AvSyncController,
-    options: FramePacerOptions = {}
+    options: FramePacerOptions = {},
   ) {
     this.renderer = renderer;
     this.avSync = avSync;
@@ -112,7 +112,12 @@ export class FramePacer {
 
   public setAdditionalDelay(delayMs: number): void {
     this.additionalDelayMs = Math.max(0, delayMs);
-    if (this.additionalDelayMs === 0 && this.autoCushionMs === 0 && !this.isBuffering && this.frameQueue.length <= 1) {
+    if (
+      this.additionalDelayMs === 0 &&
+      this.autoCushionMs === 0 &&
+      !this.isBuffering &&
+      this.frameQueue.length <= 1
+    ) {
       this.flushQueue();
     }
   }
@@ -255,7 +260,7 @@ export class FramePacer {
         // Raise adaptive client cushion to absorb ongoing instability
         this.autoCushionMs = Math.min(
           this.maxCushionMs,
-          Math.max(this.minCushionMs, this.autoCushionMs + 90)
+          Math.max(this.minCushionMs, this.autoCushionMs + 90),
         );
 
         // If playback queue ran dry (underrun), pause playback briefly until unread frames accumulate
@@ -280,9 +285,10 @@ export class FramePacer {
     let scheduledRenderTime: number;
     const deltaMs = this.computeDeltaPtsMs(ptsUs, this.lastScheduledPtsUs);
 
-    const playingAudioPts = typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
-      ? this.avSync.getCurrentPlayingAudioPtsUs()
-      : null;
+    const playingAudioPts =
+      typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
+        ? this.avSync.getCurrentPlayingAudioPtsUs()
+        : null;
 
     if (this.frameQueue.length === 0 && !this.isBuffering) {
       // Queue is empty: pace smoothly by deltaMs after previous rendered frame.
@@ -314,7 +320,9 @@ export class FramePacer {
       }
 
       const targetRealtimeSlot =
-        this.additionalDelayMs > 0 ? Math.max(now + this.additionalDelayMs, earliestNextSlot) : earliestNextSlot;
+        this.additionalDelayMs > 0
+          ? Math.max(now + this.additionalDelayMs, earliestNextSlot)
+          : earliestNextSlot;
       scheduledRenderTime = Math.max(now, targetRealtimeSlot);
 
       // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
@@ -431,9 +439,10 @@ export class FramePacer {
     // Re-anchor queued frames starting from `now` at strict 1x PTS intervals so they play smoothly without fast-forward
     if (this.frameQueue.length > 0) {
       let cursorTime = now;
-      const playingAudioPts = typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
-        ? this.avSync.getCurrentPlayingAudioPtsUs()
-        : null;
+      const playingAudioPts =
+        typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
+          ? this.avSync.getCurrentPlayingAudioPtsUs()
+          : null;
 
       if (playingAudioPts !== null && playingAudioPts > 0) {
         const audioAlignedStart = now + (this.frameQueue[0].ptsUs - playingAudioPts) / 1000;
@@ -443,7 +452,10 @@ export class FramePacer {
 
       for (let i = 0; i < this.frameQueue.length; i++) {
         if (i > 0) {
-          const dMs = this.computeDeltaPtsMs(this.frameQueue[i].ptsUs, this.frameQueue[i - 1].ptsUs);
+          const dMs = this.computeDeltaPtsMs(
+            this.frameQueue[i].ptsUs,
+            this.frameQueue[i - 1].ptsUs,
+          );
           cursorTime += dMs;
         }
         this.frameQueue[i].scheduledRenderTime = cursorTime;
@@ -509,11 +521,12 @@ export class FramePacer {
               const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
               const maxNegativeShift = -Math.min(
                 16.0,
-                Math.max(0, this.frameQueue[0].scheduledRenderTime - (now + minCatchupIntervalMs))
+                Math.max(0, this.frameQueue[0].scheduledRenderTime - (now + minCatchupIntervalMs)),
               );
-              const shift = syncErrorMs > 0
-                ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
-                : Math.max(maxNegativeShift, syncErrorMs);
+              const shift =
+                syncErrorMs > 0
+                  ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+                  : Math.max(maxNegativeShift, syncErrorMs);
 
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {

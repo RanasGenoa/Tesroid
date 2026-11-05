@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { MessageMultiplexer } from '../src/ws/multiplexer.js';
-import { WSS_CHANNEL, VIDEO_FLAGS, AUDIO_FLAGS } from '../src/ws/protocol.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS, WSS_CHANNEL } from '../src/ws/protocol.js';
 
 describe('WebSocket Protocol & Multiplexer', () => {
   it('should pack video frame with channel, flags, pts and data', () => {

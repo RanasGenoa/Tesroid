@@ -1,14 +1,14 @@
-import { describe, it, expect, vi, afterAll } from 'vitest';
-import fastify from 'fastify';
-import { registerSettingsRoutes } from '../src/routes/settings.js';
-import { ConfigStore } from '../src/config.js';
-import { AuthService } from '../src/auth.js';
-import { LockoutManager } from '../src/lockout.js';
-import { BrowserManager } from '../src/browser/manager.js';
-import { VaapiEncoder } from '../src/encoder/ffmpeg.js';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+import fastify from 'fastify';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { AuthService } from '../src/auth.js';
+import type { BrowserManager } from '../src/browser/manager.js';
+import { ConfigStore } from '../src/config.js';
+import type { VaapiEncoder } from '../src/encoder/ffmpeg.js';
+import { LockoutManager } from '../src/lockout.js';
+import { registerSettingsRoutes } from '../src/routes/settings.js';
 
 describe('Settings Routes & Dynamic Stream Config', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tesroid-settings-'));

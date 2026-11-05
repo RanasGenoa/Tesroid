@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FramePacer } from '../src/core/frame-pacer.js';
 
 describe('FramePacer Tests', () => {

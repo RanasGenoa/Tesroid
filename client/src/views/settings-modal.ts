@@ -1,11 +1,11 @@
 import { ICONS, showToast } from './icons.js';
-import { sleep, resume, encoderRestart, browserRestart } from './power-actions.js';
+import { browserRestart, encoderRestart, resume, sleep } from './power-actions.js';
 
 export function openSettingsWithAuth(
   container: HTMLElement,
   authToken: string | null,
   onRequireAuth: (callback: (token: string) => void) => void,
-  onClose: () => void
+  onClose: () => void,
 ): void {
   if (authToken) {
     showSettingsModal(container, authToken, onClose);
@@ -16,7 +16,11 @@ export function openSettingsWithAuth(
   }
 }
 
-async function showSettingsModal(container: HTMLElement, token: string, onClose: () => void): Promise<void> {
+async function showSettingsModal(
+  container: HTMLElement,
+  token: string,
+  onClose: () => void,
+): Promise<void> {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
 
@@ -203,7 +207,9 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
         return;
       }
 
-      const lastUpdatedStr = data.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : 'N/A';
+      const lastUpdatedStr = data.lastUpdated
+        ? new Date(data.lastUpdated).toLocaleTimeString()
+        : 'N/A';
       displayEl.innerHTML = `
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
           <div style="background: rgba(255,255,255,0.05); padding: 8px 10px; border-radius: 6px;">
@@ -224,7 +230,7 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
           </div>
           <div style="background: rgba(255,255,255,0.05); padding: 8px 10px; border-radius: 6px;">
             <div style="font-size: 11px; color: var(--text-muted);">ドロップフレーム / エラー</div>
-            <div style="font-size: 14px; font-weight: 600; color: ${(data.totalDroppedFrames || data.totalDecoderErrors) ? '#f87171' : 'inherit'};">
+            <div style="font-size: 14px; font-weight: 600; color: ${data.totalDroppedFrames || data.totalDecoderErrors ? '#f87171' : 'inherit'};">
               ${data.totalDroppedFrames ?? 0} / ${data.totalDecoderErrors ?? 0}
             </div>
           </div>
@@ -244,9 +250,18 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
 
   // Tab switching
   const tabs = [
-    { btn: overlay.querySelector('#tab-browser') as HTMLElement, content: overlay.querySelector('#content-browser') as HTMLElement },
-    { btn: overlay.querySelector('#tab-general') as HTMLElement, content: overlay.querySelector('#content-general') as HTMLElement },
-    { btn: overlay.querySelector('#tab-metrics') as HTMLElement, content: overlay.querySelector('#content-metrics') as HTMLElement },
+    {
+      btn: overlay.querySelector('#tab-browser') as HTMLElement,
+      content: overlay.querySelector('#content-browser') as HTMLElement,
+    },
+    {
+      btn: overlay.querySelector('#tab-general') as HTMLElement,
+      content: overlay.querySelector('#content-general') as HTMLElement,
+    },
+    {
+      btn: overlay.querySelector('#tab-metrics') as HTMLElement,
+      content: overlay.querySelector('#content-metrics') as HTMLElement,
+    },
   ];
 
   const switchTab = (activeIdx: number) => {
@@ -379,13 +394,13 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       window.dispatchEvent(
         new CustomEvent('tesroid:settings-updated', {
           detail: { telemetryEnabled: isChecked },
-        })
+        }),
       );
       showToast(
         isChecked
           ? '詳細テレメトリ収集を有効化しました (ON)'
           : '詳細テレメトリ収集を停止しました (OFF: 負荷低減)',
-        'info'
+        'info',
       );
     });
   }
@@ -399,7 +414,9 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       });
       if (!res.ok) {
         if (res.status === 404) {
-          if (msgEl) msgEl.innerHTML = '<span style="color: #fbbf24;">記録されたセッションログがまだありません。</span>';
+          if (msgEl)
+            msgEl.innerHTML =
+              '<span style="color: #fbbf24;">記録されたセッションログがまだありません。</span>';
           return;
         }
         throw new Error(`HTTP ${res.status}`);
@@ -413,9 +430,11 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-      if (msgEl) msgEl.innerHTML = '<span style="color: #4ade80;">ログのダウンロードが完了しました。</span>';
+      if (msgEl)
+        msgEl.innerHTML = '<span style="color: #4ade80;">ログのダウンロードが完了しました。</span>';
     } catch (err: any) {
-      if (msgEl) msgEl.innerHTML = `<span style="color: var(--accent-danger);">ダウンロード失敗: ${err.message}</span>`;
+      if (msgEl)
+        msgEl.innerHTML = `<span style="color: var(--accent-danger);">ダウンロード失敗: ${err.message}</span>`;
     }
   });
 
@@ -459,13 +478,16 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
-        if (msgEl) msgEl.innerHTML = '<span style="color: #4ade80;">すべてのセッションログを消去しました。</span>';
+        if (msgEl)
+          msgEl.innerHTML =
+            '<span style="color: #4ade80;">すべてのセッションログを消去しました。</span>';
         showToast('セッションログを消去しました', 'info');
       } else {
         throw new Error(`HTTP ${res.status}`);
       }
     } catch (err: any) {
-      if (msgEl) msgEl.innerHTML = `<span style="color: var(--accent-danger);">消去失敗: ${err.message}</span>`;
+      if (msgEl)
+        msgEl.innerHTML = `<span style="color: var(--accent-danger);">消去失敗: ${err.message}</span>`;
     }
   });
 
@@ -476,10 +498,16 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     if (res.ok) {
       const data = await res.json();
       if (data.browserUrl) urlInput.value = data.browserUrl;
-      if (data.stream?.bitrate) (overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value = String(data.stream.bitrate);
-      if (data.stream?.maxFps) (overlay.querySelector('#cfg-fps') as HTMLSelectElement).value = String(data.stream.maxFps);
+      if (data.stream?.bitrate)
+        (overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value = String(
+          data.stream.bitrate,
+        );
+      if (data.stream?.maxFps)
+        (overlay.querySelector('#cfg-fps') as HTMLSelectElement).value = String(data.stream.maxFps);
       if (data.displayScale) {
-        (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(data.displayScale);
+        (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(
+          data.displayScale,
+        );
         localStorage.setItem('tesroid_display_scale', String(data.displayScale));
       }
     }
@@ -490,8 +518,12 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     const newPin = (overlay.querySelector('#cfg-pin') as HTMLInputElement).value.trim();
     const bitrate = Number((overlay.querySelector('#cfg-bitrate') as HTMLSelectElement).value);
     const maxFps = Number((overlay.querySelector('#cfg-fps') as HTMLSelectElement).value);
-    const displayScale = Number((overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120);
-    const bufferDepth = Number((overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000);
+    const displayScale = Number(
+      (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120,
+    );
+    const bufferDepth = Number(
+      (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000,
+    );
 
     const body: any = {
       displayScale,
@@ -512,7 +544,7 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
             detail: { displayScale, bufferDepth, stream: { bitrate, maxFps } },
-          })
+          }),
         );
         showToast('設定を保存しました。', 'success');
       } else {

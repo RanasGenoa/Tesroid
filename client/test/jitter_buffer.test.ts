@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AdaptiveJitterController } from '../src/core/adaptive-jitter.js';
 import { AvSyncController } from '../src/core/av-sync.js';
 

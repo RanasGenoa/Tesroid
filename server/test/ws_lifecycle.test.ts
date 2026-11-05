@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WebSocketHandler } from '../src/ws/handler.js';
 import { WSS_CHANNEL } from '../src/ws/protocol.js';
 
@@ -21,8 +21,12 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
     let encoderRunning = false;
     const mockEncoder: any = {
       isRunning: vi.fn(() => encoderRunning),
-      start: vi.fn(() => { encoderRunning = true; }),
-      stop: vi.fn(() => { encoderRunning = false; }),
+      start: vi.fn(() => {
+        encoderRunning = true;
+      }),
+      stop: vi.fn(() => {
+        encoderRunning = false;
+      }),
       getCachedKeyframe: () => null,
       getCachedSpsPps: () => null,
       getCachedOpusHead: () => null,
@@ -34,13 +38,7 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
       getConfig: () => ({ isSetupCompleted: true }),
     };
 
-    const handler = new WebSocketHandler(
-      mockAuth,
-      mockBrowser,
-      mockEncoder,
-      mockInput,
-      mockConfig
-    );
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
     const mockSocket: any = {
       readyState: 1,
@@ -52,7 +50,9 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
     handler.handleConnection(mockSocket);
 
     // Find message listener
-    const messageListener = mockSocket.on.mock.calls.find((call: any[]) => call[0] === 'message')?.[1];
+    const messageListener = mockSocket.on.mock.calls.find(
+      (call: any[]) => call[0] === 'message',
+    )?.[1];
     expect(messageListener).toBeDefined();
 
     // Send valid auth PIN
@@ -116,13 +116,7 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
       getConfig: () => ({ isSetupCompleted: true }),
     };
 
-    const handler = new WebSocketHandler(
-      mockAuth,
-      mockBrowser,
-      mockEncoder,
-      mockInput,
-      mockConfig
-    );
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
     const mockSocket: any = {
       readyState: 1,
@@ -131,7 +125,9 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
     };
 
     handler.handleConnection(mockSocket);
-    const messageListener = mockSocket.on.mock.calls.find((call: any[]) => call[0] === 'message')?.[1];
+    const messageListener = mockSocket.on.mock.calls.find(
+      (call: any[]) => call[0] === 'message',
+    )?.[1];
 
     // Authenticate client
     const authBuf = Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]);
@@ -182,13 +178,7 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
       getConfig: () => ({ isSetupCompleted: true }),
     };
 
-    const handler = new WebSocketHandler(
-      mockAuth,
-      mockBrowser,
-      mockEncoder,
-      mockInput,
-      mockConfig
-    );
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
     const mockSocket: any = {
       readyState: 1,
@@ -197,7 +187,9 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
     };
 
     handler.handleConnection(mockSocket);
-    const messageListener = mockSocket.on.mock.calls.find((call: any[]) => call[0] === 'message')?.[1];
+    const messageListener = mockSocket.on.mock.calls.find(
+      (call: any[]) => call[0] === 'message',
+    )?.[1];
 
     // Authenticate client
     const authBuf = Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]);

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderPinEntry } from '../src/views/pin-entry.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderLockoutView } from '../src/views/lockout.js';
+import { renderPinEntry } from '../src/views/pin-entry.js';
 
 describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
   const originalDocument = (globalThis as any).document;
@@ -55,12 +55,13 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
       container,
       3,
       (pin) => submittedPins.push(pin),
-      () => settingsOpened++
+      () => settingsOpened++,
     );
 
     expect(container.innerHTML).toContain('#ff3b30'); // Red low-attempts warning
 
-    const pressKey = (k: string) => keyButtons.find((b) => b.getAttribute('data-key') === k)!.click();
+    const pressKey = (k: string) =>
+      keyButtons.find((b) => b.getAttribute('data-key') === k)!.click();
 
     // 3 digits -> submit remains disabled
     pressKey('2');

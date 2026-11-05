@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sleep, resume, encoderRestart, browserRestart } from '../src/views/power-actions.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { browserRestart, encoderRestart, resume, sleep } from '../src/views/power-actions.js';
 
 describe('power-actions REST functions & error handling', () => {
   const token = 'sample-token-123';

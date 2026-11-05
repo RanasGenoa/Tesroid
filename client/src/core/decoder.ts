@@ -1,5 +1,5 @@
-import { H264Parser } from './h264-parser.js';
 import { VIDEO_FLAGS } from '../transport/protocol.js';
+import { H264Parser } from './h264-parser.js';
 import type { TelemetryCollector } from './telemetry.js';
 
 export type FrameOutputTarget =
@@ -74,9 +74,15 @@ export class VideoStreamDecoder {
     if (options.targetDurationMs !== undefined && options.targetDurationMs > 0) {
       this.targetPendingDurationMs = options.targetDurationMs;
       // Hard limit for trimming is target + 35% margin (at least +2.5s for GOP alignment)
-      this.maxPendingDurationMs = Math.max(1500, Math.round(options.targetDurationMs * 1.35) + 2500);
+      this.maxPendingDurationMs = Math.max(
+        1500,
+        Math.round(options.targetDurationMs * 1.35) + 2500,
+      );
       // Packet count limit based on max 45fps + margin
-      this.maxPendingPackets = Math.max(90, Math.ceil((this.maxPendingDurationMs / 1000) * 45) + 60);
+      this.maxPendingPackets = Math.max(
+        90,
+        Math.ceil((this.maxPendingDurationMs / 1000) * 45) + 60,
+      );
       // Dynamic memory guard: ~1.5MB per second of buffer depth (min 4MB, max 24MB)
       const dynamicBytes = Math.round((this.maxPendingDurationMs / 1000) * 1.5 * 1024 * 1024);
       this.maxPendingBytes = Math.max(4 * 1024 * 1024, Math.min(24 * 1024 * 1024, dynamicBytes));
@@ -105,10 +111,7 @@ export class VideoStreamDecoder {
     this.getDownstreamQueueLength = provider;
   }
 
-  constructor(
-    target: FrameOutputTarget,
-    onFrameDecoded?: (pts: number) => void
-  ) {
+  constructor(target: FrameOutputTarget, onFrameDecoded?: (pts: number) => void) {
     if (typeof target === 'function') {
       this.onFrameOutput = target;
     } else if ('queueFrame' in target) {
@@ -372,16 +375,22 @@ export class VideoStreamDecoder {
         </h2>
 
         <p style="font-size: 14px; line-height: 1.6; color: #ccc; margin: 0 0 16px;">
-          ${!isSecure ? `
+          ${
+            !isSecure
+              ? `
             <strong>【原因】非セキュア環境（非暗号化HTTP）によるChromeの制約</strong><br>
             ブラウザのセキュリティ仕様により、WebCodecs APIは <strong>セキュアコンテキスト（HTTPS または localhost）</strong> でのみ動作が許可されています。<br>
             現在 <code>${window.location.origin}</code> のLAN内IP経由でアクセスしているため、ブラウザ側で機能が無効化されています。
-          ` : `
+          `
+              : `
             お使いのブラウザは WebCodecs VideoDecoder API に対応していません。Chrome 94以降、またはテスラ車載ブラウザ（Chromiumベース）をご利用ください。
-          `}
+          `
+          }
         </p>
 
-        ${!isSecure ? `
+        ${
+          !isSecure
+            ? `
           <div style="background: #121216; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6; margin-bottom: 16px;">
             <strong style="color: #00ff88;">PCブラウザからテスト・操作する方法:</strong>
             <ol style="margin: 8px 0 0 18px; padding: 0; color: #bbb;">
@@ -399,7 +408,9 @@ export class VideoStreamDecoder {
               </li>
             </ol>
           </div>
-        ` : ''}
+        `
+            : ''
+        }
 
         <div style="text-align: right;">
           <button id="webcodecs-close-btn" style="background: #333; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">閉じる</button>
@@ -414,9 +425,13 @@ export class VideoStreamDecoder {
   }
 
   private initDecoder(): void {
-    const hasVideoDecoder = typeof globalThis !== 'undefined' && typeof (globalThis as any).VideoDecoder !== 'undefined';
+    const hasVideoDecoder =
+      typeof globalThis !== 'undefined' && typeof (globalThis as any).VideoDecoder !== 'undefined';
     if (!hasVideoDecoder) {
-      console.warn('[VideoStreamDecoder] VideoDecoder not supported in current context. isSecureContext:', typeof window !== 'undefined' ? (window as any).isSecureContext : false);
+      console.warn(
+        '[VideoStreamDecoder] VideoDecoder not supported in current context. isSecureContext:',
+        typeof window !== 'undefined' ? (window as any).isSecureContext : false,
+      );
       if (typeof window !== 'undefined') {
         this.showWebCodecsError();
       }
@@ -445,7 +460,9 @@ export class VideoStreamDecoder {
         this.isConfigured = false;
         this.waitingForKeyframe = true;
         if (this.decoder) {
-          try { this.decoder.close(); } catch {}
+          try {
+            this.decoder.close();
+          } catch {}
           this.decoder = null;
         }
         // Auto-recover decoder
@@ -467,7 +484,9 @@ export class VideoStreamDecoder {
       const codec = H264Parser.getCodecString(sps);
       const description = H264Parser.buildAVCDecoderConfigurationRecord(sps, pps);
 
-      console.log(`[VideoStreamDecoder] Configuring VideoDecoder: codec=${codec}, descriptionLen=${description.length}`);
+      console.log(
+        `[VideoStreamDecoder] Configuring VideoDecoder: codec=${codec}, descriptionLen=${description.length}`,
+      );
 
       const candidateConfigs: VideoDecoderConfig[] = [
         { codec, description, hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true },
@@ -494,7 +513,10 @@ export class VideoStreamDecoder {
       this.activePps = new Uint8Array(pps);
       this.isConfigured = true;
       this.waitingForKeyframe = true;
-      console.log('[VideoStreamDecoder] VideoDecoder configured successfully with config:', chosenConfig);
+      console.log(
+        '[VideoStreamDecoder] VideoDecoder configured successfully with config:',
+        chosenConfig,
+      );
     } catch (err) {
       console.error('[VideoStreamDecoder] Failed to configure VideoDecoder:', err);
     }

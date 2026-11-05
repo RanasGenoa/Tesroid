@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AvSyncController } from '../src/core/av-sync.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AudioPlayer } from '../src/core/audio-player.js';
-import { AUDIO_FLAGS } from '../src/transport/protocol.js';
+import { AvSyncController } from '../src/core/av-sync.js';
 import { FramePacer } from '../src/core/frame-pacer.js';
+import { AUDIO_FLAGS } from '../src/transport/protocol.js';
 
 describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & Lockstep Sync)', () => {
   const originalWindow = (globalThis as any).window;
@@ -49,7 +49,7 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
   });
 
   it('AudioPlayer configures OpusHead (with fallback), decodes planar & interleaved f32, closes AudioData, and holds audio during video buffering', async () => {
-    let ctxTime = 5.0;
+    const ctxTime = 5.0;
     const scheduledSources: any[] = [];
     let decoderCallbacks: any = null;
     const configuredCalls: any[] = [];
@@ -218,7 +218,7 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
       render: vi.fn((f: any) => f.close?.()),
     };
     const avSync = new AvSyncController();
-    let ctxTimeSec = 10.0;
+    const ctxTimeSec = 10.0;
     avSync.setAudioContextTimeProvider(() => ctxTimeSec);
 
     // Audio is playing PTS 2,000,000us (2.0s) at AudioContext t=10.0s
@@ -348,7 +348,9 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
     // 1. Verify MasterGainNode is created with safe headroom (default 0.88 = ~ -1.1dB)
     expect(mockGainNode).not.toBeNull();
     expect(mockGainNode.gain.value).toBe(0.88);
-    expect(mockGainNode.connect).toHaveBeenCalledWith(expect.objectContaining({ id: 'destination' }));
+    expect(mockGainNode.connect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'destination' }),
+    );
 
     // Send CONFIG packet to initialize decoder
     player.handleAudioPacket(AUDIO_FLAGS.CONFIG, 0n, new Uint8Array(19));

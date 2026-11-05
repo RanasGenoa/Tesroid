@@ -1,5 +1,5 @@
-import { AvSyncController } from './av-sync.js';
 import { AUDIO_FLAGS } from '../transport/protocol.js';
+import type { AvSyncController } from './av-sync.js';
 import type { TelemetryCollector } from './telemetry.js';
 
 export interface AudioStats {
@@ -35,7 +35,7 @@ export class AudioPlayer {
   // 160ms target initial buffer (~8 Opus packets). Absorbs network jitter and keeps seamless playback.
   private static readonly JITTER_BUFFER_TARGET_SEC = 0.16;
   // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
-  private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.50;
+  private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.5;
   // Maximum catchup buffer before trimming oldest audio (30s)
   private static readonly MAX_CATCHUP_BUFFER_SEC = 30.0;
   // Hardware lookahead when starting playback from currentTime (25ms)
@@ -59,7 +59,7 @@ export class AudioPlayer {
     this.lastPpsCalcTime = performance.now();
     if (typeof this.avSync.setAudioContextTimeProvider === 'function') {
       this.avSync.setAudioContextTimeProvider(() =>
-        this.ctx && this.ctx.state === 'running' ? this.ctx.currentTime : null
+        this.ctx && this.ctx.state === 'running' ? this.ctx.currentTime : null,
       );
     }
   }
@@ -85,7 +85,9 @@ export class AudioPlayer {
       this.ensureMasterGain();
 
       this.isUnlocked = this.ctx.state === 'running';
-      console.log(`[AudioPlayer] AudioContext state: ${this.ctx.state}, unlocked: ${this.isUnlocked}`);
+      console.log(
+        `[AudioPlayer] AudioContext state: ${this.ctx.state}, unlocked: ${this.isUnlocked}`,
+      );
       return this.isUnlocked;
     } catch (err) {
       console.warn('[AudioPlayer] Failed to unlock AudioContext:', err);
@@ -163,7 +165,9 @@ export class AudioPlayer {
 
     // Check if this is an OpusHead / CONFIG packet
     if (flags & AUDIO_FLAGS.CONFIG) {
-      console.log(`[AudioPlayer] Received audio CONFIG packet (${data.length} bytes). Configuring decoder.`);
+      console.log(
+        `[AudioPlayer] Received audio CONFIG packet (${data.length} bytes). Configuring decoder.`,
+      );
       this.lastConfigData = data;
       this.initDecoder(data);
       this.resetJitterBuffer();
@@ -230,20 +234,27 @@ export class AudioPlayer {
         numberOfChannels: 2,
       };
 
-      const desc = !this.descriptionRejected ? (configData || this.lastConfigData) : null;
+      const desc = !this.descriptionRejected ? configData || this.lastConfigData : null;
       if (desc && desc.length >= 19) {
         config.description = desc.buffer.slice(desc.byteOffset, desc.byteOffset + desc.byteLength);
       }
 
       try {
         this.audioDecoder.configure(config);
-        console.log(`[AudioPlayer] AudioDecoder configured (Stereo 48kHz Opus${config.description ? ' with OpusHead' : ''})`);
+        console.log(
+          `[AudioPlayer] AudioDecoder configured (Stereo 48kHz Opus${config.description ? ' with OpusHead' : ''})`,
+        );
       } catch (confErr) {
-        console.warn('[AudioPlayer] Failed configure with description, retrying without description:', confErr);
+        console.warn(
+          '[AudioPlayer] Failed configure with description, retrying without description:',
+          confErr,
+        );
         this.descriptionRejected = true;
         delete config.description;
         this.audioDecoder.configure(config);
-        console.log('[AudioPlayer] AudioDecoder configured (fallback: Stereo 48kHz Opus without description)');
+        console.log(
+          '[AudioPlayer] AudioDecoder configured (fallback: Stereo 48kHz Opus without description)',
+        );
       }
     } catch (err) {
       console.warn('[AudioPlayer] Failed to create AudioDecoder:', err);
@@ -283,7 +294,10 @@ export class AudioPlayer {
     const numChannels = audioData.numberOfChannels || 2;
     const numFrames = audioData.numberOfFrames;
     const sampleRate = audioData.sampleRate || 48000;
-    const ptsUs = audioData.timestamp !== undefined && audioData.timestamp !== null ? audioData.timestamp : this.lastChunkPtsUs;
+    const ptsUs =
+      audioData.timestamp !== undefined && audioData.timestamp !== null
+        ? audioData.timestamp
+        : this.lastChunkPtsUs;
     this.activeChannels = numChannels;
 
     const buffer = this.ctx.createBuffer(numChannels, numFrames, sampleRate);
@@ -345,7 +359,8 @@ export class AudioPlayer {
 
     const now = this.ctx.currentTime;
     const targetBufferSec = AudioPlayer.JITTER_BUFFER_TARGET_SEC + this.additionalDelaySec;
-    const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
+    const isVideoBuffering =
+      typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
 
     // If video is currently paused waiting for stall cushion, hold incoming audio in overflowQueue
     // so audio NEVER starts playing ahead while video is waiting!
@@ -411,7 +426,8 @@ export class AudioPlayer {
   }
 
   private scheduleOrHold(buffer: AudioBuffer, ptsUs: number, now: number): void {
-    const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
+    const isVideoBuffering =
+      typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (this.overflowQueue.length > 0 || isVideoBuffering || this.isAudioAheadOfVideo(ptsUs)) {
       this.overflowQueue.push({ buffer, ptsUs });
       this.trimOverflowIfNeeded();
@@ -422,7 +438,7 @@ export class AudioPlayer {
     // If nextPlayTime has been overtaken by hardware currentTime (underrun or initial frame),
     // clamp safely to a healthy 80ms lookahead cushion so playback does not repeatedly underrun on minor jitter!
     if (startAt < now + 0.005) {
-      startAt = now + 0.080;
+      startAt = now + 0.08;
     }
 
     const bufferedAhead = startAt - now;
@@ -440,7 +456,8 @@ export class AudioPlayer {
 
   public syncWithVideo(): void {
     if (!this.ctx || this.ctx.state !== 'running') return;
-    const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
+    const isVideoBuffering =
+      typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (isVideoBuffering) return;
 
     const now = this.ctx.currentTime;
@@ -452,7 +469,9 @@ export class AudioPlayer {
     }
 
     const lastVideoPts = this.avSync.getLastVideoPts();
-    const scheduledAheadUs = this.isPlaying ? Math.round(Math.max(0, this.nextPlayTime - now) * 1_000_000) : 0;
+    const scheduledAheadUs = this.isPlaying
+      ? Math.round(Math.max(0, this.nextPlayTime - now) * 1_000_000)
+      : 0;
     const targetAudioPtsUs = lastVideoPts > 0 ? lastVideoPts + scheduledAheadUs : 0;
     const headPtsAtCheck = this.overflowQueue.length > 1 ? this.overflowQueue[0].ptsUs : 0;
     const staleLagMs =
@@ -493,7 +512,8 @@ export class AudioPlayer {
   }
 
   private pumpOverflowQueue(now: number): void {
-    const isVideoBuffering = typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
+    const isVideoBuffering =
+      typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
     if (isVideoBuffering) return;
 
     const maxScheduleWindow = AudioPlayer.MAX_SCHEDULE_AHEAD_SEC + this.additionalDelaySec;
@@ -505,7 +525,7 @@ export class AudioPlayer {
 
       let startAt = this.nextPlayTime;
       if (startAt < now + 0.005) {
-        startAt = now + 0.080;
+        startAt = now + 0.08;
       }
       if (startAt - now > maxScheduleWindow) {
         break;
@@ -554,7 +574,9 @@ export class AudioPlayer {
       this.scheduledSources.add(source);
       source.onended = () => {
         this.scheduledSources.delete(source);
-        try { source.disconnect(); } catch {}
+        try {
+          source.disconnect();
+        } catch {}
         if (this.ctx && this.ctx.state === 'running' && this.overflowQueue.length > 0) {
           this.pumpOverflowQueue(this.ctx.currentTime);
         }

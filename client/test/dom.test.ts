@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describe, expect, it } from 'vitest';
 
 function collectClientSourceFiles(dir: string): string[] {
   const results: string[] = [];
@@ -34,7 +34,10 @@ describe('Tesla Browser Compliance Checks', () => {
   });
 
   it('must contain <canvas id="stream-canvas"> in streaming view source', () => {
-    const streamViewSrc = fs.readFileSync(path.join(__dirname, '../src/views/streaming.ts'), 'utf-8');
+    const streamViewSrc = fs.readFileSync(
+      path.join(__dirname, '../src/views/streaming.ts'),
+      'utf-8',
+    );
     expect(streamViewSrc).toContain('<canvas id="stream-canvas">');
     expect(streamViewSrc).not.toMatch(/<video\b/i);
   });
@@ -49,7 +52,7 @@ describe('Tesla Browser Compliance Checks', () => {
       const codeOnly = content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
       expect(codeOnly, `Forbidden <video> tag in ${filePath}`).not.toMatch(/<video\b/i);
       expect(codeOnly, `Forbidden createElement('video') in ${filePath}`).not.toMatch(
-        /createElement\s*\(\s*['"`]video['"`]\s*\)/i
+        /createElement\s*\(\s*['"`]video['"`]\s*\)/i,
       );
     }
   });

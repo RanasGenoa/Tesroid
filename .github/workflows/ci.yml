@@ -21,14 +21,24 @@ jobs:
           node-version: 22
           cache: 'npm'
           cache-dependency-path: |
+            package-lock.json
             client/package-lock.json
             server/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
 
       - name: Install client dependencies
         run: npm --prefix client ci
 
       - name: Install server dependencies
         run: npm --prefix server ci
+
+      - name: Code Quality & Formatting Check (Biome)
+        run: npx @biomejs/biome ci --reporter=github
+
+      - name: TypeScript Type Check (client & server)
+        run: npm run typecheck
 
       - name: Run full automated test & PR guardrail suite (pre-build)
         run: npm test

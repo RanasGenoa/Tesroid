@@ -75,7 +75,12 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
         return;
       }
 
-      const allowedDomains = domain ? domain.split(',').map((d) => d.trim()).filter(Boolean) : [];
+      const allowedDomains = domain
+        ? domain
+            .split(',')
+            .map((d) => d.trim())
+            .filter(Boolean)
+        : [];
 
       try {
         const res = await fetch('/api/setup', {

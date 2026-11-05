@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { FramePacer } from '../src/core/frame-pacer.js';
-import { VideoStreamDecoder } from '../src/core/decoder.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AudioPlayer } from '../src/core/audio-player.js';
 import { AvSyncController } from '../src/core/av-sync.js';
-import { VIDEO_FLAGS, AUDIO_FLAGS, ClientProtocol } from '../src/transport/protocol.js';
+import { VideoStreamDecoder } from '../src/core/decoder.js';
+import { FramePacer } from '../src/core/frame-pacer.js';
+import { AUDIO_FLAGS, ClientProtocol, VIDEO_FLAGS } from '../src/transport/protocol.js';
 import { renderStreamingView } from '../src/views/streaming.js';
 
 describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Drop, Low Bandwidth, UI/UX)', () => {
@@ -154,9 +154,8 @@ describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Dro
     decoder.setDownstreamQueueLengthProvider(() => downstreamQueueSize);
 
     const spsPpsKey = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f,
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00,
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
     ]);
     const deltaPkt = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
 
@@ -374,12 +373,24 @@ describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Dro
       setAdditionalDelay: vi.fn(),
       unlock: vi.fn().mockResolvedValue(undefined),
       toggleMute: vi.fn(() => false),
-      getStats: vi.fn(() => ({ isUnlocked: true, state: 'running', packetsReceived: 10, isMuted: false })),
+      getStats: vi.fn(() => ({
+        isUnlocked: true,
+        state: 'running',
+        packetsReceived: 10,
+        isMuted: false,
+      })),
     };
     const mockAvSync = new AvSyncController();
     const container = createMockElement('root');
 
-    const cleanup = renderStreamingView(container, mockWsClient, mockAudioPlayer, mockAvSync, vi.fn(), 'token-123');
+    const cleanup = renderStreamingView(
+      container,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      vi.fn(),
+      'token-123',
+    );
 
     // Verify dedicated stream-viewport and bottom stream-hud exist
     expect(elementRegistry.get('stream-viewport')).toBeDefined();
@@ -414,7 +425,9 @@ describe('E2E Network Impairment & Catch-up Streaming Suite (Latency, Packet Dro
 
     // Clicking HUD LIVE button sends JUMP_TO_LIVE command and returns badge to LIVE
     hudLiveBtn.click();
-    expect(mockWsClient.send).toHaveBeenCalledWith(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
+    expect(mockWsClient.send).toHaveBeenCalledWith(
+      ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }),
+    );
     expect(hudLiveText.textContent).toBe('LIVE');
 
     // Receiving STREAM_RESET resets audio/video buffers cleanly

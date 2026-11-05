@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { isSafeHttpUrl, type BrowserManager } from '../browser/manager.js';
 import type { AuthService } from '../auth.js';
+import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
 import type { WebSocketHandler } from '../ws/handler.js';
 
@@ -9,7 +9,7 @@ export function registerBrowserRoutes(
   browserManager: BrowserManager,
   authService: AuthService,
   encoder?: VaapiEncoder,
-  wsHandler?: WebSocketHandler
+  wsHandler?: WebSocketHandler,
 ) {
   // Check auth session helper
   const isAuthorized = (req: any) => {
@@ -56,7 +56,9 @@ export function registerBrowserRoutes(
   app.post('/api/browser/restart', { preHandler: requireAuth }, async (req: any, reply) => {
     const { url } = req.body || {};
     if (url !== undefined && !isSafeHttpUrl(url)) {
-      return reply.code(400).send({ error: 'Invalid URL: Only http:// and https:// URLs are permitted' });
+      return reply
+        .code(400)
+        .send({ error: 'Invalid URL: Only http:// and https:// URLs are permitted' });
     }
     await browserManager.restartChrome(url);
     return { success: true, state: browserManager.getState(), url: browserManager.getCurrentUrl() };
@@ -69,7 +71,9 @@ export function registerBrowserRoutes(
       return reply.code(400).send({ error: 'URL is required' });
     }
     if (!isSafeHttpUrl(url)) {
-      return reply.code(400).send({ error: 'Invalid URL: Only http:// and https:// URLs are permitted' });
+      return reply
+        .code(400)
+        .send({ error: 'Invalid URL: Only http:// and https:// URLs are permitted' });
     }
     await browserManager.navigate(url);
     return { success: true, url: browserManager.getCurrentUrl() };

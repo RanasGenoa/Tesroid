@@ -1,4 +1,4 @@
-import { TelemetryEvent } from '../transport/protocol.js';
+import type { TelemetryEvent } from '../transport/protocol.js';
 
 export interface TelemetryCollectorOptions {
   storageKey?: string;
@@ -114,7 +114,7 @@ export class TelemetryCollector {
 
   public recordLog(level: 'warn' | 'error', message: string, detail?: any): void {
     if (!this.enabled) return;
-    let serializedDetail: any = undefined;
+    let serializedDetail: any;
     if (detail !== undefined) {
       try {
         serializedDetail = typeof detail === 'string' ? detail : JSON.parse(JSON.stringify(detail));

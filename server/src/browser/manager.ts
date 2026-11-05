@@ -1,20 +1,20 @@
-import { spawn, execSync, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { getProcessTree, findProcessesByName } from '../utils/processTree.js';
+import { findProcessesByName, getProcessTree } from '../utils/processTree.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export interface BrowserManagerOptions {
   displayNum?: string; // e.g. ':99'
-  width?: number;      // e.g. 1280
-  height?: number;     // e.g. 720
+  width?: number; // e.g. 1280
+  height?: number; // e.g. 720
   profileDir?: string; // e.g. '/data/browser-profile'
   defaultUrl?: string; // e.g. 'https://www.youtube.com'
-  vaapiDevice?: string;// e.g. '/dev/dri/renderD128'
+  vaapiDevice?: string; // e.g. '/dev/dri/renderD128'
   displayScale?: number; // e.g. 120 = 120%
 }
 
@@ -57,7 +57,10 @@ export class BrowserManager {
     this.displayNum = options.displayNum || process.env.DISPLAY_NUM || ':99';
     this.width = options.width || Number(process.env.DISPLAY_WIDTH) || 1280;
     this.height = options.height || Number(process.env.DISPLAY_HEIGHT) || 720;
-    this.profileDir = options.profileDir || process.env.BROWSER_PROFILE_DIR || path.join(process.env.DATA_DIR || '/data', 'browser-profile');
+    this.profileDir =
+      options.profileDir ||
+      process.env.BROWSER_PROFILE_DIR ||
+      path.join(process.env.DATA_DIR || '/data', 'browser-profile');
     this.defaultUrl = options.defaultUrl || process.env.BROWSER_URL || 'https://www.youtube.com';
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.displayScale = options.displayScale || Number(process.env.DISPLAY_SCALE) || 120;
@@ -86,7 +89,10 @@ export class BrowserManager {
       const ws = new WebSocket(page.webSocketDebuggerUrl);
       await new Promise((resolve, reject) => {
         const to = setTimeout(() => reject(new Error('CDP timeout')), 2000);
-        ws.on('open', () => { clearTimeout(to); resolve(null); });
+        ws.on('open', () => {
+          clearTimeout(to);
+          resolve(null);
+        });
         ws.on('error', reject);
       });
 
@@ -102,23 +108,30 @@ export class BrowserManager {
       `;
 
       let msgId = 500;
-      const send = (method: string, params: any) => new Promise<any>((resolve) => {
-        const id = msgId++;
-        const to = setTimeout(() => resolve(null), 1500);
-        const h = (d: any) => {
-          try {
-            const p = JSON.parse(d.toString());
-            if (p.id === id) { clearTimeout(to); ws.off('message', h); resolve(p.result); }
-          } catch {}
-        };
-        ws.on('message', h);
-        ws.send(JSON.stringify({ id, method, params }));
-      });
+      const send = (method: string, params: any) =>
+        new Promise<any>((resolve) => {
+          const id = msgId++;
+          const to = setTimeout(() => resolve(null), 1500);
+          const h = (d: any) => {
+            try {
+              const p = JSON.parse(d.toString());
+              if (p.id === id) {
+                clearTimeout(to);
+                ws.off('message', h);
+                resolve(p.result);
+              }
+            } catch {}
+          };
+          ws.on('message', h);
+          ws.send(JSON.stringify({ id, method, params }));
+        });
 
       await send('Page.enable', {});
       await send('Page.addScriptToEvaluateOnNewDocument', { source: zoomScript });
       await send('Runtime.evaluate', { expression: zoomScript });
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {}
       return true;
     } catch (err) {
       console.warn('[BrowserManager] Failed to dynamically apply displayScale via CDP:', err);
@@ -154,7 +167,9 @@ export class BrowserManager {
       return;
     }
     this.state = 'starting';
-    console.log(`[BrowserManager] Starting browser stack (Display: ${this.displayNum}, Resolution: ${this.width}x${this.height})...`);
+    console.log(
+      `[BrowserManager] Starting browser stack (Display: ${this.displayNum}, Resolution: ${this.width}x${this.height})...`,
+    );
 
     try {
       this.ensureDirectories();
@@ -266,7 +281,9 @@ export class BrowserManager {
       const id = 999;
       await new Promise<void>((resolve) => {
         const to = setTimeout(() => {
-          try { ws.close(); } catch {}
+          try {
+            ws.close();
+          } catch {}
           resolve();
         }, 2000);
         ws.on('message', (data: any) => {
@@ -274,7 +291,9 @@ export class BrowserManager {
             const parsed = JSON.parse(data.toString());
             if (parsed.id === id) {
               clearTimeout(to);
-              try { ws.close(); } catch {}
+              try {
+                ws.close();
+              } catch {}
               resolve();
             }
           } catch {}
@@ -323,12 +342,13 @@ export class BrowserManager {
       console.log('[BrowserManager] Initializing PulseAudio daemon...');
 
       // 1. Ensure config directory and tesroid.pa exist
-      const pulseConfig = [
-        'load-module module-native-protocol-unix socket=/tmp/pulse-socket auth-anonymous=1',
-        'load-module module-native-protocol-tcp auth-anonymous=1 port=4713',
-        'load-module module-null-sink sink_name=virtual_sink rate=48000 channels=2 format=s16le sink_properties=device.description=Virtual_Sink',
-        'set-default-sink virtual_sink',
-      ].join('\n') + '\n';
+      const pulseConfig =
+        [
+          'load-module module-native-protocol-unix socket=/tmp/pulse-socket auth-anonymous=1',
+          'load-module module-native-protocol-tcp auth-anonymous=1 port=4713',
+          'load-module module-null-sink sink_name=virtual_sink rate=48000 channels=2 format=s16le sink_properties=device.description=Virtual_Sink',
+          'set-default-sink virtual_sink',
+        ].join('\n') + '\n';
 
       try {
         fs.mkdirSync('/etc/pulse', { recursive: true });
@@ -348,7 +368,7 @@ export class BrowserManager {
       // 3. Start PulseAudio with dedicated tesroid.pa configuration
       execSync(
         'pulseaudio -n -F /etc/pulse/tesroid.pa --exit-idle-time=-1 --disallow-exit -D 2>/dev/null || ' +
-        'pulseaudio -D --exit-idle-time=-1 2>/dev/null || true'
+          'pulseaudio -D --exit-idle-time=-1 2>/dev/null || true',
       );
 
       // 4. Wait for socket to become available
@@ -356,13 +376,17 @@ export class BrowserManager {
 
       // 5. Ensure virtual_sink exists and is default
       try {
-        const sinks = execSync('pactl -s unix:/tmp/pulse-socket list short sinks 2>/dev/null || pactl list short sinks 2>/dev/null || true').toString();
+        const sinks = execSync(
+          'pactl -s unix:/tmp/pulse-socket list short sinks 2>/dev/null || pactl list short sinks 2>/dev/null || true',
+        ).toString();
         if (!sinks.includes('virtual_sink')) {
           execSync(
-            'pactl -s unix:/tmp/pulse-socket load-module module-null-sink sink_name=virtual_sink rate=48000 channels=2 format=s16le sink_properties=device.description=Virtual_Sink 2>/dev/null || true'
+            'pactl -s unix:/tmp/pulse-socket load-module module-null-sink sink_name=virtual_sink rate=48000 channels=2 format=s16le sink_properties=device.description=Virtual_Sink 2>/dev/null || true',
           );
         }
-        execSync('pactl -s unix:/tmp/pulse-socket set-default-sink virtual_sink 2>/dev/null || true');
+        execSync(
+          'pactl -s unix:/tmp/pulse-socket set-default-sink virtual_sink 2>/dev/null || true',
+        );
       } catch {}
 
       console.log('[BrowserManager] PulseAudio virtual sink ready (unix:/tmp/pulse-socket).');
@@ -392,10 +416,14 @@ export class BrowserManager {
     const xvfbH = Math.max(1080, this.height);
     const args = [
       this.displayNum,
-      '-screen', '0', `${xvfbW}x${xvfbH}x24`,
+      '-screen',
+      '0',
+      `${xvfbW}x${xvfbH}x24`,
       '-ac',
-      '+extension', 'GLX',
-      '+extension', 'RANDR',
+      '+extension',
+      'GLX',
+      '+extension',
+      'RANDR',
       '+render',
       '-noreset',
     ];
@@ -423,7 +451,9 @@ export class BrowserManager {
       return false; // No change needed
     }
 
-    console.log(`[BrowserManager] Resizing browser window from ${this.width}x${this.height} to ${w}x${h}...`);
+    console.log(
+      `[BrowserManager] Resizing browser window from ${this.width}x${this.height} to ${w}x${h}...`,
+    );
     this.width = w;
     this.height = h;
 
@@ -431,8 +461,8 @@ export class BrowserManager {
       // Unset any stuck OS-level fullscreen state before resizing
       execSync(
         `DISPLAY=${this.displayNum} wmctrl -r :ACTIVE: -b remove,fullscreen 2>/dev/null || true; ` +
-        `DISPLAY=${this.displayNum} xdotool search --class google-chrome windowsize %@ ${w} ${h} windowmove %@ 0 0 2>/dev/null || ` +
-        `DISPLAY=${this.displayNum} xdotool search --class chrome windowsize %@ ${w} ${h} windowmove %@ 0 0 2>/dev/null || true`
+          `DISPLAY=${this.displayNum} xdotool search --class google-chrome windowsize %@ ${w} ${h} windowmove %@ 0 0 2>/dev/null || ` +
+          `DISPLAY=${this.displayNum} xdotool search --class chrome windowsize %@ ${w} ${h} windowmove %@ 0 0 2>/dev/null || true`,
       );
       console.log(`[BrowserManager] Chrome resized to ${w}x${h}.`);
       return true;
@@ -458,7 +488,10 @@ export class BrowserManager {
       const ws = new WebSocket(page.webSocketDebuggerUrl);
       await new Promise((resolve, reject) => {
         const to = setTimeout(() => reject(new Error('CDP timeout')), 2000);
-        ws.on('open', () => { clearTimeout(to); resolve(null); });
+        ws.on('open', () => {
+          clearTimeout(to);
+          resolve(null);
+        });
         ws.on('error', reject);
       });
 
@@ -482,13 +515,24 @@ export class BrowserManager {
         })()
       `;
 
-      let id = 888;
+      const id = 888;
       await new Promise<void>((resolve) => {
-        const to = setTimeout(() => { try { ws.close(); } catch {} resolve(); }, 1500);
+        const to = setTimeout(() => {
+          try {
+            ws.close();
+          } catch {}
+          resolve();
+        }, 1500);
         ws.on('message', (d: any) => {
           try {
             const p = JSON.parse(d.toString());
-            if (p.id === id) { clearTimeout(to); try { ws.close(); } catch {} resolve(); }
+            if (p.id === id) {
+              clearTimeout(to);
+              try {
+                ws.close();
+              } catch {}
+              resolve();
+            }
           } catch {}
         });
         ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression: script } }));
@@ -610,7 +654,9 @@ export class BrowserManager {
           ? config.replace('</applications>', rules)
           : config.replace('</openbox_config>', `<applications>\n${rules}\n</openbox_config>`);
         fs.writeFileSync(configFile, modified, 'utf-8');
-        console.log('[BrowserManager] Configured Openbox with borderless decor and disabled OS-level fullscreen (fullscreen=no).');
+        console.log(
+          '[BrowserManager] Configured Openbox with borderless decor and disabled OS-level fullscreen (fullscreen=no).',
+        );
       }
     } catch (err) {
       console.warn('[BrowserManager] Failed to write Openbox rc.xml:', err);
@@ -641,7 +687,10 @@ export class BrowserManager {
         const ws = new WebSocket(page.webSocketDebuggerUrl);
         await new Promise((resolve, reject) => {
           const to = setTimeout(() => reject(new Error('CDP timeout')), 2500);
-          ws.on('open', () => { clearTimeout(to); resolve(null); });
+          ws.on('open', () => {
+            clearTimeout(to);
+            resolve(null);
+          });
           ws.on('error', reject);
         });
 
@@ -883,25 +932,34 @@ export class BrowserManager {
         `;
 
         let msgId = 100;
-        const send = (method: string, params: any) => new Promise<any>((resolve) => {
-          const id = msgId++;
-          const to = setTimeout(() => resolve(null), 1500);
-          const h = (d: any) => {
-            try {
-              const p = JSON.parse(d.toString());
-              if (p.id === id) { clearTimeout(to); ws.off('message', h); resolve(p.result); }
-            } catch {}
-          };
-          ws.on('message', h);
-          ws.send(JSON.stringify({ id, method, params }));
-        });
+        const send = (method: string, params: any) =>
+          new Promise<any>((resolve) => {
+            const id = msgId++;
+            const to = setTimeout(() => resolve(null), 1500);
+            const h = (d: any) => {
+              try {
+                const p = JSON.parse(d.toString());
+                if (p.id === id) {
+                  clearTimeout(to);
+                  ws.off('message', h);
+                  resolve(p.result);
+                }
+              } catch {}
+            };
+            ws.on('message', h);
+            ws.send(JSON.stringify({ id, method, params }));
+          });
 
         await send('Page.enable', {});
         await send('Page.addScriptToEvaluateOnNewDocument', { source: script });
         await send('Runtime.evaluate', { expression: script });
 
-        try { ws.close(); } catch {}
-        console.log('[BrowserManager] CDP car layout optimizations active (Web Fullscreen & Theater mode & Dark theme).');
+        try {
+          ws.close();
+        } catch {}
+        console.log(
+          '[BrowserManager] CDP car layout optimizations active (Web Fullscreen & Theater mode & Dark theme).',
+        );
         return;
       } catch (e) {
         // Retry next attempt
@@ -958,7 +1016,9 @@ export class BrowserManager {
 
   private async startChrome(targetUrl?: string): Promise<void> {
     if (this.chromeProcess || this.isStartingChrome) {
-      console.log('[BrowserManager] Chrome is already running or starting, skipping duplicate spawn.');
+      console.log(
+        '[BrowserManager] Chrome is already running or starting, skipping duplicate spawn.',
+      );
       return;
     }
     this.isStartingChrome = true;
@@ -1045,7 +1105,9 @@ export class BrowserManager {
           this.chromeRestartTimer = null;
           if ((this.state === 'running' || this.state === 'starting') && !this.chromeProcess) {
             this.cleanProfileLocks();
-            this.startChrome().catch((e) => console.error('[BrowserManager] Failed to restart Chrome:', e));
+            this.startChrome().catch((e) =>
+              console.error('[BrowserManager] Failed to restart Chrome:', e),
+            );
           }
         }, 2000);
       }
@@ -1053,10 +1115,14 @@ export class BrowserManager {
 
     await new Promise((r) => setTimeout(r, 1000));
     if (!this.chromeProcess || this.chromeProcess.exitCode !== null) {
-      console.warn('[BrowserManager] Chrome process failed to stay alive after spawn. Cleaning locks and retrying...');
+      console.warn(
+        '[BrowserManager] Chrome process failed to stay alive after spawn. Cleaning locks and retrying...',
+      );
       this.cleanProfileLocks();
       if (!this.chromeRestartTimer && (this.state === 'running' || this.state === 'starting')) {
-        this.startChrome().catch((e) => console.error('[BrowserManager] Immediate retry startChrome failed:', e));
+        this.startChrome().catch((e) =>
+          console.error('[BrowserManager] Immediate retry startChrome failed:', e),
+        );
       }
     }
   }
@@ -1087,7 +1153,12 @@ export class BrowserManager {
     }
     // Clean any lingering chrome processes without shell self-matching (-f avoided)
     try {
-      const lingeringPids = findProcessesByName(['chrome', 'google-chrome', 'chromium', 'chromium-browser']);
+      const lingeringPids = findProcessesByName([
+        'chrome',
+        'google-chrome',
+        'chromium',
+        'chromium-browser',
+      ]);
       for (const rootPid of lingeringPids) {
         const tree = getProcessTree(rootPid);
         for (let i = tree.length - 1; i >= 0; i--) {
@@ -1123,12 +1194,7 @@ export class BrowserManager {
   }
 
   private detectChromeBinary(): string {
-    const candidates = [
-      'google-chrome-stable',
-      'google-chrome',
-      'chromium-browser',
-      'chromium',
-    ];
+    const candidates = ['google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium'];
     for (const bin of candidates) {
       try {
         execSync(`which ${bin} 2>/dev/null`);

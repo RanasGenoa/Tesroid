@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoStreamDecoder } from '../src/core/decoder.js';
 import { VIDEO_FLAGS } from '../src/transport/protocol.js';
 
@@ -55,8 +55,22 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     // Feed SPS (NAL 7) + PPS (NAL 8) + IDR (NAL 5) packet to configure
     // Annex-B format: 0x00, 0x00, 0x00, 0x01, <NAL>
     const spsPpsData = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, // SPS
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, // PPS
+      0,
+      0,
+      0,
+      1,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS
+      0,
+      0,
+      0,
+      1,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS
     ]);
 
     // Send config packet without slices
@@ -66,7 +80,14 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
 
     // Now send a DELTA frame (not a keyframe)
     const deltaFrameData = new Uint8Array([
-      0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34, // P-slice (NAL 1)
+      0,
+      0,
+      0,
+      1,
+      0x41,
+      0x9a,
+      0x12,
+      0x34, // P-slice (NAL 1)
     ]);
     await decoder.handlePacket(0, 1000n, deltaFrameData);
 
@@ -75,7 +96,14 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
 
     // Now send a KEYFRAME
     const keyframeData = new Uint8Array([
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, // IDR slice (NAL 5)
+      0,
+      0,
+      0,
+      1,
+      0x65,
+      0x88,
+      0x84,
+      0x00, // IDR slice (NAL 5)
     ]);
     await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME, 2000n, keyframeData);
 
@@ -91,9 +119,8 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     const decoder = new VideoStreamDecoder(mockTarget);
 
     const spsPpsKeyData = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f,
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00,
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
     ]);
     decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1000n, spsPpsKeyData);
     await new Promise((r) => setTimeout(r, 10));
@@ -104,9 +131,7 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(mockDecoderInstance.reset).toHaveBeenCalledTimes(1);
 
     // Send delta frame after reset -> must be dropped
-    const deltaFrameData = new Uint8Array([
-      0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34,
-    ]);
+    const deltaFrameData = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
     decoder.handlePacket(0, 2000n, deltaFrameData);
     expect(mockDecoderInstance.decode).toHaveBeenCalledTimes(1); // Still 1
 
@@ -120,15 +145,50 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     const decoder = new VideoStreamDecoder(mockTarget);
 
     const spsPpsKeyData = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, // SPS
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, // PPS
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, // IDR
+      0,
+      0,
+      0,
+      1,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS
+      0,
+      0,
+      0,
+      1,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS
+      0,
+      0,
+      0,
+      1,
+      0x65,
+      0x88,
+      0x84,
+      0x00, // IDR
     ]);
     const deltaFrameData1 = new Uint8Array([
-      0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34, // Delta 1
+      0,
+      0,
+      0,
+      1,
+      0x41,
+      0x9a,
+      0x12,
+      0x34, // Delta 1
     ]);
     const deltaFrameData2 = new Uint8Array([
-      0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x56, // Delta 2
+      0,
+      0,
+      0,
+      1,
+      0x41,
+      0x9a,
+      0x12,
+      0x56, // Delta 2
     ]);
 
     // 1. Initial GOP: CONFIG + KEYFRAME
@@ -161,24 +221,77 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     const decoder = new VideoStreamDecoder(mockTarget);
 
     const spsPpsKeyDataInitial = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, // SPS 1
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, // PPS 1
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, // IDR
+      0,
+      0,
+      0,
+      1,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS 1
+      0,
+      0,
+      0,
+      1,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS 1
+      0,
+      0,
+      0,
+      1,
+      0x65,
+      0x88,
+      0x84,
+      0x00, // IDR
     ]);
 
     // Resized resolution (different SPS)
     const spsPpsKeyDataResized = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28, // SPS 2 (level changed)
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, // PPS 2
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, // IDR
+      0,
+      0,
+      0,
+      1,
+      0x67,
+      0x42,
+      0xc0,
+      0x28, // SPS 2 (level changed)
+      0,
+      0,
+      0,
+      1,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS 2
+      0,
+      0,
+      0,
+      1,
+      0x65,
+      0x88,
+      0x84,
+      0x00, // IDR
     ]);
 
     const deltaFrameData = new Uint8Array([
-      0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34, // Delta
+      0,
+      0,
+      0,
+      1,
+      0x41,
+      0x9a,
+      0x12,
+      0x34, // Delta
     ]);
 
     // Initial setup
-    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1000n, spsPpsKeyDataInitial);
+    await decoder.handlePacket(
+      VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME,
+      1000n,
+      spsPpsKeyDataInitial,
+    );
     await new Promise((r) => setTimeout(r, 20));
     expect(mockTarget).toHaveBeenCalledTimes(1);
 
@@ -190,7 +303,11 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     // In buggy code: configPromise is NOT awaited because isConfigured is true!
     // The IDR is decoded on old config, then configure() completes and resets the codec,
     // causing subsequent deltas to be dropped!
-    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 2000n, spsPpsKeyDataResized);
+    await decoder.handlePacket(
+      VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME,
+      2000n,
+      spsPpsKeyDataResized,
+    );
     await new Promise((r) => setTimeout(r, 20));
     expect(mockTarget).toHaveBeenCalledTimes(3);
 
@@ -200,7 +317,7 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
   });
 
   it('should manage prefetch buffer depth, byte size, and trim on limit exceed', async () => {
-    let downstreamQueueLength = 100; // Simulate downstream busy/full so packets are queued in pendingPackets
+    const downstreamQueueLength = 100; // Simulate downstream busy/full so packets are queued in pendingPackets
     const decoder = new VideoStreamDecoder({
       queueFrame: vi.fn(),
       getQueueLength: () => downstreamQueueLength,
@@ -213,14 +330,17 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(decoder.getMaxPendingBytes()).toBe(500 * 1024);
 
     const spsPpsKeyData = new Uint8Array([
-      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f,
-      0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
-      0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00,
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
     ]);
     const deltaFrameData = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
 
     // Enqueue packets into pending
-    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1_000_000n, spsPpsKeyData);
+    await decoder.handlePacket(
+      VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME,
+      1_000_000n,
+      spsPpsKeyData,
+    );
     await decoder.handlePacket(0, 1_033_000n, deltaFrameData);
     await decoder.handlePacket(0, 1_066_000n, deltaFrameData);
 

@@ -18,15 +18,22 @@ export class DynamicLatencyController {
 
     if (this.mode !== 'ACTIVE_INTERACTION') {
       this.mode = 'ACTIVE_INTERACTION';
-      console.log('[DynamicLatency] Switched to ACTIVE_INTERACTION (Zero buffer, ultra-low latency).');
+      console.log(
+        '[DynamicLatency] Switched to ACTIVE_INTERACTION (Zero buffer, ultra-low latency).',
+      );
       if (this.onModeChange) this.onModeChange(this.mode);
     }
 
     // Switch back to PASSIVE_STREAMING after interaction settles (default 4 seconds)
-    const setTimer = typeof window !== 'undefined' && typeof window.setTimeout === 'function' ? window.setTimeout : setTimeout;
+    const setTimer =
+      typeof window !== 'undefined' && typeof window.setTimeout === 'function'
+        ? window.setTimeout
+        : setTimeout;
     this.activeTimer = setTimer(() => {
       this.mode = 'PASSIVE_STREAMING';
-      console.log('[DynamicLatency] Switched to PASSIVE_STREAMING (Smooth playback, jitter buffer).');
+      console.log(
+        '[DynamicLatency] Switched to PASSIVE_STREAMING (Smooth playback, jitter buffer).',
+      );
       if (this.onModeChange) this.onModeChange(this.mode);
     }, this.holdDurationMs) as unknown as number;
   }

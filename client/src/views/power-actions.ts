@@ -39,7 +39,11 @@ export async function encoderRestart(token: string): Promise<void> {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
-      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      if (
+        typeof window !== 'undefined' &&
+        typeof window.dispatchEvent === 'function' &&
+        typeof CustomEvent === 'function'
+      ) {
         window.dispatchEvent(new CustomEvent('tesroid:stream-reset'));
       }
       showToast('配信プロセスをクリーン再起動しました（映像・音声リセット中）', 'success');

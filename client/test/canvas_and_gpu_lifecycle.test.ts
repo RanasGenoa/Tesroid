@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AvSyncController } from '../src/core/av-sync.js';
 import { CanvasRenderer } from '../src/core/canvas-renderer.js';
 import { FramePacer } from '../src/core/frame-pacer.js';
-import { AvSyncController } from '../src/core/av-sync.js';
 
 function createMockCanvas(contextNull: boolean = false) {
   const ctx = contextNull
@@ -21,7 +21,11 @@ function createMockCanvas(contextNull: boolean = false) {
   return { canvas, ctx };
 }
 
-function createTrackedFrame(timestampUs: number = 0, displayWidth: number = 1280, displayHeight: number = 720) {
+function createTrackedFrame(
+  timestampUs: number = 0,
+  displayWidth: number = 1280,
+  displayHeight: number = 720,
+) {
   let closeCount = 0;
   const frame: any = {
     timestamp: timestampUs,

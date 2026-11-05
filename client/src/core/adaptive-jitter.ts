@@ -108,7 +108,10 @@ export class AdaptiveJitterController {
 
     if (estimatedJitter >= this.jitterThresholdMs) {
       // 閾値超過時: 80〜400ms で段階的に適用
-      const clamped = Math.min(this.maxDelayMs, Math.max(this.minDelayMs, Math.round(estimatedJitter)));
+      const clamped = Math.min(
+        this.maxDelayMs,
+        Math.max(this.minDelayMs, Math.round(estimatedJitter)),
+      );
       this.targetDelayMs = clamped;
     } else {
       // 静穏化時: 元の低遅延（0ms）へ戻す

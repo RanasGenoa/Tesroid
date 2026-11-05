@@ -1,5 +1,5 @@
-import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 
 export interface ProcessTreeOptions {
   includeRoot?: boolean;
@@ -193,7 +193,11 @@ export function getProcessState(pid: number, deps: ProcessTreeDeps = {}): string
  * Returns true if signal was successfully sent, false if ESRCH.
  * Throws other errors (e.g. EPERM).
  */
-export function sendSignal(pid: number, signal: NodeJS.Signals | number, deps: ProcessTreeDeps = {}): boolean {
+export function sendSignal(
+  pid: number,
+  signal: NodeJS.Signals | number,
+  deps: ProcessTreeDeps = {},
+): boolean {
   const killFn = deps.kill ?? ((p: number, s: NodeJS.Signals | number) => process.kill(p, s));
   try {
     killFn(pid, signal);
@@ -214,7 +218,7 @@ export function sendSignalToTree(
   rootPid: number,
   signal: NodeJS.Signals | number,
   order: 'bottom-up' | 'top-down' = 'bottom-up',
-  deps: ProcessTreeDeps = {}
+  deps: ProcessTreeDeps = {},
 ): void {
   const pids = getProcessTree(rootPid, { deps });
   const targets = order === 'bottom-up' ? [...pids].reverse() : pids;
@@ -234,7 +238,7 @@ export function findProcessesByName(names: string[], deps: ProcessTreeDeps = {})
     names.flatMap((n) => {
       const lower = n.toLowerCase();
       return lower.length > 15 ? [lower, lower.slice(0, 15)] : [lower];
-    })
+    }),
   );
 
   for (const [pid, info] of processInfoMap.entries()) {

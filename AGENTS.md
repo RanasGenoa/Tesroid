@@ -31,9 +31,15 @@ Tesroid は、単一 Docker コンテナ内で稼働する **VAAPI ハードウ�
 ## 2. ビルド・テスト・デプロイ手順
 
 ### ローカル開発 & テスト
-コードを変更した際は、必ず単体テストと TypeScript ビルドが通ることを確認してください：
+コードを変更した際は、必ずリント・型チェック、単体テスト、および TypeScript ビルドが通ることを確認してください：
 
 ```bash
+# Biome リント・フォーマット & TypeScript 型チェック (client & server)
+npm run check
+
+# コード自動修正 & フォーマット (Safe Fix)
+npm run lint:fix
+
 # 全テストスイート実行 (client/test & server/test)
 npm test
 
@@ -143,6 +149,7 @@ AI エージェント（Antigravity, Cursor, Gemini, Claude 等）が自律的�
 
 ### 3. テスト実行とビルド検証の義務
 - コードを変更した後は、コミットまたは PR 作成前に **必ず以下のコマンドを実行し、全件 PASS を確認** してください：
+  - `npm run check`: Biome リント・フォーマット検証および TypeScript 厳格型チェック
   - `npm test`: クライアント・サーバーの全単体・結合テスト
   - `npm run build`: クライアント・サーバー双方のプロダクションビルド
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export interface StreamConfig {
   bitrate: number; // in bps, e.g. 8000000 = 8Mbps
-  maxFps: number;  // e.g. 60
+  maxFps: number; // e.g. 60
   maxSize: number; // maximum dimension, e.g. 1920
 }
 

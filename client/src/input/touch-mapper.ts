@@ -1,6 +1,6 @@
-import { WsClient } from '../transport/ws-client.js';
-import { ClientProtocol, AMOTION_EVENT_ACTION } from '../transport/protocol.js';
-import { DynamicLatencyController } from '../core/latency.js';
+import type { DynamicLatencyController } from '../core/latency.js';
+import { AMOTION_EVENT_ACTION, ClientProtocol } from '../transport/protocol.js';
+import type { WsClient } from '../transport/ws-client.js';
 import { EdgeGuard } from './edge-guard.js';
 
 export class TouchMapper {
@@ -22,7 +22,11 @@ export class TouchMapper {
   private onPointerCancel = (e: PointerEvent) => this.handlePointer(e, AMOTION_EVENT_ACTION.CANCEL);
   private onWindowBlur = () => this.cancelAllActivePointers();
 
-  constructor(canvas: HTMLCanvasElement, wsClient: WsClient, latencyController: DynamicLatencyController) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    wsClient: WsClient,
+    latencyController: DynamicLatencyController,
+  ) {
     this.canvas = canvas;
     this.wsClient = wsClient;
     this.latencyController = latencyController;
@@ -105,7 +109,8 @@ export class TouchMapper {
       const now = performance.now();
       if (
         now - this.lastPointerUpTime < TouchMapper.DEBOUNCE_MS &&
-        Math.hypot(clientX - this.lastPointerUpPos.x, clientY - this.lastPointerUpPos.y) < TouchMapper.DEBOUNCE_DIST
+        Math.hypot(clientX - this.lastPointerUpPos.x, clientY - this.lastPointerUpPos.y) <
+          TouchMapper.DEBOUNCE_DIST
       ) {
         return; // Suppress chatter pointerdown (activePointers is not added, so subsequent MOVE/UP are also ignored)
       }
@@ -158,7 +163,10 @@ export class TouchMapper {
         }
         start.moved = true;
       }
-    } else if (actionType === AMOTION_EVENT_ACTION.UP || actionType === AMOTION_EVENT_ACTION.CANCEL) {
+    } else if (
+      actionType === AMOTION_EVENT_ACTION.UP ||
+      actionType === AMOTION_EVENT_ACTION.CANCEL
+    ) {
       try {
         if (this.canvas.hasPointerCapture(e.pointerId)) {
           this.canvas.releasePointerCapture(e.pointerId);
@@ -176,7 +184,10 @@ export class TouchMapper {
         finalAction = AMOTION_EVENT_ACTION.POINTER_DOWN;
       }
       this.activePointers.add(e.pointerId);
-    } else if (actionType === AMOTION_EVENT_ACTION.UP || actionType === AMOTION_EVENT_ACTION.CANCEL) {
+    } else if (
+      actionType === AMOTION_EVENT_ACTION.UP ||
+      actionType === AMOTION_EVENT_ACTION.CANCEL
+    ) {
       if (this.activePointers.size > 1 && actionType === AMOTION_EVENT_ACTION.UP) {
         finalAction = AMOTION_EVENT_ACTION.POINTER_UP;
       }
@@ -190,7 +201,7 @@ export class TouchMapper {
       y: normY,
       screenWidth: canvasW,
       screenHeight: canvasH,
-      pressure: 0xFFFF,
+      pressure: 0xffff,
     });
 
     this.wsClient.send(touchPacket);

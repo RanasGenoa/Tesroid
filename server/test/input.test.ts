@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { X11InputManager } from '../src/input/xdotool.js';
 
 describe('X11InputManager & CdpTouchBridge', () => {
@@ -273,7 +273,13 @@ describe('X11InputManager & CdpTouchBridge', () => {
     inputManager.reloadPage();
     inputManager.toggleVideoFullscreen();
     inputManager.sendKey('Escape');
-    expect(sentCommands).toEqual(['key alt+Left', 'key alt+Right', 'key ctrl+r', 'key f', 'key Escape']);
+    expect(sentCommands).toEqual([
+      'key alt+Left',
+      'key alt+Right',
+      'key ctrl+r',
+      'key f',
+      'key Escape',
+    ]);
 
     // 2. Connected -> CDP commands, zero xdotool keys
     sentCommands = [];
@@ -287,6 +293,11 @@ describe('X11InputManager & CdpTouchBridge', () => {
     inputManager.toggleVideoFullscreen();
 
     expect(sentCommands).toEqual([]);
-    expect(sentCdp).toEqual(['Runtime.evaluate', 'Runtime.evaluate', 'Page.reload', 'Runtime.evaluate']);
+    expect(sentCdp).toEqual([
+      'Runtime.evaluate',
+      'Runtime.evaluate',
+      'Page.reload',
+      'Runtime.evaluate',
+    ]);
   });
 });

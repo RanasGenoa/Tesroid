@@ -1,24 +1,22 @@
-import path from 'node:path';
 import fs from 'node:fs';
-import Fastify from 'fastify';
-import fastifyWebSocket from '@fastify/websocket';
+import path from 'node:path';
 import fastifyStatic from '@fastify/static';
-
-import { ConfigStore } from './config.js';
-import { LockoutManager } from './lockout.js';
+import fastifyWebSocket from '@fastify/websocket';
+import Fastify from 'fastify';
 import { AuthService } from './auth.js';
 import { BrowserManager } from './browser/manager.js';
+import { ConfigStore } from './config.js';
 import { VaapiEncoder } from './encoder/ffmpeg.js';
 import { X11InputManager } from './input/xdotool.js';
-import { WebSocketHandler } from './ws/handler.js';
-
-import { registerSetupRoutes } from './routes/setup.js';
-import { registerSettingsRoutes } from './routes/settings.js';
+import { LockoutManager } from './lockout.js';
 import { registerBrowserRoutes } from './routes/browser.js';
 import { registerHealthRoutes } from './routes/health.js';
-import { registerSoundRoutes } from './routes/sound.js';
 import { registerMetricsRoutes } from './routes/metrics.js';
+import { registerSettingsRoutes } from './routes/settings.js';
+import { registerSetupRoutes } from './routes/setup.js';
+import { registerSoundRoutes } from './routes/sound.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { WebSocketHandler } from './ws/handler.js';
 
 async function bootstrap() {
   const app = Fastify({
@@ -47,7 +45,7 @@ async function bootstrap() {
   const initialFps = initialStreamConfig?.maxFps || Number(process.env.FPS) || 30;
   const initialBitrate = initialStreamConfig?.bitrate
     ? `${Math.round(initialStreamConfig.bitrate / 1000)}k`
-    : (process.env.VIDEO_BITRATE || '1000k');
+    : process.env.VIDEO_BITRATE || '1000k';
 
   const encoder = new VaapiEncoder({
     displayNum,
@@ -66,7 +64,10 @@ async function bootstrap() {
     console.log('[Bootstrap] Initializing FFmpeg VAAPI Encoder...');
     encoder.start();
   } catch (err) {
-    console.warn('[Bootstrap] Browser stack startup deferred or failed (will retry on connect):', err);
+    console.warn(
+      '[Bootstrap] Browser stack startup deferred or failed (will retry on connect):',
+      err,
+    );
   }
 
   // 2. Register Fastify Plugins
@@ -104,7 +105,7 @@ async function bootstrap() {
     browserManager,
     encoder,
     inputManager,
-    configStore
+    configStore,
   );
 
   app.get('/ws', { websocket: true }, (connection, req) => {

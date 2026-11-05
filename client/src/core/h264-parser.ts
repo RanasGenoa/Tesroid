@@ -29,7 +29,7 @@ export class H264Parser {
 
       if (start < end) {
         const nalData = data.subarray(start, end);
-        const type = nalData[0] & 0x1F;
+        const type = nalData[0] & 0x1f;
         nalUnits.push({ type, data: nalData });
       }
     }
@@ -59,10 +59,10 @@ export class H264Parser {
     let offset = 0;
     for (const s of slices) {
       const len = s.data.length;
-      avcc[offset++] = (len >> 24) & 0xFF;
-      avcc[offset++] = (len >> 16) & 0xFF;
-      avcc[offset++] = (len >> 8) & 0xFF;
-      avcc[offset++] = len & 0xFF;
+      avcc[offset++] = (len >> 24) & 0xff;
+      avcc[offset++] = (len >> 16) & 0xff;
+      avcc[offset++] = (len >> 8) & 0xff;
+      avcc[offset++] = len & 0xff;
       avcc.set(s.data, offset);
       offset += len;
     }
@@ -85,16 +85,16 @@ export class H264Parser {
     record[offset++] = sps[1]; // AVCProfileIndication
     record[offset++] = sps[2]; // profile_compatibility
     record[offset++] = sps[3]; // AVCLevelIndication
-    record[offset++] = 0xFF; // lengthSizeMinusOne = 3 (4 bytes)
-    record[offset++] = 0xE1; // numOfSequenceParameterSets = 1
-    record[offset++] = (sps.length >> 8) & 0xFF;
-    record[offset++] = sps.length & 0xFF;
+    record[offset++] = 0xff; // lengthSizeMinusOne = 3 (4 bytes)
+    record[offset++] = 0xe1; // numOfSequenceParameterSets = 1
+    record[offset++] = (sps.length >> 8) & 0xff;
+    record[offset++] = sps.length & 0xff;
     record.set(sps, offset);
     offset += sps.length;
 
     record[offset++] = 0x01; // numOfPictureParameterSets = 1
-    record[offset++] = (pps.length >> 8) & 0xFF;
-    record[offset++] = pps.length & 0xFF;
+    record[offset++] = (pps.length >> 8) & 0xff;
+    record[offset++] = pps.length & 0xff;
     record.set(pps, offset);
 
     return record;

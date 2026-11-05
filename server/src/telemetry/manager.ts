@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { TelemetryEvent } from '../ws/protocol.js';
+import type { TelemetryEvent } from '../ws/protocol.js';
 
 export interface TelemetrySessionInfo {
   sessionId: string;
@@ -102,7 +102,7 @@ export class TelemetryManager {
           !Array.isArray(ev) &&
           typeof ev.event === 'string' &&
           typeof ev.type === 'string' &&
-          VALID_TELEMETRY_TYPES.has(ev.type)
+          VALID_TELEMETRY_TYPES.has(ev.type),
       );
 
     if (sanitizedEvents.length === 0) return;
@@ -122,7 +122,10 @@ export class TelemetryManager {
     }
   }
 
-  private async appendEventsInternal(safeSessionId: string, events: TelemetryEvent[]): Promise<void> {
+  private async appendEventsInternal(
+    safeSessionId: string,
+    events: TelemetryEvent[],
+  ): Promise<void> {
     if (this.cappedSessions.has(safeSessionId)) return;
 
     await this.ensureDirAsync();
@@ -162,7 +165,7 @@ export class TelemetryManager {
       if (currentSize + addedBytes + lineBytes > this.maxFileSizeBytes) {
         this.cappedSessions.add(safeSessionId);
         console.warn(
-          `[TelemetryManager] Session ${safeSessionId} reached max log size (${this.maxFileSizeBytes} bytes). Discarding further events.`
+          `[TelemetryManager] Session ${safeSessionId} reached max log size (${this.maxFileSizeBytes} bytes). Discarding further events.`,
         );
         break;
       }
@@ -174,7 +177,8 @@ export class TelemetryManager {
 
     try {
       await fs.promises.appendFile(filePath, serializedLines.join(''), 'utf-8');
-      const currentCount = (this.sessionEventCounts.get(safeSessionId) || 0) + serializedLines.length;
+      const currentCount =
+        (this.sessionEventCounts.get(safeSessionId) || 0) + serializedLines.length;
       this.sessionEventCounts.set(safeSessionId, currentCount);
 
       if (isNewSessionFile) {

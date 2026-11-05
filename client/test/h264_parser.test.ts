@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { H264Parser } from '../src/core/h264-parser.js';
 
 describe('H264Parser (Annex-B <-> AVCC & WebCodecs Configuration)', () => {
@@ -7,11 +7,41 @@ describe('H264Parser (Annex-B <-> AVCC & WebCodecs Configuration)', () => {
     expect(H264Parser.extractNalUnits(new Uint8Array([0x11, 0x22, 0x33]))).toEqual([]);
 
     const bitstream = new Uint8Array([
-      0x00, 0x00, 0x00, 0x01, 0x09, 0x10,             // AUD (type 9)
-      0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f, // SPS (type 7)
-      0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,       // PPS (type 8, 3-byte start code)
-      0x00, 0x00, 0x01, 0x06, 0x05, 0x01, 0xff,       // SEI (type 6, 3-byte start code)
-      0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84,       // IDR (type 5)
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x09,
+      0x10, // AUD (type 9)
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS (type 7)
+      0x00,
+      0x00,
+      0x01,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS (type 8, 3-byte start code)
+      0x00,
+      0x00,
+      0x01,
+      0x06,
+      0x05,
+      0x01,
+      0xff, // SEI (type 6, 3-byte start code)
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x65,
+      0x88,
+      0x84, // IDR (type 5)
     ]);
 
     const nals = H264Parser.extractNalUnits(bitstream);
@@ -23,23 +53,52 @@ describe('H264Parser (Annex-B <-> AVCC & WebCodecs Configuration)', () => {
   it('converts Annex-B to AVCC (4-byte BE length prefix), stripping SPS/PPS/AUD while retaining SEI and slices', () => {
     // 1. Config-only buffer (SPS + PPS + AUD) -> returns empty Uint8Array(0)
     const configOnly = new Uint8Array([
-      0x00, 0x00, 0x00, 0x01, 0x09, 0x10,
-      0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f,
-      0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,
+      0x00, 0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f, 0x00,
+      0x00, 0x00, 0x01, 0x68, 0xce, 0x3c, 0x80,
     ]);
     expect(H264Parser.annexBToAvcc(configOnly).length).toBe(0);
 
     // 2. Full IDR Access Unit -> keeps SEI(6) + IDR(5) with 4-byte length prefixes
     const idrAu = new Uint8Array([
-      0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f, // SPS (stripped)
-      0x00, 0x00, 0x01, 0x06, 0xaa,                   // SEI (len 2)
-      0x00, 0x00, 0x00, 0x01, 0x65, 0x11, 0x22, 0x33, // IDR (len 4)
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS (stripped)
+      0x00,
+      0x00,
+      0x01,
+      0x06,
+      0xaa, // SEI (len 2)
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x65,
+      0x11,
+      0x22,
+      0x33, // IDR (len 4)
     ]);
 
     const avcc = H264Parser.annexBToAvcc(idrAu);
     expect(Array.from(avcc)).toEqual([
-      0x00, 0x00, 0x00, 0x02, 0x06, 0xaa,             // 4B BE len=2 + SEI
-      0x00, 0x00, 0x00, 0x04, 0x65, 0x11, 0x22, 0x33, // 4B BE len=4 + IDR
+      0x00,
+      0x00,
+      0x00,
+      0x02,
+      0x06,
+      0xaa, // 4B BE len=2 + SEI
+      0x00,
+      0x00,
+      0x00,
+      0x04,
+      0x65,
+      0x11,
+      0x22,
+      0x33, // 4B BE len=4 + IDR
     ]);
   });
 
@@ -63,6 +122,8 @@ describe('H264Parser (Annex-B <-> AVCC & WebCodecs Configuration)', () => {
     // Truncated SPS (< 4 bytes) must throw descriptive error instead of TypeError
     const truncated = new Uint8Array([0x67, 0x42]);
     expect(() => H264Parser.getCodecString(truncated)).toThrow(/Invalid SPS/);
-    expect(() => H264Parser.buildAVCDecoderConfigurationRecord(truncated, pps)).toThrow(/Invalid SPS/);
+    expect(() => H264Parser.buildAVCDecoderConfigurationRecord(truncated, pps)).toThrow(
+      /Invalid SPS/,
+    );
   });
 });

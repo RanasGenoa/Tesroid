@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthService } from '../src/auth.js';
 import { ConfigStore } from '../src/config.js';
 import { LockoutManager } from '../src/lockout.js';
-import { AuthService } from '../src/auth.js';
 
 describe('AuthService, ConfigStore & LockoutManager', () => {
   let tmpDir: string;
@@ -111,7 +111,7 @@ describe('AuthService, ConfigStore & LockoutManager', () => {
       fs.writeFileSync(
         path.join(legacyDir, 'config.json'),
         JSON.stringify({ isSetupCompleted: true, displayScale: 85 }),
-        'utf-8'
+        'utf-8',
       );
       const store1 = new ConfigStore(legacyDir);
       expect(store1.getConfig().displayScale).toBe(120);
@@ -120,7 +120,7 @@ describe('AuthService, ConfigStore & LockoutManager', () => {
       fs.writeFileSync(
         path.join(legacyDir, 'config.json'),
         JSON.stringify({ isSetupCompleted: true, displayScale: 85, displayScaleUserSet: true }),
-        'utf-8'
+        'utf-8',
       );
       const store2 = new ConfigStore(legacyDir);
       expect(store2.getConfig().displayScale).toBe(85);

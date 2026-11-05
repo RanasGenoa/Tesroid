@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { PlaybackBuffer } from '../src/encoder/playback-buffer.js';
-import { VIDEO_FLAGS, AUDIO_FLAGS } from '../src/ws/protocol.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS } from '../src/ws/protocol.js';
 
 describe('PlaybackBuffer Ring Buffer Tests', () => {
   it('should store video and audio frames and record configs', () => {
@@ -20,7 +20,9 @@ describe('PlaybackBuffer Ring Buffer Tests', () => {
     expect(buffer.getCachedOpusHead()).toEqual(opusHead);
     expect(buffer.getVideoCount()).toBe(2);
     expect(buffer.getAudioCount()).toBe(2);
-    expect(buffer.getCurrentBytes()).toBe(spsPps.length + keyframe.length + opusHead.length + audioData.length);
+    expect(buffer.getCurrentBytes()).toBe(
+      spsPps.length + keyframe.length + opusHead.length + audioData.length,
+    );
   });
 
   it('should prune oldest GOP when duration limit is exceeded while never pruning the only active GOP', () => {

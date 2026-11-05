@@ -1,13 +1,13 @@
-import { WsClient } from './transport/ws-client.js';
-import { ClientProtocol } from './transport/protocol.js';
 import { AudioPlayer } from './core/audio-player.js';
 import { AvSyncController } from './core/av-sync.js';
-import { renderSetupWizard } from './views/setup-wizard.js';
-import { renderPinEntry } from './views/pin-entry.js';
-import { renderStreamingView } from './views/streaming.js';
-import { renderLockoutView } from './views/lockout.js';
-import { openSettingsWithAuth } from './views/settings-modal.js';
+import { ClientProtocol } from './transport/protocol.js';
+import { WsClient } from './transport/ws-client.js';
 import { showToast } from './views/icons.js';
+import { renderLockoutView } from './views/lockout.js';
+import { renderPinEntry } from './views/pin-entry.js';
+import { openSettingsWithAuth } from './views/settings-modal.js';
+import { renderSetupWizard } from './views/setup-wizard.js';
+import { renderStreamingView } from './views/streaming.js';
 
 class AppRouter {
   private appEl: HTMLElement;
@@ -88,7 +88,7 @@ class AppRouter {
       },
       () => {
         this.openSettings();
-      }
+      },
     );
   }
 
@@ -100,7 +100,7 @@ class AppRouter {
       this.audioPlayer,
       this.avSync,
       () => this.openSettings(),
-      this.authToken
+      this.authToken,
     );
   }
 
@@ -143,7 +143,7 @@ class AppRouter {
       },
       () => {
         // Settings modal closed
-      }
+      },
     );
   }
 
@@ -188,7 +188,10 @@ class AppRouter {
         if (this.remainingAttempts <= 0) {
           this.showLockout();
         } else {
-          showToast(`PINコードが違います。（残り入力可能回数: ${this.remainingAttempts}回）`, 'error');
+          showToast(
+            `PINコードが違います。（残り入力可能回数: ${this.remainingAttempts}回）`,
+            'error',
+          );
           this.showPinEntry();
         }
       }

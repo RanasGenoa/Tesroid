@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebSocketHandler } from '../src/ws/handler.js';
-import { WSS_CHANNEL, VIDEO_FLAGS, AUDIO_FLAGS } from '../src/ws/protocol.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PlaybackBuffer } from '../src/encoder/playback-buffer.js';
+import { WebSocketHandler } from '../src/ws/handler.js';
+import { AUDIO_FLAGS, VIDEO_FLAGS, WSS_CHANNEL } from '../src/ws/protocol.js';
 
 describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
   let mockAuth: any;
@@ -116,7 +116,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     // Set last input to 10 seconds ago (idle state > IDLE_TO_BUFFER_SECONDS = 5s)
@@ -134,7 +134,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       Buffer.concat([
         Buffer.from([WSS_CHANNEL.COMMAND]),
         Buffer.from(JSON.stringify({ type: 'ACK', pts: 1033000 })),
-      ])
+      ]),
     );
     closeListener1();
 
@@ -183,7 +183,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     handler.setLastInputAt(Date.now() - 10000);
@@ -232,7 +232,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     // Idle reconnect
@@ -280,7 +280,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     handler.setLastInputAt(Date.now() - 10000);
@@ -331,7 +331,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
@@ -363,7 +363,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     // Last input was 1 second ago (< IDLE_TO_BUFFER_SECONDS = 5s)
@@ -395,7 +395,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
@@ -408,13 +408,15 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     // Send BUFFER_FEEDBACK with telemetry
     const feedbackPayload = Buffer.concat([
       Buffer.from([WSS_CHANNEL.COMMAND]),
-      Buffer.from(JSON.stringify({
-        type: 'BUFFER_FEEDBACK',
-        bufferedMs: 4200,
-        targetBufferMs: 10000,
-        lastRenderedPts: '1050000',
-        isInteractive: false,
-      })),
+      Buffer.from(
+        JSON.stringify({
+          type: 'BUFFER_FEEDBACK',
+          bufferedMs: 4200,
+          targetBufferMs: 10000,
+          lastRenderedPts: '1050000',
+          isInteractive: false,
+        }),
+      ),
     ]);
     await msgListener(feedbackPayload);
 
@@ -429,12 +431,14 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
 
     const interactiveFeedback = Buffer.concat([
       Buffer.from([WSS_CHANNEL.COMMAND]),
-      Buffer.from(JSON.stringify({
-        type: 'BUFFER_FEEDBACK',
-        bufferedMs: 0,
-        targetBufferMs: 10000,
-        isInteractive: true,
-      })),
+      Buffer.from(
+        JSON.stringify({
+          type: 'BUFFER_FEEDBACK',
+          bufferedMs: 0,
+          targetBufferMs: 10000,
+          isInteractive: true,
+        }),
+      ),
     ]);
     await msgListener(interactiveFeedback);
 
@@ -470,7 +474,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       mockEncoder,
       mockInput,
       mockConfig,
-      playbackBuffer
+      playbackBuffer,
     );
 
     // アイドル状態 (CATCHUP 許可)
