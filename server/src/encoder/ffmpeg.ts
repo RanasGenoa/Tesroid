@@ -54,6 +54,7 @@ export class VaapiEncoder extends EventEmitter {
   private currentAuNals: Buffer[] = [];
   private currentAuHasKeyframe = false;
   private currentAuHasConfig = false;
+  private currentAuHasSlice = false;
 
   private oggRemainder: Buffer = Buffer.alloc(0);
   private oggHeaderParsed = false;
@@ -135,6 +136,7 @@ export class VaapiEncoder extends EventEmitter {
     this.currentAuNals = [];
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
+    this.currentAuHasSlice = false;
     this.videoPts = 0n;
     if (this.streamStartTimeUs === 0n) {
       this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
@@ -532,11 +534,7 @@ export class VaapiEncoder extends EventEmitter {
     // Frame boundary detection:
     // 1. Explicit AUD (Type 9)
     // 2. Fallback: new slice (Type 1 or 5) or SPS (Type 7) when we already accumulated a slice
-    const hasExistingSlice = this.currentAuNals.some((buf) => {
-      const off = buf[0] === 0 && buf[1] === 0 && buf[2] === 0 && buf[3] === 1 ? 4 : 3;
-      const t = buf[off] & 0x1f;
-      return t === 1 || t === 5;
-    });
+    const hasExistingSlice = this.currentAuHasSlice;
 
     if (nalType === 9 || (hasExistingSlice && (nalType === 1 || nalType === 5 || nalType === 7))) {
       this.flushCurrentAccessUnit();
@@ -551,6 +549,10 @@ export class VaapiEncoder extends EventEmitter {
     } else if (nalType === 5) {
       // IDR slice
       this.currentAuHasKeyframe = true;
+      this.currentAuHasSlice = true;
+    } else if (nalType === 1) {
+      // Non-IDR slice
+      this.currentAuHasSlice = true;
     }
   }
 
@@ -586,6 +588,7 @@ export class VaapiEncoder extends EventEmitter {
 
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
+    this.currentAuHasSlice = false;
   }
 
   /**

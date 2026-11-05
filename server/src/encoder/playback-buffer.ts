@@ -119,7 +119,9 @@ export class PlaybackBuffer {
     this.audioFrames.push(frame);
     this.currentBytes += data.length;
 
-    this.prune();
+    if (this.currentBytes > this.maxBytes) {
+      this.prune();
+    }
   }
 
   /**
@@ -182,6 +184,7 @@ export class PlaybackBuffer {
       if (audioDropCount > 0) {
         this.audioFrames = this.audioFrames.slice(audioDropCount);
       }
+      this.currentBytes = Math.max(0, this.currentBytes);
     }
   }
 

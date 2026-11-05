@@ -145,7 +145,7 @@ export class VideoStreamDecoder {
     // If there are already packets waiting in the pre-decode queue, or downstream is full,
     // enqueue to preserve strict packet ordering without dropping P-frames!
     if (this.pendingPackets.length > 0 || !this.hasCapacityForDecode()) {
-      this.enqueuePendingPacket({ flags, pts, data: new Uint8Array(data) });
+      this.enqueuePendingPacket({ flags, pts, data });
       await this.pumpPendingPackets();
       return;
     }

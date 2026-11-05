@@ -49,10 +49,11 @@ export interface ClientTouchEvent {
   pressure?: number;
 }
 
+const sharedTextEncoder = new TextEncoder();
+
 export class ClientProtocol {
   public static packAuth(pin: string): Uint8Array {
-    const encoder = new TextEncoder();
-    const pinBytes = encoder.encode(pin);
+    const pinBytes = sharedTextEncoder.encode(pin);
     const buf = new Uint8Array(1 + pinBytes.length);
     buf[0] = WSS_CHANNEL.AUTH;
     buf.set(pinBytes, 1);
@@ -71,7 +72,7 @@ export class ClientProtocol {
 
   public static packCommand(cmd: unknown): Uint8Array {
     const str = JSON.stringify(cmd);
-    const bytes = new TextEncoder().encode(str);
+    const bytes = sharedTextEncoder.encode(str);
     const buf = new Uint8Array(1 + bytes.length);
     buf[0] = WSS_CHANNEL.COMMAND;
     buf.set(bytes, 1);
@@ -132,8 +133,7 @@ export class ClientProtocol {
 
   public static packMetrics(metrics: unknown): Uint8Array {
     const jsonStr = JSON.stringify(metrics);
-    const encoder = new TextEncoder();
-    const jsonBytes = encoder.encode(jsonStr);
+    const jsonBytes = sharedTextEncoder.encode(jsonStr);
     const buf = new Uint8Array(1 + jsonBytes.length);
     buf[0] = WSS_CHANNEL.METRICS;
     buf.set(jsonBytes, 1);
@@ -142,8 +142,7 @@ export class ClientProtocol {
 
   public static packTelemetry(events: unknown[]): Uint8Array {
     const jsonStr = JSON.stringify(events);
-    const encoder = new TextEncoder();
-    const jsonBytes = encoder.encode(jsonStr);
+    const jsonBytes = sharedTextEncoder.encode(jsonStr);
     const buf = new Uint8Array(1 + jsonBytes.length);
     buf[0] = WSS_CHANNEL.TELEMETRY;
     buf.set(jsonBytes, 1);

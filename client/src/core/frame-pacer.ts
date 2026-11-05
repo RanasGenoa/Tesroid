@@ -494,14 +494,11 @@ export class FramePacer {
       // If subsequent frames are behind `now` due to timer lag, smoothly shift their schedule forward from `now`
       // preserving their exact 1x PTS spacing!
       if (this.frameQueue.length > 0) {
+        let totalShift = 0;
         const dMs = this.computeDeltaPtsMs(this.frameQueue[0].ptsUs, nextItem.ptsUs);
         const minNextTime = now + Math.max(8, dMs);
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
-          const shift = minNextTime - this.frameQueue[0].scheduledRenderTime;
-          for (const item of this.frameQueue) {
-            item.scheduledRenderTime += shift;
-          }
-          this.lastScheduledTimeMs += shift;
+          totalShift += minNextTime - this.frameQueue[0].scheduledRenderTime;
         }
 
         // A/V Sync Phase-Locked Loop (リップシンク自動補正):
@@ -510,8 +507,9 @@ export class FramePacer {
           const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
           if (playingAudioPts !== null && playingAudioPts > 0) {
             const nextVideoPts = this.frameQueue[0].ptsUs;
+            const currentHeadSchedule = this.frameQueue[0].scheduledRenderTime + totalShift;
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
-            const syncErrorMs = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+            const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
             if (Math.abs(syncErrorMs) > 150) {
               // 150ms以上の顕著なズレ:
@@ -521,9 +519,9 @@ export class FramePacer {
               const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
               const maxNegativeShift = -Math.min(
                 16.0,
-                Math.max(0, this.frameQueue[0].scheduledRenderTime - (now + minCatchupIntervalMs)),
+                Math.max(0, currentHeadSchedule - (now + minCatchupIntervalMs)),
               );
-              const shift =
+              const pllShift =
                 syncErrorMs > 0
                   ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
                   : Math.max(maxNegativeShift, syncErrorMs);
@@ -532,7 +530,7 @@ export class FramePacer {
                 if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
                   this.telemetry.recordAvSync('large_shift', {
                     syncErrorMs: Math.round(syncErrorMs),
-                    shift: Math.round(shift * 10) / 10,
+                    shift: Math.round(pllShift * 10) / 10,
                     nextVideoPts,
                     playingAudioPts,
                     queueLength: this.frameQueue.length,
@@ -544,14 +542,11 @@ export class FramePacer {
                   this.largeShiftSuppressedCount++;
                 }
               }
-              for (const item of this.frameQueue) {
-                item.scheduledRenderTime += shift;
-              }
-              this.lastScheduledTimeMs += shift;
+              totalShift += pllShift;
             } else if (Math.abs(syncErrorMs) >= 15) {
               // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
               const rawNudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
-              const minFloorShift = Math.min(0, now + 8 - this.frameQueue[0].scheduledRenderTime);
+              const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
               const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastPllNudgeLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
@@ -568,12 +563,16 @@ export class FramePacer {
                   this.pllNudgeSuppressedCount++;
                 }
               }
-              for (const item of this.frameQueue) {
-                item.scheduledRenderTime += nudge;
-              }
-              this.lastScheduledTimeMs += nudge;
+              totalShift += nudge;
             }
           }
+        }
+
+        if (totalShift !== 0) {
+          for (const item of this.frameQueue) {
+            item.scheduledRenderTime += totalShift;
+          }
+          this.lastScheduledTimeMs += totalShift;
         }
       }
     }
