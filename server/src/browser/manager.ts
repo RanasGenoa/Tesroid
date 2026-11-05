@@ -1062,7 +1062,10 @@ export class BrowserManager {
       '--ignore-gpu-blocklist',
       // Hardware video decode via VAAPI (e.g. Intel QuickSync / AMD VAAPI)
       // Note: Chrome 131+ uses AcceleratedVideoDecodeLinuxGL on Linux/X11/EGL; VaapiVideoDecoder flag is obsolete.
+      // In headless Xvfb environments, ANGLE reports llvmpipe software rasterizer, which causes Chrome to reject
+      // DRI render nodes during pre-sandbox PCI device filtering. --render-node-override forces VAAPI VADisplay binding.
       '--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks',
+      `--render-node-override=${process.env.VAAPI_DEVICE || '/dev/dri/renderD128'}`,
       // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
       // (Pre-11th Gen Intel iGPUs lack AV1 hardware decode but have full silicon VP9/H.264 decode).
       // Disable AudioServiceSandbox so Chrome AudioService can seamlessly access PulseAudio UNIX socket in container.

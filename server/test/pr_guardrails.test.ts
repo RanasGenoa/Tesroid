@@ -53,6 +53,7 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
 
     // Mandatory hardware decode, container audio, touch & loopback-only CDP security flags
     expect(codeOnly).toContain('AcceleratedVideoDecodeLinuxGL');
+    expect(codeOnly).toContain('--render-node-override=');
     expect(codeOnly).toContain('Av1Decoder');
     expect(codeOnly).toContain('AudioServiceSandbox');
     expect(codeOnly).toContain('--touch-events=enabled');
@@ -74,6 +75,8 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     // Dedicated /etc/pulse/tesroid.pa & UNIX socket /tmp/pulse-socket + virtual_sink
     expect(dockerfile).toContain('/etc/pulse/tesroid.pa');
     expect(dockerfile).toContain('/tmp/pulse-socket');
+    expect(dockerfile).toContain('/etc/libva.conf');
+    expect(dockerfile).toContain('libpci3');
     expect(managerSrc).toContain('unix:/tmp/pulse-socket');
     expect(managerSrc).toContain('virtual_sink');
     expect(ffmpegSrc).toContain('unix:/tmp/pulse-socket');
