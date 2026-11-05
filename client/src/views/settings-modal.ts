@@ -176,8 +176,9 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
 
   container.appendChild(overlay);
 
-  // Metrics polling timer
+  // Metrics polling timer & clear confirmation timer
   let metricsTimer: any = null;
+  let clearConfirmTimer: any = null;
 
   const updateMetricsDisplay = async () => {
     const displayEl = overlay.querySelector('#metrics-display');
@@ -281,6 +282,10 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
       clearInterval(metricsTimer);
       metricsTimer = null;
     }
+    if (clearConfirmTimer) {
+      clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = null;
+    }
     overlay.remove();
     onClose();
   };
@@ -366,7 +371,8 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
   // Developer Telemetry options handler
   const telemetryToggle = overlay.querySelector('#cfg-telemetry-toggle') as HTMLInputElement | null;
   if (telemetryToggle) {
-    telemetryToggle.checked = localStorage.getItem('tesroid_detailed_telemetry') === 'true';
+    const savedTelemetry = localStorage.getItem('tesroid_detailed_telemetry');
+    telemetryToggle.checked = savedTelemetry === 'true' || savedTelemetry === '1';
     telemetryToggle.addEventListener('change', () => {
       const isChecked = telemetryToggle.checked;
       localStorage.setItem('tesroid_detailed_telemetry', isChecked ? 'true' : 'false');
@@ -413,8 +419,40 @@ async function showSettingsModal(container: HTMLElement, token: string, onClose:
     }
   });
 
-  overlay.querySelector('#cfg-telemetry-clear-btn')?.addEventListener('click', async () => {
+  const clearBtn = overlay.querySelector('#cfg-telemetry-clear-btn') as HTMLButtonElement | null;
+  let isClearConfirmPending = false;
+  const resetClearConfirm = () => {
+    isClearConfirmPending = false;
+    if (clearConfirmTimer) {
+      clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = null;
+    }
+    if (clearBtn) {
+      clearBtn.innerHTML = `${ICONS.trash} サーバーログ全消去`;
+      clearBtn.style.borderColor = '';
+      clearBtn.style.background = '';
+    }
+  };
+
+  clearBtn?.addEventListener('click', async () => {
     const msgEl = overlay.querySelector('#telemetry-action-msg') as HTMLElement;
+    if (!isClearConfirmPending) {
+      isClearConfirmPending = true;
+      clearBtn.innerHTML = `${ICONS.trash} もう一度タップで全消去を実行`;
+      clearBtn.style.borderColor = '#f87171';
+      clearBtn.style.background = 'rgba(248, 113, 113, 0.15)';
+      if (msgEl) {
+        msgEl.innerHTML =
+          '<span style="color: #fbbf24;">本当にサーバー上の全セッションログを消去しますか？（5秒後にキャンセル）</span>';
+      }
+      clearConfirmTimer = setTimeout(() => {
+        resetClearConfirm();
+        if (msgEl) msgEl.textContent = '';
+      }, 5000);
+      return;
+    }
+
+    resetClearConfirm();
     try {
       const res = await fetch('/api/telemetry/sessions', {
         method: 'DELETE',

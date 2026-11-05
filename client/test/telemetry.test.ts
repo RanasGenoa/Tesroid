@@ -58,22 +58,66 @@ describe('TelemetryCollector (Client)', () => {
     expect(events.some((e: any) => e.type === 'buffering' && e.event === 'enter')).toBe(true);
   });
 
-  it('should clear queue and stop recording when disabled', () => {
+  it('should flush telemetry_disabled event before stopping when disabled', () => {
+    const flushedBatches: any[][] = [];
+    collector.onFlush = (events) => {
+      flushedBatches.push(events);
+    };
+
     collector.setEnabled(true);
     collector.recordDecoder('test_event', { data: 123 });
 
     collector.setEnabled(false);
     expect(collector.isEnabled()).toBe(false);
 
-    const onFlush = vi.fn();
-    collector.onFlush = onFlush;
+    const allEvents = flushedBatches.flat();
+    expect(allEvents.some((e) => e.type === 'log' && e.event === 'telemetry_enabled')).toBe(true);
+    expect(allEvents.some((e) => e.type === 'decoder' && e.event === 'test_event')).toBe(true);
+    expect(allEvents.some((e) => e.type === 'log' && e.event === 'telemetry_disabled')).toBe(true);
+
+    const countAfterDisable = flushedBatches.length;
     collector.recordDecoder('after_disable', { data: 456 });
     collector.flush();
 
-    expect(onFlush).not.toHaveBeenCalled();
+    expect(flushedBatches.length).toBe(countAfterDisable);
   });
 
-  it('should integrate seamlessly with FramePacer when enabled', () => {
+  it('should safely capture Error and circular objects in console hooks without recursion', () => {
+    const quietCollector = new TelemetryCollector({ maxQueueSize: 2 });
+    const flushed: any[] = [];
+    let throwOnce = true;
+    quietCollector.onFlush = (batch) => {
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error('simulated flush failure');
+      }
+      flushed.push(...batch);
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    quietCollector.setEnabled(true);
+
+    const circular: any = { label: 'node' };
+    circular.self = circular;
+
+    // Trigger console.warn with circular object & console.error with Error instance
+    console.warn('Circular payload:', circular);
+    console.error('Boom:', new Error('decoder crashed'));
+    quietCollector.flush();
+
+    quietCollector.setEnabled(false);
+    quietCollector.destroy();
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
+
+    const errorLog = flushed.find((e) => e.type === 'log' && e.event === 'error');
+    expect(errorLog).toBeDefined();
+    expect(errorLog.data.message).toContain('decoder crashed');
+  });
+
+  it('should integrate with FramePacer and throttle high-frequency pll_nudge logs', () => {
     vi.useFakeTimers();
     collector.setEnabled(true);
     const recordedEvents: any[] = [];
@@ -114,14 +158,26 @@ describe('TelemetryCollector (Client)', () => {
 
     // Advance timer to process frame 2 and calculate PLL shift for remaining queued frame 3
     vi.advanceTimersByTime(200);
+
+    // Now simulate minor drift (~40ms) across 10 rapid frames within 350ms to verify pll_nudge throttling
+    let basePts = 7_100_000;
+    for (let i = 0; i < 10; i++) {
+      avSync.updateAudioPts(basePts - 40_000, 10.0); // ~40ms drift (within 15..150ms PLL range)
+      pacer.queueFrame({ timestamp: basePts, close: vi.fn() } as any);
+      basePts += 33_000;
+      vi.advanceTimersByTime(33);
+    }
+
     collector.flush();
 
     pacer.destroy();
     vi.useRealTimers();
 
-    // Check that an av_sync or buffering event was captured by telemetry
     const shiftEvent = recordedEvents.find((e) => e.type === 'av_sync' && e.event === 'large_shift');
     expect(shiftEvent).toBeDefined();
     expect(shiftEvent.data.syncErrorMs).toBeGreaterThan(150);
+
+    const nudgeEvents = recordedEvents.filter((e) => e.type === 'av_sync' && e.event === 'pll_nudge');
+    expect(nudgeEvents.length).toBeLessThanOrEqual(2);
   });
 });

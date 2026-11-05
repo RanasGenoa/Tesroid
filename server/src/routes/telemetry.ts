@@ -36,7 +36,7 @@ export function registerTelemetryRoutes(
   // GET /api/telemetry/sessions/latest/download - Download latest session jsonl
   app.get('/api/telemetry/sessions/latest/download', { preHandler: checkAuth }, async (_req, reply) => {
     const latestFilePath = await telemetryManager.getLatestSessionFile();
-    if (!latestFilePath || !fs.existsSync(latestFilePath)) {
+    if (!latestFilePath) {
       return reply.status(404).send({ error: 'No telemetry session logs found.' });
     }
 
@@ -53,7 +53,7 @@ export function registerTelemetryRoutes(
     async (req, reply) => {
       const { sessionId } = req.params;
       const filePath = await telemetryManager.getSessionFile(sessionId);
-      if (!filePath || !fs.existsSync(filePath)) {
+      if (!filePath) {
         return reply.status(404).send({ error: `Session log '${sessionId}' not found.` });
       }
 

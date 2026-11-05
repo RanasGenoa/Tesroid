@@ -12,13 +12,26 @@ export interface TelemetrySessionInfo {
   eventCount: number;
 }
 
+const VALID_TELEMETRY_TYPES = new Set([
+  'av_sync',
+  'buffering',
+  'decoder',
+  'pacer',
+  'audio',
+  'network',
+  'log',
+]);
+
+const MAX_EVENTS_PER_BATCH = 500;
+
 export class TelemetryManager {
   private static instance: TelemetryManager | null = null;
   private logDir: string;
   private maxSessions: number;
   private maxFileSizeBytes: number;
-  private activeStreams: Map<string, fs.WriteStream> = new Map();
   private sessionEventCounts: Map<string, number> = new Map();
+  private cappedSessions: Set<string> = new Set();
+  private writeQueues: Map<string, Promise<void>> = new Map();
 
   constructor(options: { logDir?: string; maxSessions?: number; maxFileSizeBytes?: number } = {}) {
     const defaultDataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -28,8 +41,6 @@ export class TelemetryManager {
       path.join(defaultDataDir, 'logs', 'telemetry');
     this.maxSessions = options.maxSessions || 15;
     this.maxFileSizeBytes = options.maxFileSizeBytes || 10 * 1024 * 1024; // 10MB per session
-
-    this.ensureDir();
   }
 
   public static getInstance(): TelemetryManager {
@@ -40,17 +51,12 @@ export class TelemetryManager {
   }
 
   public static resetInstance(): void {
-    if (TelemetryManager.instance) {
-      TelemetryManager.instance.closeAllStreams();
-      TelemetryManager.instance = null;
-    }
+    TelemetryManager.instance = null;
   }
 
-  private ensureDir(): void {
+  private async ensureDirAsync(): Promise<void> {
     try {
-      if (!fs.existsSync(this.logDir)) {
-        fs.mkdirSync(this.logDir, { recursive: true });
-      }
+      await fs.promises.mkdir(this.logDir, { recursive: true });
     } catch (err) {
       console.warn(`[TelemetryManager] Failed to create log directory: ${this.logDir}`, err);
     }
@@ -60,63 +66,143 @@ export class TelemetryManager {
     return this.logDir;
   }
 
+  /**
+   * Pure in-memory session ID generator (zero disk I/O until telemetry events actually arrive).
+   */
   public createSessionId(prefix: string = 'session'): string {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const dateStr = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     const randomSuffix = Math.random().toString(36).substring(2, 8);
-    const sessionId = `${prefix}-${dateStr}-${randomSuffix}`;
+    return `${prefix}-${dateStr}-${randomSuffix}`;
+  }
 
-    this.pruneOldSessions().catch(() => {});
-    return sessionId;
+  private sanitizeSessionId(sessionId: string): string {
+    return sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   }
 
   private getSessionPath(sessionId: string): string {
     // Sanitize filename to prevent directory traversal
-    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeSessionId = this.sanitizeSessionId(sessionId);
     return path.join(this.logDir, `${safeSessionId}.jsonl`);
   }
 
   public async appendEvents(sessionId: string, events: TelemetryEvent[]): Promise<void> {
-    if (!events || events.length === 0) return;
+    if (!Array.isArray(events) || events.length === 0) return;
 
-    this.ensureDir();
-    const filePath = this.getSessionPath(sessionId);
+    const safeSessionId = this.sanitizeSessionId(sessionId);
+    if (!safeSessionId || this.cappedSessions.has(safeSessionId)) return;
 
-    // Check file size guard to avoid disk bloat
+    const sanitizedEvents = events
+      .slice(0, MAX_EVENTS_PER_BATCH)
+      .filter(
+        (ev): ev is TelemetryEvent =>
+          ev !== null &&
+          typeof ev === 'object' &&
+          !Array.isArray(ev) &&
+          typeof ev.event === 'string' &&
+          typeof ev.type === 'string' &&
+          VALID_TELEMETRY_TYPES.has(ev.type)
+      );
+
+    if (sanitizedEvents.length === 0) return;
+
+    const prevTask = this.writeQueues.get(safeSessionId) ?? Promise.resolve();
+    const nextTask = prevTask
+      .catch(() => {})
+      .then(() => this.appendEventsInternal(safeSessionId, sanitizedEvents));
+
+    this.writeQueues.set(safeSessionId, nextTask);
     try {
-      if (fs.existsSync(filePath)) {
-        const stats = fs.statSync(filePath);
-        if (stats.size >= this.maxFileSizeBytes) {
-          console.warn(`[TelemetryManager] Session ${sessionId} exceeded max log size (${this.maxFileSizeBytes} bytes). Discarding further events.`);
-          return;
-        }
+      await nextTask;
+    } finally {
+      if (this.writeQueues.get(safeSessionId) === nextTask) {
+        this.writeQueues.delete(safeSessionId);
       }
-    } catch {}
+    }
+  }
+
+  private async appendEventsInternal(safeSessionId: string, events: TelemetryEvent[]): Promise<void> {
+    if (this.cappedSessions.has(safeSessionId)) return;
+
+    await this.ensureDirAsync();
+    const filePath = path.join(this.logDir, `${safeSessionId}.jsonl`);
+
+    let currentSize = 0;
+    let isNewSessionFile = false;
+    try {
+      const stats = await fs.promises.stat(filePath);
+      currentSize = stats.size;
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        isNewSessionFile = true;
+      }
+    }
+
+    if (currentSize >= this.maxFileSizeBytes) {
+      this.cappedSessions.add(safeSessionId);
+      return;
+    }
 
     const now = Date.now();
-    const lines = events
-      .map((ev) => {
-        const record = {
-          ...ev,
-          sessionId,
+    const serializedLines: string[] = [];
+    let addedBytes = 0;
+
+    for (const ev of events) {
+      const line =
+        JSON.stringify({
+          timestamp: typeof ev.timestamp === 'number' ? ev.timestamp : now,
+          type: ev.type,
+          event: ev.event,
+          ...(ev.data !== undefined ? { data: ev.data } : {}),
+          sessionId: safeSessionId,
           serverTimestamp: now,
-        };
-        return JSON.stringify(record);
-      })
-      .join('\n') + '\n';
+        }) + '\n';
+      const lineBytes = Buffer.byteLength(line, 'utf-8');
+      if (currentSize + addedBytes + lineBytes > this.maxFileSizeBytes) {
+        this.cappedSessions.add(safeSessionId);
+        console.warn(
+          `[TelemetryManager] Session ${safeSessionId} reached max log size (${this.maxFileSizeBytes} bytes). Discarding further events.`
+        );
+        break;
+      }
+      serializedLines.push(line);
+      addedBytes += lineBytes;
+    }
+
+    if (serializedLines.length === 0) return;
 
     try {
-      await fs.promises.appendFile(filePath, lines, 'utf-8');
-      const currentCount = (this.sessionEventCounts.get(sessionId) || 0) + events.length;
-      this.sessionEventCounts.set(sessionId, currentCount);
+      await fs.promises.appendFile(filePath, serializedLines.join(''), 'utf-8');
+      const currentCount = (this.sessionEventCounts.get(safeSessionId) || 0) + serializedLines.length;
+      this.sessionEventCounts.set(safeSessionId, currentCount);
+
+      if (isNewSessionFile) {
+        await this.pruneOldSessions();
+      }
     } catch (err) {
-      console.warn(`[TelemetryManager] Failed to write events for session ${sessionId}:`, err);
+      console.warn(`[TelemetryManager] Failed to write events for session ${safeSessionId}:`, err);
+    }
+  }
+
+  private async countLinesInFile(filePath: string): Promise<number> {
+    try {
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      if (!content) return 0;
+      let count = 0;
+      for (let i = 0; i < content.length; i++) {
+        if (content.charCodeAt(i) === 10) count++;
+      }
+      if (content.length > 0 && content.charCodeAt(content.length - 1) !== 10) {
+        count++;
+      }
+      return count;
+    } catch {
+      return 0;
     }
   }
 
   public async listSessions(): Promise<TelemetrySessionInfo[]> {
-    this.ensureDir();
     try {
       const files = await fs.promises.readdir(this.logDir);
       const sessionFiles = files.filter((f) => f.endsWith('.jsonl'));
@@ -127,7 +213,11 @@ export class TelemetryManager {
         try {
           const stat = await fs.promises.stat(filePath);
           const sessionId = path.basename(filename, '.jsonl');
-          const count = this.sessionEventCounts.get(sessionId) || 0;
+          let count = this.sessionEventCounts.get(sessionId);
+          if (count === undefined) {
+            count = stat.size <= this.maxFileSizeBytes ? await this.countLinesInFile(filePath) : 0;
+            this.sessionEventCounts.set(sessionId, count);
+          }
           list.push({
             sessionId,
             filename,
@@ -143,7 +233,10 @@ export class TelemetryManager {
       // Sort by newest first
       list.sort((a, b) => b.updatedAt - a.updatedAt);
       return list;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        return [];
+      }
       console.warn('[TelemetryManager] Failed to list sessions:', err);
       return [];
     }
@@ -157,16 +250,17 @@ export class TelemetryManager {
 
   public async getSessionFile(sessionId: string): Promise<string | null> {
     const filePath = this.getSessionPath(sessionId);
-    if (fs.existsSync(filePath)) {
+    try {
+      await fs.promises.access(filePath, fs.constants.R_OK);
       return filePath;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   public async clearAllSessions(): Promise<void> {
-    this.closeAllStreams();
     this.sessionEventCounts.clear();
-    this.ensureDir();
+    this.cappedSessions.clear();
     try {
       const files = await fs.promises.readdir(this.logDir);
       for (const file of files) {
@@ -174,8 +268,10 @@ export class TelemetryManager {
           await fs.promises.unlink(path.join(this.logDir, file)).catch(() => {});
         }
       }
-    } catch (err) {
-      console.warn('[TelemetryManager] Failed to clear sessions:', err);
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        console.warn('[TelemetryManager] Failed to clear sessions:', err);
+      }
     }
   }
 
@@ -188,16 +284,8 @@ export class TelemetryManager {
       try {
         await fs.promises.unlink(item.filePath);
         this.sessionEventCounts.delete(item.sessionId);
+        this.cappedSessions.delete(item.sessionId);
       } catch {}
     }
-  }
-
-  public closeAllStreams(): void {
-    for (const stream of this.activeStreams.values()) {
-      try {
-        stream.end();
-      } catch {}
-    }
-    this.activeStreams.clear();
   }
 }

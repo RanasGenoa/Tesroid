@@ -12,7 +12,7 @@ import { PlaybackBuffer, type BufferedFrame } from '../encoder/playback-buffer.j
 
 export interface ClientSession {
   socket: WebSocket;
-  sessionId: string;
+  telemetrySessionId?: string;
   lastAckPts: bigint | null;
   lastSentVideoPts?: bigint | null;
   mode: 'LIVE' | 'CATCHUP';
@@ -103,10 +103,8 @@ export class WebSocketHandler {
 
     const ua = req?.headers?.['user-agent'] || 'unknown';
     this.allClients.add(socket);
-    const sessionId = TelemetryManager.getInstance().createSessionId();
     this.clientSessions.set(socket, {
       socket,
-      sessionId,
       lastAckPts: this.lastKnownAckPts,
       targetBufferMs: this.lastKnownTargetBufferMs,
       mode: 'LIVE',
@@ -750,12 +748,26 @@ export class WebSocketHandler {
     }
   }
 
+  private static readonly MAX_TELEMETRY_PAYLOAD_BYTES = 512 * 1024;
+
   private handleTelemetryMessage(session: ClientSession, buf: Buffer): void {
+    if (buf.length <= 1) return;
+    if (buf.length > WebSocketHandler.MAX_TELEMETRY_PAYLOAD_BYTES) {
+      console.warn(
+        `[WebSocketHandler] Dropping oversized telemetry payload (${buf.length} bytes > ${WebSocketHandler.MAX_TELEMETRY_PAYLOAD_BYTES}).`
+      );
+      return;
+    }
+
     try {
       const jsonStr = buf.subarray(1).toString('utf-8');
       const events = JSON.parse(jsonStr);
-      if (Array.isArray(events)) {
-        TelemetryManager.getInstance().appendEvents(session.sessionId, events).catch((err) => {
+      if (Array.isArray(events) && events.length > 0) {
+        const telemetryManager = TelemetryManager.getInstance();
+        if (!session.telemetrySessionId) {
+          session.telemetrySessionId = telemetryManager.createSessionId();
+        }
+        telemetryManager.appendEvents(session.telemetrySessionId, events).catch((err) => {
           console.warn('[WebSocketHandler] Error saving telemetry events:', err);
         });
       }

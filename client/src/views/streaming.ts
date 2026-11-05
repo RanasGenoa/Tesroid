@@ -244,12 +244,6 @@ export function renderStreamingView(
 
   const renderer = new CanvasRenderer(canvas);
   const framePacer = new FramePacer(renderer, targetFps, avSync);
-  if (typeof (framePacer as any).setTelemetryCollector === 'function') {
-    (framePacer as any).setTelemetryCollector(telemetryCollector);
-  }
-  if (typeof (audioPlayer as any).setTelemetryCollector === 'function') {
-    (audioPlayer as any).setTelemetryCollector(telemetryCollector);
-  }
 
   // 1.1. Adaptive Jitter Buffer Controller for LTE Jitter & Spikes
   const jitterController = new AdaptiveJitterController({
@@ -354,7 +348,9 @@ export function renderStreamingView(
       sendBufferFeedback(true);
     }
     if (e.detail?.telemetryEnabled !== undefined) {
-      telemetryCollector.setEnabled(Boolean(e.detail.telemetryEnabled));
+      const enabled = Boolean(e.detail.telemetryEnabled);
+      telemetryCollector.setEnabled(enabled);
+      syncTelemetryAttachment(enabled);
     }
     if (changed) {
       updateToggleButtons();
@@ -403,9 +399,19 @@ export function renderStreamingView(
     decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
   }
 
-  if (typeof decoder.setTelemetryCollector === 'function') {
-    decoder.setTelemetryCollector(telemetryCollector);
-  }
+  const syncTelemetryAttachment = (enabled: boolean) => {
+    const activeCollector = enabled ? telemetryCollector : undefined;
+    if (typeof (framePacer as any).setTelemetryCollector === 'function') {
+      (framePacer as any).setTelemetryCollector(activeCollector);
+    }
+    if (typeof (audioPlayer as any).setTelemetryCollector === 'function') {
+      (audioPlayer as any).setTelemetryCollector(activeCollector);
+    }
+    if (typeof decoder.setTelemetryCollector === 'function') {
+      decoder.setTelemetryCollector(activeCollector);
+    }
+  };
+  syncTelemetryAttachment(telemetryCollector.isEnabled());
 
   if (typeof decoder.setDownstreamQueueLengthProvider === 'function') {
     decoder.setDownstreamQueueLengthProvider(() =>

@@ -384,11 +384,13 @@ export class AudioPlayer {
     if (now - this.nextPlayTime > 0.5 && this.overflowQueue.length === 0) {
       const gapMs = Math.round((now - this.nextPlayTime) * 1000);
       console.log(`[AudioPlayer] Major audio underrun (${gapMs}ms). Rebuilding cushion...`);
-      this.telemetry?.recordAudio('major_underrun', {
-        gapMs,
-        nextPlayTime: this.nextPlayTime,
-        currentTime: now,
-      });
+      if (this.telemetry?.isEnabled()) {
+        this.telemetry.recordAudio('major_underrun', {
+          gapMs,
+          nextPlayTime: this.nextPlayTime,
+          currentTime: now,
+        });
+      }
       this.isPlaying = false;
       this.stopAllScheduledSources();
       this.bufferQueue = [{ buffer, ptsUs }];
@@ -451,13 +453,25 @@ export class AudioPlayer {
     const lastVideoPts = this.avSync.getLastVideoPts();
     // Only drop truly stale audio on major timeline discontinuity (> 1500ms behind).
     // Never drop frames on minor jitter (< 1.5s) to guarantee zero crackling/clipping clicks!
+    let droppedStaleCount = 0;
+    let firstDroppedPtsUs = 0;
     while (this.overflowQueue.length > 1 && lastVideoPts > 0) {
       const headPts = this.overflowQueue[0].ptsUs;
       if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 1500) {
+        if (droppedStaleCount === 0) firstDroppedPtsUs = headPts;
         this.overflowQueue.shift();
+        droppedStaleCount++;
       } else {
         break;
       }
+    }
+    if (droppedStaleCount > 0 && this.telemetry?.isEnabled()) {
+      this.telemetry.recordAudio('drop_stale_audio', {
+        droppedCount: droppedStaleCount,
+        firstDroppedPtsUs,
+        lastVideoPts,
+        remainingOverflowLength: this.overflowQueue.length,
+      });
     }
 
     this.pumpOverflowQueue(now);
@@ -495,11 +509,13 @@ export class AudioPlayer {
     while (totalOverflowSec > AudioPlayer.MAX_CATCHUP_BUFFER_SEC && this.overflowQueue.length > 1) {
       const removed = this.overflowQueue.shift()!;
       totalOverflowSec -= removed.buffer.duration;
-      this.telemetry?.recordAudio('trim_overflow', {
-        droppedPtsUs: removed.ptsUs,
-        droppedDurationSec: removed.buffer.duration,
-        remainingOverflowSec: Math.round(totalOverflowSec * 10) / 10,
-      });
+      if (this.telemetry?.isEnabled()) {
+        this.telemetry.recordAudio('trim_overflow', {
+          droppedPtsUs: removed.ptsUs,
+          droppedDurationSec: removed.buffer.duration,
+          remainingOverflowSec: Math.round(totalOverflowSec * 10) / 10,
+        });
+      }
     }
   }
 

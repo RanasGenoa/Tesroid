@@ -19,6 +19,8 @@ export class TelemetryCollector {
   private originalConsoleWarn?: typeof console.warn;
   private originalConsoleError?: typeof console.error;
   private isHookingConsole: boolean = false;
+  private isRecordingConsole: boolean = false;
+  private isFlushing: boolean = false;
 
   constructor(options: TelemetryCollectorOptions = {}) {
     this.storageKey = options.storageKey ?? 'tesroid_detailed_telemetry';
@@ -45,7 +47,6 @@ export class TelemetryCollector {
 
   public setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
-    this.enabled = enabled;
 
     try {
       if (typeof localStorage !== 'undefined') {
@@ -53,13 +54,16 @@ export class TelemetryCollector {
       }
     } catch {}
 
-    if (this.enabled) {
+    if (enabled) {
+      this.enabled = true;
       this.startFlushTimer();
       this.hookConsole();
       this.record('log', 'telemetry_enabled', { timestamp: Date.now() });
     } else {
+      // Record and flush 'telemetry_disabled' BEFORE flipping enabled=false
       this.record('log', 'telemetry_disabled', { timestamp: Date.now() });
       this.flush();
+      this.enabled = false;
       this.stopFlushTimer();
       this.unhookConsole();
       this.queue = [];
@@ -122,13 +126,17 @@ export class TelemetryCollector {
   }
 
   public flush(): void {
-    if (this.queue.length === 0) return;
+    if (this.isFlushing || this.queue.length === 0) return;
+    this.isFlushing = true;
     const batch = this.queue;
     this.queue = [];
     try {
       this.onFlush?.(batch);
     } catch (err) {
-      console.warn('[TelemetryCollector] Failed to flush events:', err);
+      const warnFn = this.originalConsoleWarn ?? console.warn;
+      warnFn('[TelemetryCollector] Failed to flush events:', err);
+    } finally {
+      this.isFlushing = false;
     }
   }
 
@@ -146,6 +154,21 @@ export class TelemetryCollector {
     }
   }
 
+  private formatConsoleArg(arg: unknown): string {
+    if (typeof arg === 'string') return arg;
+    if (arg instanceof Error) {
+      return arg.stack || `${arg.name}: ${arg.message}`;
+    }
+    if (typeof arg === 'object' && arg !== null) {
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return Object.prototype.toString.call(arg);
+      }
+    }
+    return String(arg);
+  }
+
   private hookConsole(): void {
     if (this.isHookingConsole || typeof console === 'undefined') return;
     this.isHookingConsole = true;
@@ -155,21 +178,29 @@ export class TelemetryCollector {
 
     console.warn = (...args: any[]) => {
       this.originalConsoleWarn?.(...args);
-      if (this.enabled) {
+      if (this.enabled && !this.isRecordingConsole) {
+        this.isRecordingConsole = true;
         try {
-          const msg = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+          const msg = args.map((a) => this.formatConsoleArg(a)).join(' ');
           this.recordLog('warn', msg);
-        } catch {}
+        } catch {
+        } finally {
+          this.isRecordingConsole = false;
+        }
       }
     };
 
     console.error = (...args: any[]) => {
       this.originalConsoleError?.(...args);
-      if (this.enabled) {
+      if (this.enabled && !this.isRecordingConsole) {
+        this.isRecordingConsole = true;
         try {
-          const msg = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+          const msg = args.map((a) => this.formatConsoleArg(a)).join(' ');
           this.recordLog('error', msg);
-        } catch {}
+        } catch {
+        } finally {
+          this.isRecordingConsole = false;
+        }
       }
     };
   }
