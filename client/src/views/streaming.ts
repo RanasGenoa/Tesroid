@@ -586,7 +586,7 @@ export function renderStreamingView(
   };
 
   let isRestartingEncoder = false;
-  let encoderRestartTimer: any = null;
+  let encoderRestartTimer: ReturnType<typeof setTimeout> | null = null;
 
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
