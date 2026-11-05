@@ -12,8 +12,8 @@ jobs:
   review:
     name: Code Review (Antigravity)
     runs-on: [self-hosted, antigravity]
-    # ドラフトPRはレビューをスキップ
-    if: github.event.pull_request.draft == false
+    # ドラフトPRおよび同一リポジトリ外(Fork)からのPRはセキュリティ上スキップ
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Checkout Code
@@ -24,6 +24,11 @@ jobs:
       - name: Extract PR Diff
         id: prepare_diff
         run: |
+          # ジョブ固有の一時作業ディレクトリを初期化
+          WORKDIR="${{ runner.temp }}/ai-review-${{ github.event.pull_request.number }}"
+          mkdir -p "$WORKDIR"
+          echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
+
           # ベースブランチとPRブランチを確実に fetch
           git fetch origin ${{ github.base_ref }} || true
           if [ -n "${{ github.head_ref }}" ]; then
@@ -39,10 +44,10 @@ jobs:
 
           # 差分の抽出 (ロックファイル・ビルド成果物を除外)
           git diff origin/${{ github.base_ref }}...$TARGET_REF \
-            -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > /tmp/pr_diff.patch
+            -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
-          DIFF_LINES=$(wc -l < /tmp/pr_diff.patch)
-          DIFF_SIZE=$(wc -c < /tmp/pr_diff.patch)
+          DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
+          DIFF_SIZE=$(wc -c < "$WORKDIR/pr_diff.patch")
           echo "diff_lines=$DIFF_LINES" >> $GITHUB_OUTPUT
 
           if [ "$DIFF_LINES" -eq 0 ]; then
@@ -51,11 +56,11 @@ jobs:
             exit 0
           fi
 
-          # 差分が極端に巨大な場合の安全保護 (先頭 2500 行で切り詰め)
-          if [ "$DIFF_SIZE" -gt 150000 ]; then
-            head -n 2500 /tmp/pr_diff.patch > /tmp/truncated_diff.patch
-            echo -e "\n\n... (差分が上限を超えたため一部省略されました)" >> /tmp/truncated_diff.patch
-            mv /tmp/truncated_diff.patch /tmp/pr_diff.patch
+          # Linux カーネル引数長制限 (MAX_ARG_STRLEN: 128KB) 対策として 80KB で安全に切り詰め
+          if [ "$DIFF_SIZE" -gt 80000 ]; then
+            head -n 1500 "$WORKDIR/pr_diff.patch" > "$WORKDIR/truncated_diff.patch"
+            echo -e "\n\n... (差分が上限を超えたため一部省略されました)" >> "$WORKDIR/truncated_diff.patch"
+            mv "$WORKDIR/truncated_diff.patch" "$WORKDIR/pr_diff.patch"
           fi
 
           echo "has_changes=true" >> $GITHUB_OUTPUT
@@ -63,23 +68,24 @@ jobs:
       - name: Execute Antigravity Review
         if: steps.prepare_diff.outputs.has_changes == 'true'
         env:
+          WORKDIR: ${{ steps.prepare_diff.outputs.workdir }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          cat << 'EOF' > /tmp/prompt.txt
+          cat << 'EOF' > "$WORKDIR/prompt.txt"
           あなたは Tesroid プロジェクトのシニアソフトウェアエンジニア兼コードレビュアーです。
           以下の Pull Request 差分を日本語で精査し、厳格かつ建設的なレビューを行ってください。
 
           ## PR 情報
           EOF
-          echo "- **タイトル**: $PR_TITLE" >> /tmp/prompt.txt
-          echo "- **説明**: $PR_BODY" >> /tmp/prompt.txt
-          echo "- **ベースブランチ**: $BASE_REF" >> /tmp/prompt.txt
-          echo "- **PRブランチ**: $HEAD_REF" >> /tmp/prompt.txt
+          echo "- **タイトル**: $PR_TITLE" >> "$WORKDIR/prompt.txt"
+          echo "- **説明**: $PR_BODY" >> "$WORKDIR/prompt.txt"
+          echo "- **ベースブランチ**: $BASE_REF" >> "$WORKDIR/prompt.txt"
+          echo "- **PRブランチ**: $HEAD_REF" >> "$WORKDIR/prompt.txt"
 
-          cat << 'EOF' >> /tmp/prompt.txt
+          cat << 'EOF' >> "$WORKDIR/prompt.txt"
 
           ## 重点レビュー観点 (AGENTS.md 厳守)
           以下の項目に違反がある場合は【CRITICAL】判定としてください：
@@ -109,22 +115,31 @@ jobs:
           ---
           ## コード差分 (Diff):
           EOF
-          cat /tmp/pr_diff.patch >> /tmp/prompt.txt
+          cat "$WORKDIR/pr_diff.patch" >> "$WORKDIR/prompt.txt"
 
           # Self-hosted Runner 内の Antigravity CLI (Gemini 3.8 Flash) を実行
-          agy -p "$(cat /tmp/prompt.txt)" --model gemini-3.8-flash > /tmp/review_comment.md
+          agy -p "$(cat "$WORKDIR/prompt.txt")" --model gemini-3.8-flash > "$WORKDIR/review_comment.md"
 
       - name: Post Comment to PR
         if: steps.prepare_diff.outputs.has_changes == 'true'
         env:
+          WORKDIR: ${{ steps.prepare_diff.outputs.workdir }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          cat << 'EOF' >> /tmp/review_comment.md
+          # レビュー内容が空でないか検証
+          if [ ! -s "$WORKDIR/review_comment.md" ]; then
+            echo "Review comment is empty. Skipping comment submission."
+            exit 0
+          fi
+
+          cat << 'EOF' >> "$WORKDIR/review_comment.md"
 
           ---
           *🤖 Reviewed by **Antigravity** (`gemini-3.8-flash`)*
           EOF
 
-          gh pr comment "$PR_URL" --body-file /tmp/review_comment.md
+          gh pr comment "$PR_URL" --body-file "$WORKDIR/review_comment.md"
+          # 一時ディレクトリのクリーンアップ
+          rm -rf "$WORKDIR"
