@@ -3,6 +3,8 @@ name: AI PR Reviewer (Gemini 3.8 Flash)
 on:
   pull_request:
     types: [opened, synchronize]
+  pull_request_target:
+    types: [opened, synchronize]
 
 permissions:
   contents: read
@@ -12,23 +14,28 @@ jobs:
   review:
     name: Code Review (Antigravity)
     runs-on: [self-hosted, antigravity]
-    # ドラフトPRおよび同一リポジトリ外(Fork)からのPRはセキュリティ上スキップ
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    # ドラフトPRはスキップ
+    # 同一リポジトリは pull_request、Fork からの PR は pull_request_target で動作（二重実行防止 & Fork PR での GITHUB_TOKEN write権限確保）
+    if: |
+      github.event.pull_request.draft == false && (
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
+      )
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.base_ref }}
 
       - name: Extract PR Diff
         id: prepare_diff
         env:
           BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # ジョブ固有の一時作業ディレクトリを初期化
-          WORKDIR="${{ runner.temp }}/ai-review-${{ github.event.pull_request.number }}"
+          WORKDIR="${{ runner.temp }}/ai-review-$PR_NUMBER"
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> $GITHUB_OUTPUT
 
@@ -38,8 +45,14 @@ jobs:
             exit 1
           fi
 
-          # ベースブランチと PR の最新コミット (HEAD) の差分を抽出 (ロックファイル・ビルド成果物を除外)
-          git diff "origin/$BASE_REF...HEAD" \
+          # PR の head を fetch (同一リポジトリ・Fork 共通の refs/pull/<PR番号>/head を使用)
+          if ! git fetch --no-tags --depth=1 origin "pull/$PR_NUMBER/head:pr-head"; then
+            echo "::error::Failed to fetch PR head (pull/$PR_NUMBER/head)"
+            exit 1
+          fi
+
+          # ベースブランチと PR の最新コミット (pr-head) の差分を抽出 (ロックファイル・ビルド成果物を除外)
+          git diff "origin/$BASE_REF...pr-head" \
             -- . ':!package-lock.json' ':!*.lock' ':!dist' ':!build' > "$WORKDIR/pr_diff.patch"
 
           DIFF_LINES=$(wc -l < "$WORKDIR/pr_diff.patch")
@@ -77,7 +90,7 @@ jobs:
           ## PR 情報
           EOF
           printf -- "- **タイトル**: %s\n" "$PR_TITLE" >> "$WORKDIR/prompt.txt"
-          printf -- "- **説明**: %s\n" "$PR_BODY" >> "$WORKDIR/prompt.txt"
+          printf -- "- **説明**: %s\n" "${PR_BODY:-なし}" >> "$WORKDIR/prompt.txt"
           printf -- "- **ベースブランチ**: %s\n" "$BASE_REF" >> "$WORKDIR/prompt.txt"
           printf -- "- **PRブランチ**: %s\n" "$HEAD_REF" >> "$WORKDIR/prompt.txt"
 
