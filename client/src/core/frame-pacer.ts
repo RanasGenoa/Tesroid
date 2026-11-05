@@ -51,6 +51,8 @@ export class FramePacer {
   private telemetry?: TelemetryCollector;
   private lastPllNudgeLogTimeMs: number = -Infinity;
   private pllNudgeSuppressedCount: number = 0;
+  private lastLargeShiftLogTimeMs: number = -Infinity;
+  private largeShiftSuppressedCount: number = 0;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
 
   public onFrameDropped?: () => void;
@@ -283,8 +285,22 @@ export class FramePacer {
       : null;
 
     if (this.frameQueue.length === 0 && !this.isBuffering) {
-      // Queue is empty: pace smoothly by deltaMs after previous rendered frame
-      let earliestNextSlot = this.hasRenderedAny ? this.lastScheduledTimeMs + deltaMs : now;
+      // Queue is empty: pace smoothly by deltaMs after previous rendered frame.
+      // When returning from ACTIVE_INTERACTION (hasRenderedAny && lastScheduledPtsUs < 0),
+      // re-anchor to playing audio within a bounded window (<= 200ms) independent of performance.now().
+      let earliestNextSlot: number;
+      if (!this.hasRenderedAny) {
+        earliestNextSlot = now;
+      } else if (this.lastScheduledPtsUs < 0) {
+        if (playingAudioPts !== null && playingAudioPts > 0) {
+          const audioTargetTime = now + (ptsUs - playingAudioPts) / 1000;
+          earliestNextSlot = Math.max(now, Math.min(now + 200, audioTargetTime));
+        } else {
+          earliestNextSlot = now;
+        }
+      } else {
+        earliestNextSlot = this.lastScheduledTimeMs + deltaMs;
+      }
 
       // 音声が再生中の場合、音声クロックとの誤差を毎フレーム最大±2.0msだけ微小補正（PLLスムーズ吸着）
       // 画面をガクッと止めることなく、滑らかな30fpsのまま完全に音声へ収束させる
@@ -421,7 +437,8 @@ export class FramePacer {
 
       if (playingAudioPts !== null && playingAudioPts > 0) {
         const audioAlignedStart = now + (this.frameQueue[0].ptsUs - playingAudioPts) / 1000;
-        cursorTime = Math.max(now, audioAlignedStart);
+        // バッファリング明けに音声遅延があっても、映像の即時再生開始を妨げないよう1フレーム分以内に制限
+        cursorTime = Math.max(now, Math.min(now + this.getFrameIntervalMs(), audioAlignedStart));
       }
 
       for (let i = 0; i < this.frameQueue.length; i++) {
@@ -485,16 +502,34 @@ export class FramePacer {
             const syncErrorMs = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
 
             if (Math.abs(syncErrorMs) > 150) {
-              // 150ms以上の顕著なズレは、全フレームを一括で瞬時に音声へ吸着再同期！
-              const shift = targetRenderTime - this.frameQueue[0].scheduledRenderTime;
+              // 150ms以上の顕著なズレ:
+              // 重要: 未来方向 (syncErrorMs > 0) への無制限シフトは画面フリーズ (0〜4FPS落ち込み) を招くため、
+              // 1フレームあたりの最大遅延量 (maxPositiveShift) を厳格にクランプし、スムーズな描画を維持しながら音声吸着させる！
+              const maxPositiveShift = 2.5; // 最大+2.5ms/frame (約27.5fps以上を維持し、画面を一切止めずに音声へ収束)
+              const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+              const maxNegativeShift = -Math.min(
+                16.0,
+                Math.max(0, this.frameQueue[0].scheduledRenderTime - (now + minCatchupIntervalMs))
+              );
+              const shift = syncErrorMs > 0
+                ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+                : Math.max(maxNegativeShift, syncErrorMs);
+
               if (this.telemetry?.isEnabled()) {
-                this.telemetry.recordAvSync('large_shift', {
-                  syncErrorMs: Math.round(syncErrorMs),
-                  shift: Math.round(shift),
-                  nextVideoPts,
-                  playingAudioPts,
-                  queueLength: this.frameQueue.length,
-                });
+                if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
+                  this.telemetry.recordAvSync('large_shift', {
+                    syncErrorMs: Math.round(syncErrorMs),
+                    shift: Math.round(shift * 10) / 10,
+                    nextVideoPts,
+                    playingAudioPts,
+                    queueLength: this.frameQueue.length,
+                    suppressedCount: this.largeShiftSuppressedCount,
+                  });
+                  this.lastLargeShiftLogTimeMs = now;
+                  this.largeShiftSuppressedCount = 0;
+                } else {
+                  this.largeShiftSuppressedCount++;
+                }
               }
               for (const item of this.frameQueue) {
                 item.scheduledRenderTime += shift;
@@ -502,7 +537,9 @@ export class FramePacer {
               this.lastScheduledTimeMs += shift;
             } else if (Math.abs(syncErrorMs) >= 15) {
               // 15ms〜150msの微小ズレは、毎フレーム最大±2.5msずつ全フレームをスムーズに吸着
-              const nudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+              const rawNudge = Math.sign(syncErrorMs) * Math.min(2.5, Math.abs(syncErrorMs) * 0.2);
+              const minFloorShift = Math.min(0, now + 8 - this.frameQueue[0].scheduledRenderTime);
+              const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastPllNudgeLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
                   this.telemetry.recordAvSync('pll_nudge', {
@@ -626,6 +663,8 @@ export class FramePacer {
     this.hasRenderedAny = false;
     this.lastPllNudgeLogTimeMs = -Infinity;
     this.pllNudgeSuppressedCount = 0;
+    this.lastLargeShiftLogTimeMs = -Infinity;
+    this.largeShiftSuppressedCount = 0;
   }
 
   public resetFirstFrame(): void {

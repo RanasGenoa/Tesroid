@@ -393,6 +393,7 @@ export class AudioPlayer {
       }
       this.isPlaying = false;
       this.stopAllScheduledSources();
+      this.avSync.clearAudioAnchor();
       this.bufferQueue = [{ buffer, ptsUs }];
       return;
     }
@@ -451,25 +452,39 @@ export class AudioPlayer {
     }
 
     const lastVideoPts = this.avSync.getLastVideoPts();
+    const scheduledAheadUs = this.isPlaying ? Math.round(Math.max(0, this.nextPlayTime - now) * 1_000_000) : 0;
+    const targetAudioPtsUs = lastVideoPts > 0 ? lastVideoPts + scheduledAheadUs : 0;
+    const headPtsAtCheck = this.overflowQueue.length > 1 ? this.overflowQueue[0].ptsUs : 0;
+    const staleLagMs =
+      headPtsAtCheck > 0 && targetAudioPtsUs > 0 ? (targetAudioPtsUs - headPtsAtCheck) / 1000 : 0;
+
     // Only drop truly stale audio on major timeline discontinuity (> 1500ms behind).
-    // Never drop frames on minor jitter (< 1.5s) to guarantee zero crackling/clipping clicks!
+    // Never drop frames on minor jitter (<= 1.5s) to guarantee zero crackling/clipping clicks!
+    // Once triggered (> 1500ms), drop stale overflow chunks down to near targetAudioPtsUs (> 60ms)
+    // in a single clean resync instead of leaving 1500ms of residual lag behind.
     let droppedStaleCount = 0;
     let firstDroppedPtsUs = 0;
-    while (this.overflowQueue.length > 1 && lastVideoPts > 0) {
-      const headPts = this.overflowQueue[0].ptsUs;
-      if (headPts > 0 && (lastVideoPts - headPts) / 1000 > 1500) {
-        if (droppedStaleCount === 0) firstDroppedPtsUs = headPts;
-        this.overflowQueue.shift();
-        droppedStaleCount++;
-      } else {
-        break;
+    let lastDroppedPtsUs = 0;
+    if (staleLagMs > 1500) {
+      while (this.overflowQueue.length > 1) {
+        const headPts = this.overflowQueue[0].ptsUs;
+        if (headPts > 0 && (targetAudioPtsUs - headPts) / 1000 > 60) {
+          if (droppedStaleCount === 0) firstDroppedPtsUs = headPts;
+          lastDroppedPtsUs = headPts;
+          this.overflowQueue.shift();
+          droppedStaleCount++;
+        } else {
+          break;
+        }
       }
     }
     if (droppedStaleCount > 0 && this.telemetry?.isEnabled()) {
       this.telemetry.recordAudio('drop_stale_audio', {
         droppedCount: droppedStaleCount,
         firstDroppedPtsUs,
+        lastDroppedPtsUs,
         lastVideoPts,
+        targetAudioPtsUs,
         remainingOverflowLength: this.overflowQueue.length,
       });
     }
