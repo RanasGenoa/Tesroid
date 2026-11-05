@@ -61,6 +61,7 @@ RUN apt-get update -qq && \
         fonts-noto-color-emoji \
         procps \
         && rm -rf /var/lib/apt/lists/* && \
+    echo "LIBVA_DRIVER_NAME=iHD" > /etc/libva.conf && \
     sed -i 's|</applications>|  <application class="*">\n    <decor>no</decor>\n    <position force="yes">\n      <x>0</x>\n      <y>0</y>\n    </position>\n    <fullscreen>no</fullscreen>\n    <maximized>no</maximized>\n  </application>\n</applications>|' /etc/xdg/openbox/rc.xml
 
 # 2. Install Node.js 20 LTS
@@ -81,8 +82,8 @@ RUN curl -sSL https://dl.google.com/linux/direct/google-chrome-stable_current_am
 # 4. Configure PulseAudio for container execution
 RUN echo "default-server = unix:/tmp/pulse-socket" > /etc/pulse/client.conf && \
     echo "autospawn = no" >> /etc/pulse/client.conf && \
-    echo "default-fragments = 2" > /etc/pulse/daemon.conf && \
-    echo "default-fragment-size-msec = 10" >> /etc/pulse/daemon.conf && \
+    echo "default-fragments = 4" > /etc/pulse/daemon.conf && \
+    echo "default-fragment-size-msec = 25" >> /etc/pulse/daemon.conf && \
     echo "enable-deferred-volume = no" >> /etc/pulse/daemon.conf && \
     echo "flat-volumes = no" >> /etc/pulse/daemon.conf && \
     echo "exit-idle-time = -1" >> /etc/pulse/daemon.conf && \

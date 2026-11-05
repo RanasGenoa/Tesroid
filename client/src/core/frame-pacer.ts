@@ -63,6 +63,9 @@ export class FramePacer {
   private static readonly AV_SYNC_MAX_NUDGE_MS = 0.75;
   // Sync error limit (ms) for proportional PLL nudge scaling before transitioning to large-shift jump (150ms).
   private static readonly AV_SYNC_MAX_ERROR_MS = 150;
+  // Maximum shift (ms) applied per frame during large A/V desync (> 150ms).
+  // Slew-rate clamped to ±2.0ms/frame to preserve smooth pacing (~28.5 - 31.5 FPS at 30fps) and eliminate stutter.
+  private static readonly AV_SYNC_LARGE_SHIFT_MAX_MS = 2.0;
   // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
   private static readonly AV_SYNC_KP =
     FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
@@ -512,20 +515,21 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
-            if (Math.abs(syncErrorMs) > 150) {
+            if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
               // 150ms以上の顕著なズレ:
-              // 重要: 未来方向 (syncErrorMs > 0) への無制限シフトは画面フリーズ (0〜4FPS落ち込み) を招くため、
-              // 1フレームあたりの最大遅延量 (maxPositiveShift) を最大+2.5ms/frameに厳格にクランプし、スムーズな描画（>=27.5FPS）を維持しながら音声吸着させる！
-              const maxPositiveShift = 2.5;
+              // 重要: プラス/マイナス両方向のスルーレートを ±2.0ms/frame に厳格にクランプすることで、
+              // 描画間隔（約31.3ms〜35.3ms）を維持し、画面フリーズや急激な前倒しによる激しいカクつき（スタッター）を
+              // 完全に防ぎながら、音声へスムーズに吸着・同期させる。
+              const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
               const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
               const maxNegativeShift = -Math.min(
-                16.0,
+                FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
                 Math.max(0, currentHeadSchedule - (now + minCatchupIntervalMs)),
               );
               const pllShift =
                 syncErrorMs > 0
                   ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
-                  : Math.max(maxNegativeShift, syncErrorMs);
+                  : Math.max(maxNegativeShift, syncErrorMs * 0.15);
 
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {

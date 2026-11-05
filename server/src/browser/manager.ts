@@ -1061,7 +1061,8 @@ export class BrowserManager {
       '--disable-gpu-sandbox',
       '--ignore-gpu-blocklist',
       // Hardware video decode via VAAPI (e.g. Intel QuickSync / AMD VAAPI)
-      '--enable-features=VaapiVideoDecoder,VaapiVideoEncoder,VaapiIgnoreDriverChecks',
+      // Note: Chrome 131+ uses AcceleratedVideoDecodeLinuxGL on Linux/X11/EGL; VaapiVideoDecoder flag is obsolete.
+      '--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks',
       // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
       // (Pre-11th Gen Intel iGPUs lack AV1 hardware decode but have full silicon VP9/H.264 decode).
       // Disable AudioServiceSandbox so Chrome AudioService can seamlessly access PulseAudio UNIX socket in container.

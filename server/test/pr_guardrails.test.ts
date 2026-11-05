@@ -52,7 +52,7 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(codeOnly).not.toContain('CanvasOopRasterization');
 
     // Mandatory hardware decode, container audio, touch & loopback-only CDP security flags
-    expect(codeOnly).toContain('VaapiVideoDecoder');
+    expect(codeOnly).toContain('AcceleratedVideoDecodeLinuxGL');
     expect(codeOnly).toContain('Av1Decoder');
     expect(codeOnly).toContain('AudioServiceSandbox');
     expect(codeOnly).toContain('--touch-events=enabled');

@@ -183,4 +183,50 @@ describe('A/V Sync Stutter Elimination & Audio Underrun Guard', () => {
 
     player.close();
   });
+
+  it('slew-rate clamps large negative and positive A/V sync errors (> 150ms) to max ±2.0ms per frame to prevent stutter bursts and freezing', () => {
+    const renderTimestamps: number[] = [];
+    const mockRenderer: any = {
+      render: vi.fn((f: any) => {
+        renderTimestamps.push(performance.now());
+        f.close?.();
+      }),
+    };
+
+    const avSync = new AvSyncController();
+    const ctxTimeSec = 1.0;
+    avSync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Audio PTS = 1,000,000us at ctxTime = 1.0s
+    avSync.updateAudioPts(1_000_000, 1.0);
+
+    const pacer = new FramePacer(mockRenderer, 30, avSync);
+
+    // Initial frame renders immediately
+    pacer.queueFrame(createDummyFrame(1_000_000) as any);
+    expect(mockRenderer.render).toHaveBeenCalledTimes(1);
+
+    // Case 1: Video falls behind audio significantly (syncErrorMs < -150ms).
+    // In legacy code, maxNegativeShift was -16ms, causing a severe 17ms stutter burst.
+    // Now, slew-rate clamping restricts shift to max -2.0ms per frame.
+    // Audio suddenly jumps ahead by 300ms:
+    avSync.updateAudioPts(1_300_000, 1.0);
+
+    // Queue next frame at PTS 1_033_333 (expected schedule interval ~33.3ms, shifted by at most -2.0ms -> ~31.3ms)
+    pacer.queueFrame(createDummyFrame(1_033_333) as any);
+
+    // At 25ms, it should NOT render yet (legacy -16ms would have rendered around 17ms!)
+    vi.advanceTimersByTime(25);
+    expect(mockRenderer.render).toHaveBeenCalledTimes(1);
+
+    // Advance to 35ms: it should render smoothly around ~31.3ms
+    vi.advanceTimersByTime(10);
+    expect(mockRenderer.render).toHaveBeenCalledTimes(2);
+
+    const intervalNegative = renderTimestamps[1] - renderTimestamps[0];
+    expect(intervalNegative).toBeGreaterThanOrEqual(30); // Preserves >= 30ms interval!
+    expect(intervalNegative).toBeLessThanOrEqual(35);
+
+    pacer.destroy();
+  });
 });
