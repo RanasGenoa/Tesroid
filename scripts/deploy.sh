@@ -48,6 +48,7 @@ fi
 
 SKIP_TEST=false
 FOLLOW_LOGS=false
+CLEAN_DATA=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -56,6 +57,9 @@ for arg in "$@"; do
       ;;
     --logs)
       FOLLOW_LOGS=true
+      ;;
+    --clean-data)
+      CLEAN_DATA=true
       ;;
     *)
       ;;
@@ -153,10 +157,26 @@ if [ "$DEPLOY_MODE" = "truenas" ]; then
   STOP_JOB_ID=$(run_ssh "midclt call app.stop '${TRUENAS_APP_NAME}'")
   poll_truenas_job "${STOP_JOB_ID}"
 
+  if [ "$CLEAN_DATA" = true ]; then
+    echo "   🧹 Backing up and cleaning persistent data directory..."
+    BACKUP_TS="$(date +%Y%m%d%H%M%S)"
+    run_ssh "
+      if [ -d /mnt/SSD/tesroid-data ]; then
+        cp -a /mnt/SSD/tesroid-data /mnt/SSD/tesroid-data.bak-${BACKUP_TS} 2>/dev/null || true
+        find /mnt/SSD/tesroid-data -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        echo '     Data backed up to /mnt/SSD/tesroid-data.bak-${BACKUP_TS} and cleaned.'
+      fi
+    "
+  fi
+
   echo "   Starting TrueNAS app '${TRUENAS_APP_NAME}'..."
   START_JOB_ID=$(run_ssh "midclt call app.start '${TRUENAS_APP_NAME}'")
   poll_truenas_job "${START_JOB_ID}"
 else
+  if [ "$CLEAN_DATA" = true ]; then
+    echo "   🧹 Cleaning existing container data..."
+    run_ssh "cd '${REMOTE_DIR}' && docker compose down -v 2>/dev/null || true"
+  fi
   run_ssh "cd '${REMOTE_DIR}' && docker compose up -d --build"
 fi
 
@@ -187,6 +207,11 @@ fi
 echo ""
 echo "📋 Latest 15 lines from ${CONTAINER_NAME} container logs:"
 run_ssh "docker logs --tail 15 '${CONTAINER_NAME}' || true"
+
+echo ""
+echo "📋 System Status (/api/status):"
+run_ssh "curl -s http://127.0.0.1:${TESROID_PORT}/api/status || true"
+echo ""
 
 echo ""
 echo "========================================================"
