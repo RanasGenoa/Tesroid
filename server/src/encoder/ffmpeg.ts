@@ -13,6 +13,8 @@ export const AUDIO_FLAGS = {
   CONFIG: 0x02,
 } as const;
 
+const ANNEX_B_START_CODE_4 = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+
 export interface EncoderOptions {
   displayNum?: string; // ':99'
   width?: number; // 1280
@@ -612,7 +614,7 @@ export class VaapiEncoder extends EventEmitter {
   }
 
   private processNalUnit(nalWithPrefix: Buffer): void {
-    if (nalWithPrefix.length < 5) return;
+    if (nalWithPrefix.length < 4) return;
 
     let offset = 3;
     if (
@@ -623,6 +625,8 @@ export class VaapiEncoder extends EventEmitter {
     ) {
       offset = 4;
     }
+
+    if (nalWithPrefix.length <= offset) return;
 
     const nalType = nalWithPrefix[offset] & 0x1f;
 
@@ -646,10 +650,10 @@ export class VaapiEncoder extends EventEmitter {
       if (offset === 4) {
         this.currentAuConfigNals.push(nalWithPrefix);
       } else {
-        const canonical = Buffer.allocUnsafe(4 + nalWithPrefix.length - offset);
-        canonical.writeUInt32BE(1, 0);
-        nalWithPrefix.copy(canonical, 4, offset);
-        this.currentAuConfigNals.push(canonical);
+        // Normalize 3-byte start code (0x000001) to canonical 4-byte start code (0x00000001)
+        this.currentAuConfigNals.push(
+          Buffer.concat([ANNEX_B_START_CODE_4, nalWithPrefix.subarray(offset)]),
+        );
       }
       return;
     }

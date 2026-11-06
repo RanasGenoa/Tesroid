@@ -278,7 +278,12 @@ export class VideoStreamDecoder {
     }
 
     // Convert Annex-B chunk to AVCC format required by WebCodecs with description.
-    // When VIDEO_FLAGS.AVCC is set, payload is already packed as 4-byte length-prefixed slices (zero-copy)!
+    // ZERO-COPY GUARANTEE:
+    // When VIDEO_FLAGS.AVCC is set, payload is already packed by the server as 4-byte
+    // length-prefixed slices (AVCC format). We pass `data` directly into `EncodedVideoChunk`
+    // without any `.slice()` or `.subarray()` copying.
+    // WebCodecs native constructor accepts ArrayBufferView (BufferSource) and respects
+    // its byteOffset/byteLength directly, ensuring 0 heap allocations and 0 GC overhead.
     const avccData = isAvcc ? data : H264Parser.annexBToAvcc(data);
     if (avccData.length === 0) {
       return;
