@@ -1056,8 +1056,8 @@ export class WebSocketHandler {
         case 'TYPE_TEXT':
           this.recordInputActivity(socket);
           if (cmd.text) {
-            if (typeof (this.inputManager as any).insertText === 'function') {
-              (this.inputManager as any).insertText(cmd.text);
+            if (typeof this.inputManager.insertText === 'function') {
+              this.inputManager.insertText(cmd.text);
               if (cmd.enter === true) {
                 this.inputManager.sendKey('Enter');
               }

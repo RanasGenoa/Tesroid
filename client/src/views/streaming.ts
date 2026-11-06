@@ -1227,9 +1227,8 @@ export function renderStreamingView(
     if (nextState) {
       kbdDrawer.style.display = 'flex';
       kbdBtn.classList.add('is-active');
-      setTimeout(() => {
-        kbdInput?.focus();
-      }, 50);
+      // Synchronous focus preserves user gesture context for Tesla OSK popup
+      kbdInput?.focus();
     } else {
       kbdDrawer.style.display = 'none';
       kbdBtn.classList.remove('is-active');
