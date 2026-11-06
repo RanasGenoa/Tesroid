@@ -39,6 +39,7 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
       restartChrome: vi.fn(async () => {}),
       navigate: vi.fn(async () => {}),
       setDisplayScale: vi.fn(async () => {}),
+      setLocale: vi.fn(),
     };
 
     mockEncoder = {

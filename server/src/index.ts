@@ -39,6 +39,7 @@ async function bootstrap() {
     height: displayHeight,
     defaultUrl: process.env.BROWSER_URL || 'https://www.youtube.com',
     displayScale: configStore.getConfig().displayScale || 120,
+    locale: configStore.getConfig().locale || 'ja-JP',
   });
 
   const initialStreamConfig = configStore.getConfig().stream;

@@ -14,6 +14,8 @@ interface UpdateSettingsBody {
   autoSleepMinutes?: number;
   browserUrl?: string;
   displayScale?: number;
+  locale?: string;
+  timezone?: string;
   stream?: {
     bitrate?: number;
     maxFps?: number;
@@ -68,6 +70,8 @@ export function registerSettingsRoutes(
       allowedDomains: config.allowedDomains,
       autoSleepMinutes: config.autoSleepMinutes,
       displayScale: config.displayScale,
+      locale: config.locale || 'ja-JP',
+      timezone: config.timezone || 'Asia/Tokyo',
       stream: config.stream,
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
@@ -79,8 +83,16 @@ export function registerSettingsRoutes(
     '/api/settings',
     { preHandler: requireAuth },
     async (req, reply) => {
-      const { pin, allowedDomains, autoSleepMinutes, stream, browserUrl, displayScale } =
-        req.body || {};
+      const {
+        pin,
+        allowedDomains,
+        autoSleepMinutes,
+        stream,
+        browserUrl,
+        displayScale,
+        locale,
+        timezone,
+      } = req.body || {};
 
       if (browserUrl !== undefined && browserUrl !== '' && !isSafeHttpUrl(browserUrl)) {
         return reply
@@ -103,9 +115,19 @@ export function registerSettingsRoutes(
         updates.displayScale = clampedScale;
         updates.displayScaleUserSet = true;
       }
+      if (locale !== undefined && typeof locale === 'string') {
+        updates.locale = locale.trim() || 'ja-JP';
+      }
+      if (timezone !== undefined && typeof timezone === 'string') {
+        updates.timezone = timezone.trim() || 'Asia/Tokyo';
+      }
       if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
 
       configStore.updateConfig(updates);
+
+      if (updates.locale !== undefined && typeof browserManager.setLocale === 'function') {
+        browserManager.setLocale(updates.locale);
+      }
 
       if (updates.displayScale !== undefined) {
         await browserManager.setDisplayScale(updates.displayScale);

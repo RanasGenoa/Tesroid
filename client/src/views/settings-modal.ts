@@ -82,6 +82,12 @@ async function showSettingsModal(
           <option value="150">150% (特大)</option>
         </select>
 
+        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">システム表示言語 (ブラウザ言語)</label>
+        <select id="cfg-locale">
+          <option value="ja-JP" selected>日本語 (ja-JP)</option>
+          <option value="en-US">English (en-US)</option>
+        </select>
+
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">先行バッファ深度 (回線瞬断・トンネル対策 / メモリ調整)</label>
         <select id="cfg-buffer-depth">
           <option value="0">オフ (0.1秒 / 超低遅延優先)</option>
@@ -391,6 +397,9 @@ async function showSettingsModal(
         );
         localStorage.setItem('tesroid_display_scale', String(data.displayScale));
       }
+      if (data.locale && overlay.querySelector('#cfg-locale')) {
+        (overlay.querySelector('#cfg-locale') as HTMLSelectElement).value = data.locale;
+      }
     }
   } catch {}
 
@@ -403,11 +412,13 @@ async function showSettingsModal(
     const bufferDepth = Number(
       (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000,
     );
+    const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
     const body: any = {
       displayScale,
     };
     if (newPin) body.pin = newPin;
+    if (locale) body.locale = locale;
 
     localStorage.setItem('tesroid_display_scale', String(displayScale));
     localStorage.setItem('tesroid_prefetch_buffer_ms', String(bufferDepth));
