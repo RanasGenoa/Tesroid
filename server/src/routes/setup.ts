@@ -12,6 +12,8 @@ interface SetupBody {
   timezone?: string;
 }
 
+const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
+
 export function registerSetupRoutes(
   app: FastifyInstance,
   configStore: ConfigStore,
@@ -47,7 +49,10 @@ export function registerSetupRoutes(
     // Save PIN
     await authService.setPin(pin);
 
-    const safeLocale = typeof locale === 'string' && locale.trim() ? locale.trim() : 'ja-JP';
+    const safeLocale =
+      typeof locale === 'string' && ALLOWED_LOCALES.includes(locale.trim())
+        ? locale.trim()
+        : 'ja-JP';
     const safeTimezone =
       typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Tokyo';
 

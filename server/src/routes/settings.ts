@@ -23,6 +23,8 @@ interface UpdateSettingsBody {
   };
 }
 
+const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
+
 export function registerSettingsRoutes(
   app: FastifyInstance,
   configStore: ConfigStore,
@@ -116,7 +118,8 @@ export function registerSettingsRoutes(
         updates.displayScaleUserSet = true;
       }
       if (locale !== undefined && typeof locale === 'string') {
-        updates.locale = locale.trim() || 'ja-JP';
+        const trimmed = locale.trim();
+        updates.locale = ALLOWED_LOCALES.includes(trimmed) ? trimmed : 'ja-JP';
       }
       if (timezone !== undefined && typeof timezone === 'string') {
         updates.timezone = timezone.trim() || 'Asia/Tokyo';

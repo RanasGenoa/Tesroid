@@ -87,6 +87,7 @@ async function showSettingsModal(
           <option value="ja-JP" selected>日本語 (ja-JP)</option>
           <option value="en-US">English (en-US)</option>
         </select>
+        <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; margin-bottom: 0;">※ 言語の変更は次回ブラウザ起動時または再起動時に反映されます。</p>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">先行バッファ深度 (回線瞬断・トンネル対策 / メモリ調整)</label>
         <select id="cfg-buffer-depth">
