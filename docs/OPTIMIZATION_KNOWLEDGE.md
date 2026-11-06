@@ -33,7 +33,7 @@ Tesroid は、一般的なリモートデスクトップ（VNC/RDP）や WebRTC 
   │
   ├── 5. FFmpeg VAAPI Dual Encoders
   │      - Video: x11grab -> nv12 hwupload -> h264_vaapi (2500kbps, 60fps, GOP 30, B-frame 0)
-  │      - Audio: pulse -> libopus (128kbps, 20ms frame, lowdelay)
+  │      - Audio: pulse -> libopus (128kbps〜320kbps 可変・設定調整可能, 20ms frame, lowdelay)
   │
   └── 6. WebSocket Backpressure Controller
          - 高低水位ヒステリシス制御 (High: 768KB, Low: 128KB) による無限ドロップループ根絶

@@ -102,6 +102,15 @@ async function showSettingsModal(
           <option value="10000" selected>最大 10秒 (長大トンネル・耐障害最優先 / Ryzen推奨)</option>
         </select>
 
+        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">音声ビットレート (音質調整 / 128k〜320k)</label>
+        <select id="cfg-audio-bitrate">
+          <option value="128000" selected>128 kbps (標準・低遅延推奨)</option>
+          <option value="192000">192 kbps (高音質)</option>
+          <option value="256000">256 kbps (超高音質)</option>
+          <option value="320000">320 kbps (最高音質・スタジオ品質)</option>
+        </select>
+        <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; margin-bottom: 0;">※ 車内での音楽鑑賞等で音質を優先する場合は192k〜320kを選択してください。</p>
+
         <button id="cfg-save-btn" class="btn btn-primary" style="width: 100%; margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 6px;">
           ${ICONS.check} 設定を保存
         </button>
@@ -315,6 +324,11 @@ async function showSettingsModal(
     (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement).value = savedBufferDepth;
   }
 
+  const savedAudioBitrate = localStorage.getItem('tesroid_audio_bitrate') || '128000';
+  if (overlay.querySelector('#cfg-audio-bitrate')) {
+    (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement).value = savedAudioBitrate;
+  }
+
   // Developer Telemetry options handler
   const telemetryToggle = overlay.querySelector('#cfg-telemetry-toggle') as HTMLInputElement | null;
   if (telemetryToggle) {
@@ -427,6 +441,12 @@ async function showSettingsModal(
         initialLocale = data.locale;
         (overlay.querySelector('#cfg-locale') as HTMLSelectElement).value = data.locale;
       }
+      if (data.stream?.audioBitrate && overlay.querySelector('#cfg-audio-bitrate')) {
+        (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement).value = String(
+          data.stream.audioBitrate,
+        );
+        localStorage.setItem('tesroid_audio_bitrate', String(data.stream.audioBitrate));
+      }
     }
   } catch {}
 
@@ -439,16 +459,32 @@ async function showSettingsModal(
     const bufferDepth = Number(
       (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000,
     );
+    const audioBitrate = Number(
+      (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement)?.value || 128000,
+    );
     const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
-    const body: any = {
+    interface SettingsUpdatePayload {
+      displayScale: number;
+      stream: {
+        audioBitrate: number;
+      };
+      pin?: string;
+      locale?: string;
+    }
+
+    const body: SettingsUpdatePayload = {
       displayScale,
+      stream: {
+        audioBitrate,
+      },
     };
     if (newPin) body.pin = newPin;
     if (locale) body.locale = locale;
 
     localStorage.setItem('tesroid_display_scale', String(displayScale));
     localStorage.setItem('tesroid_prefetch_buffer_ms', String(bufferDepth));
+    localStorage.setItem('tesroid_audio_bitrate', String(audioBitrate));
 
     try {
       const res = await fetch('/api/settings', {
@@ -459,7 +495,7 @@ async function showSettingsModal(
       if (res.ok) {
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
-            detail: { displayScale, bufferDepth },
+            detail: { displayScale, bufferDepth, audioBitrate },
           }),
         );
         if (initialLocale && locale && locale !== initialLocale) {

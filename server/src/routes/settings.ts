@@ -21,6 +21,7 @@ interface UpdateSettingsBody {
     bitrate?: number;
     maxFps?: number;
     maxSize?: number;
+    audioBitrate?: number | string;
   };
 }
 
@@ -134,7 +135,44 @@ export function registerSettingsRoutes(
         }
         updates.timezone = timezone.trim();
       }
-      if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
+      if (stream) {
+        if (stream.audioBitrate !== undefined) {
+          let ab: number;
+          if (typeof stream.audioBitrate === 'string') {
+            const str = stream.audioBitrate.toLowerCase().trim();
+            if (str.endsWith('k')) {
+              ab = parseFloat(str) * 1000;
+            } else if (str.endsWith('m')) {
+              ab = parseFloat(str) * 1000 * 1000;
+            } else {
+              ab = Number(str);
+            }
+          } else {
+            ab = Number(stream.audioBitrate);
+          }
+          if (ab >= 128 && ab <= 320) {
+            ab = ab * 1000;
+          }
+          if (!Number.isFinite(ab) || ab < 128000 || ab > 320000) {
+            return reply.status(400).send({
+              error:
+                'Invalid audioBitrate: Must be between 128000 and 320000 bps (128kbps - 320kbps).',
+            });
+          }
+          const normalizedBitrate = Math.round(ab);
+          stream.audioBitrate = normalizedBitrate;
+        }
+        const currentStream = configStore.getConfig().stream;
+        updates.stream = {
+          bitrate: stream.bitrate !== undefined ? stream.bitrate : currentStream.bitrate,
+          maxFps: stream.maxFps !== undefined ? stream.maxFps : currentStream.maxFps,
+          maxSize: stream.maxSize !== undefined ? stream.maxSize : currentStream.maxSize,
+          audioBitrate:
+            typeof stream.audioBitrate === 'number'
+              ? stream.audioBitrate
+              : currentStream.audioBitrate,
+        };
+      }
 
       configStore.updateConfig(updates);
 
@@ -150,12 +188,12 @@ export function registerSettingsRoutes(
       }
 
       if (stream && encoder) {
-        const { maxFps, bitrate } = stream;
-        if (maxFps !== undefined || bitrate !== undefined) {
+        const { maxFps, bitrate, audioBitrate } = stream;
+        if (maxFps !== undefined || bitrate !== undefined || audioBitrate !== undefined) {
           console.log(
-            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}`,
+            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}`,
           );
-          await encoder.updateConfig({ fps: maxFps, bitrate });
+          await encoder.updateConfig({ fps: maxFps, bitrate, audioBitrate });
         }
       }
 

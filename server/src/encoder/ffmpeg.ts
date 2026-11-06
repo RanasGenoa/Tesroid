@@ -18,6 +18,7 @@ export interface EncoderOptions {
   height?: number; // 720
   fps?: number; // 30
   bitrate?: string; // '4M'
+  audioBitrate?: string | number; // e.g. '128k', 128000, '320k' (128k - 320k)
   vaapiDevice?: string; // '/dev/dri/renderD128'
   audioSink?: string; // 'virtual_sink.monitor'
 }
@@ -28,6 +29,7 @@ export class VaapiEncoder extends EventEmitter {
   private height: number;
   private fps: number;
   private bitrate: string;
+  private audioBitrate: string;
   private vaapiDevice: string;
   private audioSink: string;
 
@@ -74,6 +76,9 @@ export class VaapiEncoder extends EventEmitter {
     this.height = options.height || Number(process.env.DISPLAY_HEIGHT) || 720;
     this.fps = options.fps || Number(process.env.FPS) || 30;
     this.bitrate = options.bitrate || process.env.VIDEO_BITRATE || '1000k';
+    this.audioBitrate = this.formatAudioBitrate(
+      options.audioBitrate || process.env.AUDIO_BITRATE || '128k',
+    );
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
 
@@ -92,6 +97,40 @@ export class VaapiEncoder extends EventEmitter {
     }
     const num = Number(str);
     return isNaN(num) ? 1000000 : num;
+  }
+
+  public parseAudioBitrateBps(bitrate: string | number): number {
+    let bps = 128000;
+    if (typeof bitrate === 'number') {
+      bps = bitrate < 1000 ? bitrate * 1000 : bitrate;
+    } else {
+      const str = String(bitrate).toLowerCase().trim();
+      if (str.endsWith('k')) {
+        bps = parseFloat(str) * 1000;
+      } else if (str.endsWith('m')) {
+        bps = parseFloat(str) * 1000 * 1000;
+      } else {
+        const num = Number(str);
+        if (!isNaN(num)) {
+          bps = num < 1000 ? num * 1000 : num;
+        }
+      }
+    }
+    // Clamp between 128k (128000) and 320k (320000)
+    return Math.max(128000, Math.min(320000, Math.round(bps)));
+  }
+
+  public formatAudioBitrate(bitrate: string | number): string {
+    const bps = this.parseAudioBitrateBps(bitrate);
+    return `${Math.round(bps / 1000)}k`;
+  }
+
+  public getAudioBitrate(): string {
+    return this.audioBitrate;
+  }
+
+  public getAudioBitrateBps(): number {
+    return this.parseAudioBitrateBps(this.audioBitrate);
   }
 
   public getCachedSpsPps(): Buffer | null {
@@ -262,7 +301,7 @@ export class VaapiEncoder extends EventEmitter {
       '-c:a',
       'libopus',
       '-b:a',
-      '128k',
+      this.audioBitrate,
       '-vbr',
       'on',
       '-application',
@@ -399,19 +438,21 @@ export class VaapiEncoder extends EventEmitter {
 
   /**
    * Restart FFmpeg video encoder, optionally with new resolution, fps, or bitrate.
-   * Audio encoder is completely undisturbed to guarantee zero audio dropout during resize or settings change.
+   * If audioBitrate is provided, audio encoder is also cleanly reconfigured without race conditions.
+   * Otherwise, audio encoder is completely undisturbed to guarantee zero audio dropout during resize or video settings change.
    */
   public async restart(
     width?: number,
     height?: number,
     fps?: number,
     bitrate?: string | number,
+    audioBitrate?: string | number,
   ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
         `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
         `fps=${fps || this.fps}, ` +
-        `bitrate=${bitrate || this.bitrate})...`,
+        `bitrate=${bitrate || this.bitrate}${audioBitrate ? `, audioBitrate=${audioBitrate}` : ''})...`,
     );
     this.stopVideo();
 
@@ -434,9 +475,32 @@ export class VaapiEncoder extends EventEmitter {
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuNals = [];
 
+    const audioRestartPromise = audioBitrate ? this.restartAudio(audioBitrate) : Promise.resolve();
+
     // Allow old process to fully exit
     await new Promise((r) => setTimeout(r, 100));
     this.startVideo();
+    await audioRestartPromise;
+  }
+
+  /**
+   * Restart FFmpeg audio encoder, optionally with a new audio bitrate (128k - 320k).
+   * Video encoder is completely undisturbed to guarantee zero video dropouts or black screens.
+   * Stream start baseline (streamStartTimeUs) is preserved to ensure A/V synchronization stays locked.
+   */
+  public async restartAudio(audioBitrate?: string | number): Promise<void> {
+    if (audioBitrate) {
+      this.audioBitrate = this.formatAudioBitrate(audioBitrate);
+    }
+    console.log(`[VaapiEncoder] Restarting Audio FFmpeg encoder (bitrate=${this.audioBitrate})...`);
+    this.stopAudio();
+    this.cachedOpusHead = null;
+    this.oggRemainder = Buffer.alloc(0);
+    this.oggHeaderParsed = false;
+
+    // Allow old process to fully exit
+    await new Promise((r) => setTimeout(r, 100));
+    this.startAudio();
   }
 
   /**
@@ -448,11 +512,15 @@ export class VaapiEncoder extends EventEmitter {
     height?: number,
     fps?: number,
     bitrate?: string | number,
+    audioBitrate?: string | number,
   ): Promise<void> {
     console.log(
       '[VaapiEncoder] Performing full clean restart of Video and Audio streaming processes...',
     );
     this.stopAudio();
+    if (audioBitrate) {
+      this.audioBitrate = this.formatAudioBitrate(audioBitrate);
+    }
     this.cachedOpusHead = null;
     this.oggRemainder = Buffer.alloc(0);
     this.oggHeaderParsed = false;
@@ -465,15 +533,35 @@ export class VaapiEncoder extends EventEmitter {
   }
 
   /**
-   * Dynamically update streaming settings (FPS / Bitrate) and restart video encoder.
+   * Dynamically update streaming settings (FPS / Bitrate / AudioBitrate) and restart encoders.
+   * If only audioBitrate changes, video is completely undisturbed.
+   * If only video settings change, audio is completely undisturbed.
+   * If both change, video and audio are coordinated without race conditions.
    */
   public async updateConfig(config: {
     fps?: number;
     bitrate?: string | number;
+    audioBitrate?: string | number;
     width?: number;
     height?: number;
   }): Promise<void> {
-    await this.restart(config.width, config.height, config.fps, config.bitrate);
+    const videoNeedsRestart =
+      config.width !== undefined ||
+      config.height !== undefined ||
+      config.fps !== undefined ||
+      config.bitrate !== undefined;
+
+    if (videoNeedsRestart) {
+      await this.restart(
+        config.width,
+        config.height,
+        config.fps,
+        config.bitrate,
+        config.audioBitrate,
+      );
+    } else if (config.audioBitrate !== undefined) {
+      await this.restartAudio(config.audioBitrate);
+    }
   }
 
   /**
