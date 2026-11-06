@@ -24,7 +24,6 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
-    "deploy": "bash scripts/deploy.sh",
     "start": "npm --prefix server run start"
   },
   "lint-staged": {

@@ -107,36 +107,50 @@ docker build -t tesroid-tesroid:latest .
 
 ---
 
-## 4. リモートホストへのワンコマンド自動デプロイ (`scripts/deploy.sh`)
+## 4. リモートホスト・NAS 上での更新 & 再デプロイ手順
 
-手元の開発 PC からリモートの Docker ホスト（Linux サーバーや TrueNAS）へ、テスト実行・`rsync` 差分転送・再ビルド・ヘルスチェックを一括で行うスクリプト `scripts/deploy.sh` を同梱しています。
+コードの更新や機能拡張を本番環境へ反映させる手順です。
 
-### 標準 Docker Compose ホストへのデプロイ (`DEPLOY_MODE=compose`)
-SSH 公開鍵認証が設定されていれば、以下のコマンドでリモートデプロイが完了します：
-
+### 標準 Docker Compose 環境の更新
 ```bash
-DEPLOY_HOST="192.168.1.100" \
-DEPLOY_USER="ubuntu" \
-REMOTE_DIR="/opt/tesroid" \
-./scripts/deploy.sh
+# 1. リモートホスト上のソースコードを最新化
+cd /opt/tesroid
+git pull origin main
+
+# 2. コンテナイメージの再ビルド & バックグラウンド再起動
+docker compose up -d --build
+
+# 3. 動作ログの確認
+docker compose logs -f --tail 30
 ```
 
-### TrueNAS SCALE Custom App へのデプロイ (`DEPLOY_MODE=truenas`)
-`.env`（Git管理外）に `DEPLOY_MODE=truenas` を指定すると、TrueNAS の `midclt` ジョブ管理 API を用いて安全にアプリの停止・再起動を行います：
-
+### TrueNAS SCALE (Custom App) 環境の更新
 ```bash
-DEPLOY_HOST="192.168.1.100" \
-DEPLOY_USER="root" \
-REMOTE_DIR="/opt/tesroid" \
-DEPLOY_MODE="truenas" \
-./scripts/deploy.sh
+# 1. NAS 上の作業ディレクトリで最新ソースを取得
+cd /opt/tesroid
+git pull origin main
+
+# 2. ローカルイメージを再ビルド
+docker build -t tesroid-tesroid:latest .
+
+# 3. TrueNAS CLI / WebUI で App を再起動
+midclt call app.stop 'tesroid'
+midclt call app.start 'tesroid'
+
+# 4. ヘルスチェック確認
+curl -s http://127.0.0.1:9001/api/health
 ```
 
-| オプション | 説明 |
-| :--- | :--- |
-| *(なし)* | 標準デプロイ（ローカルテスト ➔ `rsync` 同期 ➔ ビルド＆再起動 ➔ ヘルスチェック） |
-| `--skip-test` | ローカル単体テストをスキップして即時同期・ビルド |
-| `--logs` | デプロイ完了後、`docker logs -f` でログを継続表示 |
+### 初期セットアップの再検証（永続化データの初期化）
+未設定状態からの初期 PIN 設定やオンボーディングウィザードを再検証したい場合は、コンテナ停止中に永続データディレクトリ（ホストパス `/mnt/<POOL>/tesroid-data` 等）内の設定ファイル・プロファイルを退避または消去してください：
+
+```bash
+# コンテナまたは App を停止した状態で実行
+# （マウントポイントを維持するため内部のファイルのみ削除）
+find /mnt/<POOL>/tesroid-data -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+# 再起動後、/api/status で isSetupCompleted: false になっていることを確認
+```
 
 ---
 

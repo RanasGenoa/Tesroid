@@ -106,6 +106,34 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(canvasRendererSrc).toContain('frame.close()');
   });
 
+  it('preserves WebAuthn suppression in extension content script, BrowserManager and persistent CdpTouchBridge', () => {
+    const extContentJs = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/extension/content.js'),
+      'utf-8',
+    );
+    const managerSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/manager.ts'),
+      'utf-8',
+    );
+    const xdotoolSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/input/xdotool.ts'),
+      'utf-8',
+    );
+
+    // Extension, manager CDP, and persistent CdpTouchBridge must intercept WebAuthn
+    expect(extContentJs).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+    expect(extContentJs).toContain('Passkeys are not supported in this environment');
+    expect(extContentJs).toContain('NotAllowedError');
+
+    expect(managerSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+    expect(managerSrc).toContain('Passkeys are not supported in this environment');
+    expect(managerSrc).toContain('NotAllowedError');
+
+    expect(xdotoolSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+    expect(xdotoolSrc).toContain('Passkeys are not supported in this environment');
+    expect(xdotoolSrc).toContain('NotAllowedError');
+  });
+
   it('prevents accidental commits of private keys, local developer paths, or Chrome image registry pushes', () => {
     const files = walkWorkspaceFiles(REPO_ROOT);
     const selfPath = path.resolve(__filename);

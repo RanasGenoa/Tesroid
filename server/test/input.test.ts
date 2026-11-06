@@ -300,4 +300,48 @@ describe('X11InputManager & CdpTouchBridge', () => {
       'Runtime.evaluate',
     ]);
   });
+
+  it('should route sendKey and sendSpecialKey via CDP when connected and fallback to xdotool when disconnected', () => {
+    const cdpBridge = (inputManager as any).cdpBridge;
+
+    // 1. Disconnected -> fallback to xdotool
+    cdpBridge.isConnected = () => false;
+    inputManager.sendKey('Enter');
+    inputManager.sendSpecialKey('Backspace');
+    inputManager.sendKey('Tab');
+
+    expect(sentCommands).toEqual(['key Return', 'key BackSpace', 'key Tab']);
+
+    // 2. Connected -> CDP Input domain
+    sentCommands = [];
+    cdpBridge.isConnected = () => true;
+    const sentCdp: { method: string; params: any }[] = [];
+    cdpBridge.send = vi.fn((method: string, params: any) => sentCdp.push({ method, params }));
+
+    inputManager.sendKey('Enter');
+    inputManager.sendSpecialKey('Backspace');
+
+    expect(sentCommands).toEqual([]);
+
+    // Enter key dispatches rawKeyDown, char, keyUp
+    const enterCalls = sentCdp.filter((c) => c.params.code === 'Enter');
+    expect(enterCalls.length).toBe(3);
+    expect(enterCalls[0].params.type).toBe('rawKeyDown');
+    expect(enterCalls[0].params.windowsVirtualKeyCode).toBe(13);
+    expect(enterCalls[1].params.type).toBe('char');
+    expect(enterCalls[2].params.type).toBe('keyUp');
+
+    // Backspace key dispatches rawKeyDown, keyUp
+    const bsCalls = sentCdp.filter((c) => c.params.code === 'Backspace');
+    expect(bsCalls.length).toBe(2);
+    expect(bsCalls[0].params.type).toBe('rawKeyDown');
+    expect(bsCalls[0].params.windowsVirtualKeyCode).toBe(8);
+    expect(bsCalls[1].params.type).toBe('keyUp');
+
+    // Number key dispatches Digit prefix code
+    inputManager.sendKey('5');
+    const digitCalls = sentCdp.filter((c) => c.params.code === 'Digit5');
+    expect(digitCalls.length).toBe(3);
+    expect(digitCalls[0].params.windowsVirtualKeyCode).toBe(53); // '5'.charCodeAt(0)
+  });
 });

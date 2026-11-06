@@ -3,6 +3,7 @@
   "name": "Tesroid Car Optimizations",
   "version": "1.0.0",
   "description": "Native Web Fullscreen and car layout optimizations for Tesroid",
+  "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

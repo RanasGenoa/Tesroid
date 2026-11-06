@@ -272,7 +272,57 @@ public handleTouch(action: number, pointerId: number, x: number, y: number): boo
 
 ---
 
-## 6. アンチパターン集 (絶対にやってはいけないこと)
+## 6. 課題⑤: WebAuthn / パスキーネイティブダイアログによる操作不能・画面ブロックの抑止 (Issue #35)
+
+### 現象
+YouTube などの Google サービスでパスキー（Passkey / WebAuthn）が設定されているアカウントにログインしようとすると、Chrome がブラウザネイティブのバブルダイアログ（「No passkeys available - There aren't any passkeys for google.com on this device」）を表示。
+このダイアログが画面中央上部に覆いかぶさり、背面の Google ログイン画面（パスワード入力や「別の方法で試す」）が覆い隠される。
+さらに、Tesroid のタッチ入力（`CdpTouchBridge`）は Web ページのレンダープロセス（DOM）に対してイベントを注入しているため、ブラウザウィンドウ自体のネイティブ UI（Views Bubble）にはタッチイベントが届かず、[Close] ボタンをタップしてダイアログを閉じることができないため、操作不能に陥る。
+
+### 根本原因のメカニズム
+1. **CDP ネイティブタッチの対象スコープ**:
+   - `Input.dispatchTouchEvent` は Web ページの Blink レンダラーに対する入力注入であるため、Chrome ウィンドウの Chrome UI / Views Bubble には届かない。
+2. **コンテナ環境における FIDO2 認証器の不在**:
+   - Docker / Xvfb 環境には物理的な USB セキュリティキーやプラットフォーム認証器（TPM, Touch ID, Windows Hello 等）が存在せず、パスキー認証自体が成功する見込みがない。
+3. **WebAuthn API の自動呼び出し**:
+   - Google の認証フローは、ブラウザが WebAuthn に対応していると判定すると自動的に `navigator.credentials.get({ publicKey: ... })` を呼び出すため、このダイアログが必然的に出現する。
+
+### 解決策: 拡張機能 & CDP による WebAuthn インターセプト
+ブラウザ起動時の拡張機能（`server/extension/content.js`, `run_at: "document_start"`, `world: "MAIN"`）および `BrowserManager` の CDP 新規ドキュメントスクリプト（`Page.addScriptToEvaluateOnNewDocument`）で WebAuthn API をインターセプト：
+1. `PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()` および `isConditionalMediationAvailable()` が常に `Promise.resolve(false)` を返すようにオーバーライド。Web サイトに対して「このデバイスにはローカル認証器が存在しない」と事前通知する。
+2. `navigator.credentials.get()` および `navigator.credentials.create()` に `publicKey` オプションが含まれる場合、Chrome ネイティブ UI が起動する前に即座に `DOMException('Passkeys are not supported in this environment.', 'NotAllowedError')` を throw して拒絶。
+3. これにより、Google ログイン画面などの認証フローは「パスキー未対応端末またはユーザー拒絶」として安全にパスワード入力や「別の方法でログイン」のフォールバック画面へ自動遷移し、ネイティブダイアログの出現自体を完全に防止する。
+
+---
+
+## 7. 課題⑥: テスラ車載ブラウザでの OSK（ソフトウェアキーボード）呼び出し不可と仮想キーボードバーによる CDP 入力注入
+
+### 現象
+Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄（`input#identifierId` や検索窓）を車載画面でタップしても、**テスラ車載ブラウザのソフトウェアキーボード（OSK）が一切起動せず、文字入力ができない**。
+
+### 根本原因のメカニズム
+1. **テスラ車載 Chromium の OSK 起動要件**:
+   - 車載 OS のソフトウェアキーボードは、DOM 上の編集可能要素（`<input>` や `<textarea>`）にフォーカスが当たった場合にのみ起動する。
+2. **WebCodecs `<canvas>` 描画の盲点**:
+   - Tesroid は D レンジ動画停止ガードを回避するため全画面を HTML5 `<canvas>` に描画している。
+   - 車載ブラウザから見るとユーザーが触れているのは単なる `<canvas>` 要素であるため、いくら映像内の入力欄をタップしても車載 OS は文字入力フィールドとして認識しない。
+
+### 解決策: HUD 仮想キーボードバー + CDP `Input.insertText` / `Input.dispatchKeyEvent` 注入
+上部 HUD 直下に、車載キーボードを確実に起動させる専用ドロワーと CDP 注入パイプラインを構築：
+
+1. **車載 OSK トリガー**:
+   - HUD の `⌨️` ボタンからスライド展開するドロワーに、明示的に `user-select: text` を付与した実 HTML `<input id="hud-keyboard-input">` を配置。
+   - タップ時に車載 OS が編集可能要素として認識し、テスラネイティブのソフトウェアキーボードがポップアップ。
+2. **CDP `Input.insertText` による直接文字注入**:
+   - 車載キーボードで入力したテキスト（日本語・英数字・記号）を WebSocket 経由で送信。
+   - コンテナ側では常時接続された `CdpTouchBridge` が CDP `Input.insertText` を実行。現在フォーカスされている入力欄（メールアドレス・パスワード）へレイテンシ **< 1ms** で一括注入（xdotool のエンコーディング化けやクリップボード依存を完全排除）。
+3. **キーボード操作アクション**:
+   - `Enter ⏎`: `Input.dispatchKeyEvent` (rawKeyDown/char/keyUp, vk=13) を発行し、検索実行やフォーム送信をシームレスにトリガー。
+   - `Backspace ⌫` / `Tab ⇥`: 入力修正やフィールド移動をサポート。
+
+---
+
+## 8. アンチパターン集 (絶対にやってはいけないこと)
 
 今後このプロジェクトを修正・拡張する際、以下の設定を絶対に行ってはなりません：
 
@@ -290,10 +340,14 @@ public handleTouch(action: number, pointerId: number, x: number, y: number): boo
    - テスラ OS の安全機能により、ギアを D（走行）に入れた瞬間に `<video>` 要素の再生が強制停止されます。描画は必ず WebCodecs の `VideoDecoder` ➔ `<canvas desynchronized>` を経由してください。
 7. ❌ **コンテナ内 PulseAudio で `--system` や `system.pa` のみに依存すること**
    - root ユーザー下でユーザーモードにフォールバックした際に設定が失われ、`virtual_sink` が消失して FFmpeg が即死します。必ず `-F /etc/pulse/tesroid.pa` で専用 pa 設定を直接読み込ませてください。
+8. ❌ **WebAuthn API を未対策のまま放置すること**
+   - パスキー設定済みアカウントでの Google ログイン時に Chrome ネイティブの WebAuthn バブルダイアログ（"No passkeys available"）が表示され、車載 DOM タッチ入力ではタップ不能となりログイン操作が完全に遮断されます。必ず WebAuthn インターセプトを維持してください。
+9. ❌ **テスラ車載向け文字入力で `<canvas>` への直接タッチのみに頼ること**
+   - 車載 Chromium は `<canvas>` タップでは OS ソフトウェアキーボードを起動しません。必ず編集可能 `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由して CDP 注入を行ってください。
 
 ---
 
-## 7. 実機デバッグ & 診断コマンド集
+## 9. 実機デバッグ & 診断コマンド集
 
 トラブルシューティング時にコンテナ内の状況を正確に把握するためのコマンド一覧です（リモートホストまたはローカル端末から実行可能）：
 

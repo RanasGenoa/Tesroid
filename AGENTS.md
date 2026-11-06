@@ -58,14 +58,8 @@ docker compose up -d --build
 npm run docker:logs
 ```
 
-### リモートホストへの自動同期デプロイ (`scripts/deploy.sh`)
-`.env`（Git管理外）に `DEPLOY_HOST` 等を設定している場合、以下のコマンドでローカルテスト ➔ `rsync` 差分同期 ➔ リモートビルド・再起動 ➔ ヘルスチェックを一括実行できます：
-
-```bash
-npm run deploy
-# テストをスキップする場合: npm run deploy -- --skip-test
-# デプロイ後にログを追跡する場合: npm run deploy -- --logs
-```
+### 本番環境・NAS での更新デプロイ
+本番環境や NAS での最新版更新手順、および永続化データの初期化方法については [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#4-リモートホストnas-上での更新--再デプロイ手順) を参照してください。
 
 ---
 
@@ -112,6 +106,8 @@ Tesroid/
   WebSocket クライアント切断後、一定時間経過で Chrome プロセスツリーを `SIGSTOP` して CPU/GPU 使用率を 0% に解放し、再接続・認証時に `SIGCONT` で即座に復帰します。
 - **セキュリティロックアウト**:
   PIN 入力を 10 回連続で失敗するとサーバープロセスが `exit 1` で緊急停止し、`lockout.json` に記録されます。
+- **WebAuthn / パスキーネイティブダイアログ抑止**:
+  Docker/Xvfb 環境には物理・プラットフォーム認証器が存在せず、Chrome ネイティブの WebAuthn ダイアログが出ると車載タッチ操作で閉じられず操作不能になります。`server/extension/content.js` および CDP による WebAuthn インターセプトで即時フォールバックさせています。
 - **詳細な最適化仕様の参照**:
   コンテナ内 Chrome 安定化、ヒステリシス・バックプレッシャー、PulseAudio UNIX ソケット構成、CDP ネイティブタッチの詳細は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) に網羅されています。コア処理を変更する前に必ず参照してください。
 
@@ -127,6 +123,10 @@ Tesroid/
    微小移動で画像ドラッグやテキスト選択が誤爆します。必ず `server/src/input/xdotool.ts` の `CdpTouchBridge`（CDP `Input.dispatchTouchEvent`）を優先使用してください。
 4. **ビルド済みコンテナイメージ（Google Chrome 同梱）をパブリックレジストリへ公開しない**:
    `Dockerfile` はビルド時に Google Chrome 公式パッケージを取得します。再配布規約を遵守し、ソースコードおよび `Dockerfile` のみを提供してください。
+5. **WebAuthn / パスキーのネイティブ UI 抑止を外さない**:
+   Docker/Xvfb 環境には物理・プラットフォーム認証器がなく、Chrome ネイティブダイアログ（"No passkeys available"）が表示されると車載タッチ操作で閉じられず操作不能になります。WebAuthn インターセプト（`content.js` / CDP）を維持してください。
+6. **車載文字入力を `<canvas>` への直接タッチに依存させない**:
+   テスラ車載 Chromium は `<canvas>` タッチでは OS ソフトウェアキーボードを起動しません。必ず DOM `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由した CDP 入力注入を行ってください。
 
 ---
 
