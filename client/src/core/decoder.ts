@@ -264,8 +264,15 @@ export class VideoStreamDecoder {
       this.configPromise = null;
     }
 
-    if (!this.isConfigured || !this.decoder) {
-      // Waiting for initial SPS/PPS
+    // Defensive guard: Ensure decoder is initialized and configured before decoding.
+    // If an AVCC packet arrives before CONFIG, or decoder is not in 'configured' state,
+    // safely drop it to prevent DOMException (InvalidStateError).
+    if (
+      !this.isConfigured ||
+      !this.decoder ||
+      (typeof this.decoder.state === 'string' && this.decoder.state !== 'configured')
+    ) {
+      // Waiting for initial SPS/PPS or decoder configuration
       return;
     }
 

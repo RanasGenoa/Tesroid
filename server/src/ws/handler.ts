@@ -307,8 +307,13 @@ export class WebSocketHandler {
       this.encoder.restart().catch((err) => {
         console.error('[WebSocketHandler] Failed to restart encoder on input interrupt:', err);
       });
-    } else if (cachedKeyframe && session.socket.readyState === 1) {
-      this.sendCachedKeyframeAndConfig(session.socket);
+    } else if (session.socket.readyState === 1) {
+      const sent = this.sendCachedKeyframeAndConfig(session.socket);
+      if (!sent) {
+        this.encoder.restart().catch((err) => {
+          console.error('[WebSocketHandler] Failed to restart encoder on missing cache:', err);
+        });
+      }
     }
   }
 
@@ -429,16 +434,15 @@ export class WebSocketHandler {
   /**
    * Send cached SPS/PPS parameter sets (CONFIG) followed by the cached AVCC keyframe
    * to immediately initialize and display video on the client with zero copy.
+   * Returns true if both cached parameter sets and keyframe were present and sent, false otherwise.
    */
-  private sendCachedKeyframeAndConfig(socket: WebSocket): void {
-    if (socket.readyState !== 1) return;
+  private sendCachedKeyframeAndConfig(socket: WebSocket): boolean {
+    if (socket.readyState !== 1) return false;
     const cachedKeyframe = this.encoder.getCachedKeyframe();
-    if (!cachedKeyframe) return;
-
     const cachedSpsPps = this.encoder.getCachedSpsPps();
-    if (cachedSpsPps) {
-      socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
-    }
+    if (!cachedKeyframe || !cachedSpsPps) return false;
+
+    socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
     socket.send(
       MessageMultiplexer.packVideo(
         VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
@@ -446,6 +450,7 @@ export class WebSocketHandler {
         cachedKeyframe.data,
       ),
     );
+    return true;
   }
 
   /**
@@ -472,13 +477,15 @@ export class WebSocketHandler {
       this.encoder.restart().catch((err) => {
         console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
       });
-    } else if (cachedKeyframe && socket.readyState === 1) {
-      this.sendCachedKeyframeAndConfig(socket);
-    } else {
-      const cachedSpsPps = this.encoder.getCachedSpsPps();
-      if (cachedSpsPps && socket.readyState === 1) {
-        const packet = MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps);
-        socket.send(packet);
+    } else if (socket.readyState === 1) {
+      const sent = this.sendCachedKeyframeAndConfig(socket);
+      if (!sent) {
+        console.log(
+          '[WebSocketHandler] Incomplete video cache (missing keyframe or SPS/PPS). Restarting video encoder...',
+        );
+        this.encoder.restart().catch((err) => {
+          console.error('[WebSocketHandler] Failed to restart encoder on incomplete cache:', err);
+        });
       }
     }
 

@@ -411,4 +411,36 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(mockDecoderInstance.decode).toHaveBeenCalledTimes(3);
     expect(annexBToAvccSpy).toHaveBeenCalledWith(legacyDelta);
   });
+
+  it('safely drops AVCC packets arriving before decoder is configured without calling decode', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+
+    // Send AVCC keyframe before any SPS/PPS CONFIG packet has arrived
+    const avccKeyframe = new Uint8Array([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC, 1000n, avccKeyframe);
+
+    // Decoder is unconfigured, so chunk MUST NOT be sent to VideoDecoder.decode()
+    expect(mockDecoderInstance.decode).not.toHaveBeenCalled();
+  });
+
+  it('safely drops packets if decoder state is unconfigured or closed', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+
+    // Configure decoder with SPS/PPS
+    const spsPpsData = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
+    ]);
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG, 0n, spsPpsData);
+    await new Promise((r) => setTimeout(r, 15));
+    expect(mockDecoderInstance.configure).toHaveBeenCalled();
+
+    // Force decoder state to 'closed'
+    mockDecoderInstance.state = 'closed';
+
+    const avccKeyframe = new Uint8Array([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC, 1000n, avccKeyframe);
+
+    // Must NOT call decode when state is not 'configured'
+    expect(mockDecoderInstance.decode).not.toHaveBeenCalled();
+  });
 });
