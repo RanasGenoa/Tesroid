@@ -15,6 +15,8 @@ export interface AppConfig {
   defaultDpi: number; // e.g. 160
   displayScale: number; // e.g. 120 = 120% (car display readable zoom)
   displayScaleUserSet?: boolean;
+  locale?: string; // e.g. "ja-JP"
+  timezone?: string; // e.g. "Asia/Tokyo"
   stream: StreamConfig;
 }
 
@@ -26,6 +28,8 @@ const DEFAULT_CONFIG: AppConfig = {
   defaultDpi: 160,
   displayScale: 120,
   displayScaleUserSet: false,
+  locale: 'ja-JP',
+  timezone: 'Asia/Tokyo',
   stream: {
     bitrate: 1000000,
     maxFps: 30,

@@ -82,6 +82,18 @@ async function showSettingsModal(
           <option value="150">150% (特大)</option>
         </select>
 
+        <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">システム表示言語 (ブラウザ言語)</label>
+        <select id="cfg-locale">
+          <option value="ja-JP" selected>日本語 (ja-JP)</option>
+          <option value="en-US">English (en-US)</option>
+        </select>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; gap: 8px;">
+          <p style="font-size: 11px; color: var(--text-muted); margin: 0;">※ 言語の変更は次回ブラウザ起動時または再起動時に反映されます。</p>
+          <button type="button" id="cfg-restart-browser-btn" class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; white-space: nowrap;">
+            ブラウザ再起動
+          </button>
+        </div>
+
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">先行バッファ深度 (回線瞬断・トンネル対策 / メモリ調整)</label>
         <select id="cfg-buffer-depth">
           <option value="0">オフ (0.1秒 / 超低遅延優先)</option>
@@ -378,6 +390,26 @@ async function showSettingsModal(
     }
   });
 
+  let initialLocale = 'ja-JP';
+
+  // Manual browser restart button
+  overlay.querySelector('#cfg-restart-browser-btn')?.addEventListener('click', async () => {
+    try {
+      showToast('ブラウザを再起動しています...', 'info');
+      const res = await fetch('/api/browser/restart', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        showToast('ブラウザを再起動しました（新しい言語が適用されます）', 'success');
+      } else {
+        showToast(`再起動失敗: HTTP ${res.status}`, 'error');
+      }
+    } catch (err: any) {
+      showToast(`再起動エラー: ${err.message}`, 'error');
+    }
+  });
+
   try {
     const res = await fetch('/api/settings', {
       headers: { Authorization: `Bearer ${token}` },
@@ -391,6 +423,10 @@ async function showSettingsModal(
         );
         localStorage.setItem('tesroid_display_scale', String(data.displayScale));
       }
+      if (data.locale && overlay.querySelector('#cfg-locale')) {
+        initialLocale = data.locale;
+        (overlay.querySelector('#cfg-locale') as HTMLSelectElement).value = data.locale;
+      }
     }
   } catch {}
 
@@ -403,11 +439,13 @@ async function showSettingsModal(
     const bufferDepth = Number(
       (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000,
     );
+    const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
     const body: any = {
       displayScale,
     };
     if (newPin) body.pin = newPin;
+    if (locale) body.locale = locale;
 
     localStorage.setItem('tesroid_display_scale', String(displayScale));
     localStorage.setItem('tesroid_prefetch_buffer_ms', String(bufferDepth));
@@ -424,7 +462,28 @@ async function showSettingsModal(
             detail: { displayScale, bufferDepth },
           }),
         );
-        showToast('設定を保存しました。', 'success');
+        if (initialLocale && locale && locale !== initialLocale) {
+          showToast('設定を保存しました。ブラウザを再起動して言語を反映中...', 'info');
+          try {
+            const restartRes = await fetch('/api/browser/restart', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (restartRes.ok) {
+              initialLocale = locale;
+              showToast('ブラウザを再起動し、新しい言語を適用しました。', 'success');
+            } else {
+              showToast(
+                `設定は保存されましたが、ブラウザ再起動に失敗しました (HTTP ${restartRes.status})。手動で再起動してください。`,
+                'error',
+              );
+            }
+          } catch {
+            showToast('設定を保存しました（次回ブラウザ起動時に反映されます）。', 'success');
+          }
+        } else {
+          showToast('設定を保存しました。', 'success');
+        }
       } else {
         showToast('保存に失敗しました。', 'error');
       }

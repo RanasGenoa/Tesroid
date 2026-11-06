@@ -3,6 +3,7 @@ import type { AuthService } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import type { AppConfig, ConfigStore } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
+import { isValidTimezone } from './setup.js';
 
 interface VerifyPinBody {
   pin: string;
@@ -14,12 +15,16 @@ interface UpdateSettingsBody {
   autoSleepMinutes?: number;
   browserUrl?: string;
   displayScale?: number;
+  locale?: string;
+  timezone?: string;
   stream?: {
     bitrate?: number;
     maxFps?: number;
     maxSize?: number;
   };
 }
+
+const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
 
 export function registerSettingsRoutes(
   app: FastifyInstance,
@@ -68,6 +73,8 @@ export function registerSettingsRoutes(
       allowedDomains: config.allowedDomains,
       autoSleepMinutes: config.autoSleepMinutes,
       displayScale: config.displayScale,
+      locale: config.locale || 'ja-JP',
+      timezone: config.timezone || 'Asia/Tokyo',
       stream: config.stream,
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
@@ -79,8 +86,16 @@ export function registerSettingsRoutes(
     '/api/settings',
     { preHandler: requireAuth },
     async (req, reply) => {
-      const { pin, allowedDomains, autoSleepMinutes, stream, browserUrl, displayScale } =
-        req.body || {};
+      const {
+        pin,
+        allowedDomains,
+        autoSleepMinutes,
+        stream,
+        browserUrl,
+        displayScale,
+        locale,
+        timezone,
+      } = req.body || {};
 
       if (browserUrl !== undefined && browserUrl !== '' && !isSafeHttpUrl(browserUrl)) {
         return reply
@@ -103,9 +118,32 @@ export function registerSettingsRoutes(
         updates.displayScale = clampedScale;
         updates.displayScaleUserSet = true;
       }
+      if (locale !== undefined) {
+        if (typeof locale !== 'string' || !ALLOWED_LOCALES.includes(locale.trim())) {
+          return reply.status(400).send({
+            error: `Invalid locale: "${locale}". Allowed locales are: ${ALLOWED_LOCALES.join(', ')}`,
+          });
+        }
+        updates.locale = locale.trim();
+      }
+      if (timezone !== undefined) {
+        if (typeof timezone !== 'string' || !isValidTimezone(timezone.trim())) {
+          return reply.status(400).send({
+            error: `Invalid timezone: "${timezone}". Must be a valid IANA timezone string (e.g. Asia/Tokyo).`,
+          });
+        }
+        updates.timezone = timezone.trim();
+      }
       if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
 
       configStore.updateConfig(updates);
+
+      if (updates.locale !== undefined && typeof browserManager.setLocale === 'function') {
+        browserManager.setLocale(updates.locale);
+      }
+      if (updates.timezone !== undefined && typeof browserManager.setTimezone === 'function') {
+        browserManager.setTimezone(updates.timezone);
+      }
 
       if (updates.displayScale !== undefined) {
         await browserManager.setDisplayScale(updates.displayScale);

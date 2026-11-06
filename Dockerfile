@@ -38,7 +38,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LIBVA_DRIVER_NAME=iHD \
     PULSE_SERVER=unix:/tmp/pulse-socket \
     PULSE_SINK=virtual_sink \
-    PUBLIC_DIR=/app/server/public
+    PUBLIC_DIR=/app/server/public \
+    LANG=ja_JP.UTF-8 \
+    LANGUAGE=ja_JP:ja \
+    LC_ALL=ja_JP.UTF-8
 
 # 1. Install system utilities, Intel GPU repositories (VA-API 1.22+ for Chrome 131+), and dependencies
 RUN apt-get update -qq && \
@@ -46,6 +49,7 @@ RUN apt-get update -qq && \
         curl \
         gnupg \
         ca-certificates \
+        locales \
         xvfb \
         openbox \
         xdotool \
@@ -60,6 +64,7 @@ RUN apt-get update -qq && \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
         procps && \
+    locale-gen ja_JP.UTF-8 en_US.UTF-8 && \
     mkdir -p /usr/share/keyrings && \
     curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy client" > /etc/apt/sources.list.d/intel-gpu-jammy.list && \

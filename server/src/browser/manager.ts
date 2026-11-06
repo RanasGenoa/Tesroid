@@ -16,6 +16,8 @@ export interface BrowserManagerOptions {
   defaultUrl?: string; // e.g. 'https://www.youtube.com'
   vaapiDevice?: string; // e.g. '/dev/dri/renderD128'
   displayScale?: number; // e.g. 120 = 120%
+  locale?: string; // e.g. 'ja-JP'
+  timezone?: string; // e.g. 'Asia/Tokyo'
 }
 
 export type BrowserState = 'stopped' | 'starting' | 'running' | 'paused' | 'error';
@@ -41,6 +43,8 @@ export class BrowserManager {
   private defaultUrl: string;
   private vaapiDevice: string;
   private displayScale: number;
+  private locale: string;
+  private timezone: string;
 
   private xvfbProcess: ChildProcess | null = null;
   private openboxProcess: ChildProcess | null = null;
@@ -64,7 +68,32 @@ export class BrowserManager {
     this.defaultUrl = options.defaultUrl || process.env.BROWSER_URL || 'https://www.youtube.com';
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.displayScale = options.displayScale || Number(process.env.DISPLAY_SCALE) || 120;
+    this.locale = options.locale || process.env.LOCALE || 'ja-JP';
+    this.timezone = options.timezone || process.env.TZ || 'Asia/Tokyo';
     this.currentUrl = this.defaultUrl;
+  }
+
+  public getLocale(): string {
+    return this.locale;
+  }
+
+  public setLocale(locale: string): void {
+    const trimmed = (locale || '').trim();
+    if (trimmed && this.locale !== trimmed) {
+      this.locale = trimmed;
+      this.applyChromePreferences();
+    }
+  }
+
+  public getTimezone(): string {
+    return this.timezone;
+  }
+
+  public setTimezone(timezone: string): void {
+    const trimmed = (timezone || '').trim();
+    if (trimmed && this.timezone !== trimmed) {
+      this.timezone = trimmed;
+    }
   }
 
   public getDisplayScale(): number {
@@ -1094,20 +1123,63 @@ export class BrowserManager {
     }
   }
 
-  private async startChrome(targetUrl?: string): Promise<void> {
-    if (this.chromeProcess || this.isStartingChrome) {
-      console.log(
-        '[BrowserManager] Chrome is already running or starting, skipping duplicate spawn.',
-      );
-      return;
+  /**
+   * Pre-configures Chrome user profile preferences (Default/Preferences) to:
+   * 1. Suppress translation popups/bubbles completely (translate.enabled: false).
+   * 2. Set accept_languages to prefer the configured locale (e.g. ja-JP,ja,en-US,en).
+   */
+  public applyChromePreferences(): void {
+    try {
+      const prefDir = path.join(this.profileDir, 'Default');
+      if (!fs.existsSync(prefDir)) {
+        fs.mkdirSync(prefDir, { recursive: true });
+      }
+      const prefPaths = [
+        path.join(this.profileDir, 'Default', 'Preferences'),
+        path.join(this.profileDir, 'Preferences'),
+      ];
+
+      const lang = this.locale || 'ja-JP';
+      const acceptLang = lang.startsWith('ja') ? 'ja-JP,ja,en-US,en' : `${lang},en-US,en`;
+
+      for (const prefPath of prefPaths) {
+        let prefs: Record<string, any> = {};
+        if (fs.existsSync(prefPath)) {
+          try {
+            prefs = JSON.parse(fs.readFileSync(prefPath, 'utf-8'));
+          } catch {
+            prefs = {};
+          }
+        } else if (prefPath.endsWith(path.join('Default', 'Preferences'))) {
+          prefs = {};
+        } else {
+          continue;
+        }
+
+        prefs.intl = {
+          ...(prefs.intl || {}),
+          accept_languages: acceptLang,
+          selected_languages: acceptLang,
+        };
+
+        prefs.translate = {
+          ...(prefs.translate || {}),
+          enabled: false,
+        };
+
+        prefs.translate_blocked_languages = prefs.translate_blocked_languages || [];
+
+        fs.writeFileSync(prefPath, JSON.stringify(prefs, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.warn('[BrowserManager] Failed to apply Chrome preferences:', err);
     }
-    this.isStartingChrome = true;
+  }
 
+  public buildChromeArgs(targetUrl?: string): string[] {
     const url = targetUrl || this.currentUrl;
-    const chromeBin = this.detectChromeBinary();
-
-    // Clean any stale Singleton locks from previous crashes/restarts to avoid exit code 21
-    this.cleanProfileLocks();
+    const lang = this.locale || 'ja-JP';
+    const acceptLang = lang.startsWith('ja') ? 'ja-JP,ja,en-US,en' : `${lang},en-US,en`;
 
     const args = [
       '--no-sandbox',
@@ -1124,6 +1196,8 @@ export class BrowserManager {
       '--autoplay-policy=no-user-gesture-required',
       '--disable-gpu-sandbox',
       '--ignore-gpu-blocklist',
+      `--lang=${lang}`,
+      `--accept-lang=${acceptLang}`,
       // Hardware video decode via VAAPI (e.g. Intel QuickSync / AMD VAAPI)
       // Note: Chrome 131+ uses AcceleratedVideoDecodeLinuxGL on Linux/X11/EGL; VaapiVideoDecoder flag is obsolete.
       // In headless Xvfb environments, ANGLE reports llvmpipe software rasterizer, which causes Chrome to reject
@@ -1133,7 +1207,9 @@ export class BrowserManager {
       // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
       // (Pre-11th Gen Intel iGPUs lack AV1 hardware decode but have full silicon VP9/H.264 decode).
       // Disable AudioServiceSandbox so Chrome AudioService can seamlessly access PulseAudio UNIX socket in container.
-      '--disable-features=Av1Decoder,AudioServiceSandbox',
+      // Disable Translate so Google Chrome translation prompt bubbles never appear.
+      '--disable-features=Av1Decoder,AudioServiceSandbox,Translate',
+      '--disable-translate',
       '--touch-events=enabled',
       '--force-dark-mode',
       '--remote-debugging-port=9222',
@@ -1154,16 +1230,51 @@ export class BrowserManager {
     }
 
     args.push(`--app=${url}`);
+    return args;
+  }
+
+  public buildChromeEnv(): NodeJS.ProcessEnv {
+    const lang = this.locale || 'ja-JP';
+    const linuxLocale = lang.startsWith('ja')
+      ? 'ja_JP.UTF-8'
+      : lang === 'en-US'
+        ? 'en_US.UTF-8'
+        : 'ja_JP.UTF-8';
+
+    return {
+      ...process.env,
+      DISPLAY: this.displayNum,
+      LIBVA_DRIVER_NAME: 'iHD',
+      PULSE_SERVER: 'unix:/tmp/pulse-socket',
+      PULSE_SINK: 'virtual_sink',
+      TZ: this.timezone || 'Asia/Tokyo',
+      LANG: linuxLocale,
+      LANGUAGE: lang.startsWith('ja') ? 'ja_JP:ja' : linuxLocale,
+      LC_ALL: linuxLocale,
+    };
+  }
+
+  private async startChrome(targetUrl?: string): Promise<void> {
+    if (this.chromeProcess || this.isStartingChrome) {
+      console.log(
+        '[BrowserManager] Chrome is already running or starting, skipping duplicate spawn.',
+      );
+      return;
+    }
+    this.isStartingChrome = true;
+
+    const chromeBin = this.detectChromeBinary();
+
+    // Clean any stale Singleton locks from previous crashes/restarts to avoid exit code 21
+    this.cleanProfileLocks();
+    this.applyChromePreferences();
+
+    const args = this.buildChromeArgs(targetUrl);
+    const env = this.buildChromeEnv();
 
     console.log(`[BrowserManager] Spawning Chrome: ${chromeBin} ${args.join(' ')}`);
     const proc = spawn(chromeBin, args, {
-      env: {
-        ...process.env,
-        DISPLAY: this.displayNum,
-        LIBVA_DRIVER_NAME: 'iHD',
-        PULSE_SERVER: 'unix:/tmp/pulse-socket',
-        PULSE_SINK: 'virtual_sink',
-      },
+      env,
       stdio: 'ignore',
     });
     this.chromeProcess = proc;
