@@ -156,5 +156,19 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(saved.locale).toBe('en-US');
     expect(saved.timezone).toBe('America/New_York');
     expect(mockBrowser.setLocale).toHaveBeenCalledWith('en-US');
+
+    // 3. PUT /api/settings safely falls back on invalid locale and invalid timezone
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        locale: 'invalid-locale-hack',
+        timezone: 'Invalid/NonExistent_Zone',
+      },
+    });
+    const fallbackSaved = configStore.getConfig();
+    expect(fallbackSaved.locale).toBe('ja-JP');
+    expect(fallbackSaved.timezone).toBe('Asia/Tokyo');
   });
 });

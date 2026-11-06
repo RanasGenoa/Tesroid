@@ -3,6 +3,7 @@ import type { AuthService } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import type { AppConfig, ConfigStore } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
+import { isValidTimezone } from './setup.js';
 
 interface VerifyPinBody {
   pin: string;
@@ -122,7 +123,8 @@ export function registerSettingsRoutes(
         updates.locale = ALLOWED_LOCALES.includes(trimmed) ? trimmed : 'ja-JP';
       }
       if (timezone !== undefined && typeof timezone === 'string') {
-        updates.timezone = timezone.trim() || 'Asia/Tokyo';
+        const trimmed = timezone.trim();
+        updates.timezone = isValidTimezone(trimmed) ? trimmed : 'Asia/Tokyo';
       }
       if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
 

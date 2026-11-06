@@ -14,6 +14,16 @@ interface SetupBody {
 
 const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
 
+export function isValidTimezone(tz: string): boolean {
+  if (typeof tz !== 'string' || tz.length === 0 || tz.length > 64) return false;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function registerSetupRoutes(
   app: FastifyInstance,
   configStore: ConfigStore,
@@ -54,7 +64,9 @@ export function registerSetupRoutes(
         ? locale.trim()
         : 'ja-JP';
     const safeTimezone =
-      typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Tokyo';
+      typeof timezone === 'string' && isValidTimezone(timezone.trim())
+        ? timezone.trim()
+        : 'Asia/Tokyo';
 
     // Save configuration
     configStore.updateConfig({
