@@ -5,6 +5,7 @@ export interface StreamConfig {
   bitrate: number; // in bps, e.g. 8000000 = 8Mbps
   maxFps: number; // e.g. 60
   maxSize: number; // maximum dimension, e.g. 1920
+  audioBitrate?: number; // in bps, e.g. 128000 = 128kbps (128k - 320k)
 }
 
 export interface AppConfig {
@@ -34,6 +35,7 @@ const DEFAULT_CONFIG: AppConfig = {
     bitrate: 1000000,
     maxFps: 30,
     maxSize: 1280,
+    audioBitrate: 128000,
   },
 };
 

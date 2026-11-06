@@ -48,6 +48,9 @@ async function bootstrap() {
   const initialBitrate = initialStreamConfig?.bitrate
     ? `${Math.round(initialStreamConfig.bitrate / 1000)}k`
     : process.env.VIDEO_BITRATE || '1000k';
+  const initialAudioBitrate = initialStreamConfig?.audioBitrate
+    ? `${Math.round(initialStreamConfig.audioBitrate / 1000)}k`
+    : process.env.AUDIO_BITRATE || '128k';
 
   const encoder = new VaapiEncoder({
     displayNum,
@@ -55,6 +58,7 @@ async function bootstrap() {
     height: displayHeight,
     fps: initialFps,
     bitrate: initialBitrate,
+    audioBitrate: initialAudioBitrate,
   });
 
   const inputManager = new X11InputManager(displayNum, displayWidth, displayHeight);

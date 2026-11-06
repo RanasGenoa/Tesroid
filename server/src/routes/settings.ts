@@ -21,6 +21,7 @@ interface UpdateSettingsBody {
     bitrate?: number;
     maxFps?: number;
     maxSize?: number;
+    audioBitrate?: number;
   };
 }
 
@@ -134,7 +135,22 @@ export function registerSettingsRoutes(
         }
         updates.timezone = timezone.trim();
       }
-      if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
+      if (stream) {
+        if (stream.audioBitrate !== undefined) {
+          let ab = Number(stream.audioBitrate);
+          if (ab >= 128 && ab <= 320) {
+            ab = ab * 1000;
+          }
+          if (!Number.isFinite(ab) || ab < 128000 || ab > 320000) {
+            return reply.status(400).send({
+              error:
+                'Invalid audioBitrate: Must be between 128000 and 320000 bps (128kbps - 320kbps).',
+            });
+          }
+          stream.audioBitrate = ab;
+        }
+        updates.stream = { ...configStore.getConfig().stream, ...stream };
+      }
 
       configStore.updateConfig(updates);
 
@@ -150,12 +166,12 @@ export function registerSettingsRoutes(
       }
 
       if (stream && encoder) {
-        const { maxFps, bitrate } = stream;
-        if (maxFps !== undefined || bitrate !== undefined) {
+        const { maxFps, bitrate, audioBitrate } = stream;
+        if (maxFps !== undefined || bitrate !== undefined || audioBitrate !== undefined) {
           console.log(
-            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}`,
+            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}`,
           );
-          await encoder.updateConfig({ fps: maxFps, bitrate });
+          await encoder.updateConfig({ fps: maxFps, bitrate, audioBitrate });
         }
       }
 
