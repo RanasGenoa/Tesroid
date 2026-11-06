@@ -639,7 +639,8 @@ export class VaapiEncoder extends EventEmitter {
       this.flushCurrentAccessUnit();
     }
 
-    // AUD (Access Unit Delimiter) and SEI (Supplemental Enhancement Information) are discarded from AVCC stream
+    // AUD (Access Unit Delimiter) and SEI (Supplemental Enhancement Information) are discarded from AVCC stream.
+    // デスクトップ低遅延ストリーム配信において SEI は不要（帯域・クライアントパース負荷低減のため破棄）。
     if (nalType === 9 || nalType === 6) {
       return;
     }
