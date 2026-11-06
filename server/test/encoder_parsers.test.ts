@@ -66,14 +66,22 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
         (encoder as any).handleVideoChunk(annexBStream.subarray(i, i + chunkSize));
       }
 
-      expect(emitted).toHaveLength(2);
-      // Frame 1: CONFIG | KEYFRAME
-      expect(emitted[0].flags).toBe(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME);
+      expect(emitted).toHaveLength(3);
+      // Packet 1: Parameter sets (CONFIG) in Annex-B
+      expect(emitted[0].flags).toBe(VIDEO_FLAGS.CONFIG);
       expect(encoder.getCachedSpsPps()).not.toBeNull();
-      expect(encoder.getCachedKeyframe()).not.toBeNull();
 
-      // Frame 2: Delta P-frame (flags = 0)
-      expect(emitted[1].flags).toBe(0);
+      // Packet 2: IDR Keyframe in AVCC format (4-byte length prefix)
+      expect(emitted[1].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+      expect(encoder.getCachedKeyframe()).not.toBeNull();
+      // Length prefix must match IDR payload length (5 bytes)
+      expect(emitted[1].data.readUInt32BE(0)).toBe(5);
+      expect(emitted[1].data.subarray(4)).toEqual(Buffer.from([0x65, 0x88, 0x84, 0x21, 0xa0]));
+
+      // Packet 3: Delta P-frame in AVCC format (4-byte length prefix)
+      expect(emitted[2].flags).toBe(VIDEO_FLAGS.AVCC);
+      expect(emitted[2].data.readUInt32BE(0)).toBe(5);
+      expect(emitted[2].data.subarray(4)).toEqual(Buffer.from([0x41, 0x9a, 0x22, 0x11, 0x05]));
     }
   });
 
@@ -90,8 +98,10 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
 
     (encoder as any).handleVideoChunk(noAudStream);
     expect(emitted).toHaveLength(2);
-    expect(emitted[0].flags & VIDEO_FLAGS.KEYFRAME).toBe(VIDEO_FLAGS.KEYFRAME);
-    expect(emitted[1].flags).toBe(0);
+    expect(emitted[0].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+    expect(emitted[0].data.readUInt32BE(0)).toBe(4);
+    expect(emitted[1].flags).toBe(VIDEO_FLAGS.AVCC);
+    expect(emitted[1].data.readUInt32BE(0)).toBe(4);
   });
 
   it('parses OggOpus pages (OpusHead, OpusTags skip, >255B multi-lacing audio, chunk splits, and OggS resync)', () => {

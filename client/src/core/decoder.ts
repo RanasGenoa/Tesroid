@@ -231,9 +231,10 @@ export class VideoStreamDecoder {
   private async processSinglePacket(flags: number, pts: bigint, data: Uint8Array): Promise<void> {
     const isConfig = (flags & VIDEO_FLAGS.CONFIG) !== 0;
     const isKeyframe = (flags & VIDEO_FLAGS.KEYFRAME) !== 0;
+    const isAvcc = (flags & VIDEO_FLAGS.AVCC) !== 0;
 
-    // 1. If config packet or not yet configured, extract SPS/PPS
-    if (isConfig || !this.isConfigured) {
+    // 1. If config packet (or legacy unconfigured Annex-B packet), extract SPS/PPS
+    if (isConfig || (!this.isConfigured && !isAvcc)) {
       const nalUnits = H264Parser.extractNalUnits(data);
       for (const n of nalUnits) {
         if (n.type === 7) this.pendingSps = n.data;
@@ -276,8 +277,9 @@ export class VideoStreamDecoder {
       this.waitingForKeyframe = false;
     }
 
-    // Convert Annex-B chunk to AVCC format required by WebCodecs with description
-    const avccData = H264Parser.annexBToAvcc(data);
+    // Convert Annex-B chunk to AVCC format required by WebCodecs with description.
+    // When VIDEO_FLAGS.AVCC is set, payload is already packed as 4-byte length-prefixed slices (zero-copy)!
+    const avccData = isAvcc ? data : H264Parser.annexBToAvcc(data);
     if (avccData.length === 0) {
       return;
     }

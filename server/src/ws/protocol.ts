@@ -20,6 +20,7 @@ export interface TelemetryEvent {
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
   CONFIG: 0x02,
+  AVCC: 0x04,
 } as const;
 
 export const AUDIO_FLAGS = {

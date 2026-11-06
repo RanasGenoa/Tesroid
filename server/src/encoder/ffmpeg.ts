@@ -5,6 +5,7 @@ import type { Readable } from 'node:stream';
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
   CONFIG: 0x02,
+  AVCC: 0x04,
 } as const;
 
 export const AUDIO_FLAGS = {
@@ -53,7 +54,8 @@ export class VaapiEncoder extends EventEmitter {
 
   // Stream buffers for Access Unit (frame) assembly
   private h264Remainder: Buffer = Buffer.alloc(0);
-  private currentAuNals: Buffer[] = [];
+  private currentAuConfigNals: Buffer[] = [];
+  private currentAuAvccBuffers: Buffer[] = [];
   private currentAuHasKeyframe = false;
   private currentAuHasConfig = false;
   private currentAuHasSlice = false;
@@ -172,7 +174,8 @@ export class VaapiEncoder extends EventEmitter {
     if (this.isVideoRunning) return;
     this.isVideoRunning = true;
     this.h264Remainder = Buffer.alloc(0);
-    this.currentAuNals = [];
+    this.currentAuConfigNals = [];
+    this.currentAuAvccBuffers = [];
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
     this.currentAuHasSlice = false;
@@ -473,7 +476,11 @@ export class VaapiEncoder extends EventEmitter {
     this.cachedSpsPps = null;
     this.cachedKeyframe = null;
     this.h264Remainder = Buffer.alloc(0);
-    this.currentAuNals = [];
+    this.currentAuConfigNals = [];
+    this.currentAuAvccBuffers = [];
+    this.currentAuHasKeyframe = false;
+    this.currentAuHasConfig = false;
+    this.currentAuHasSlice = false;
 
     const audioRestartPromise = audioBitrate ? this.restartAudio(audioBitrate) : Promise.resolve();
 
@@ -628,13 +635,34 @@ export class VaapiEncoder extends EventEmitter {
       this.flushCurrentAccessUnit();
     }
 
-    // Accumulate NAL unit into current Access Unit
-    this.currentAuNals.push(nalWithPrefix);
+    // AUD (Access Unit Delimiter) is discarded from AVCC stream
+    if (nalType === 9) {
+      return;
+    }
 
     if (nalType === 7 || nalType === 8) {
-      // SPS or PPS
+      // SPS or PPS parameter sets: preserved with Annex-B 4-byte start codes for VIDEO_FLAGS.CONFIG
       this.currentAuHasConfig = true;
-    } else if (nalType === 5) {
+      if (offset === 4) {
+        this.currentAuConfigNals.push(nalWithPrefix);
+      } else {
+        const canonical = Buffer.allocUnsafe(4 + nalWithPrefix.length - offset);
+        canonical.writeUInt32BE(1, 0);
+        nalWithPrefix.copy(canonical, 4, offset);
+        this.currentAuConfigNals.push(canonical);
+      }
+      return;
+    }
+
+    const slicePayload = nalWithPrefix.subarray(offset);
+    if (slicePayload.length === 0) return;
+
+    // Convert slice to AVCC format: 4-byte big-endian length prefix
+    const lenBuf = Buffer.allocUnsafe(4);
+    lenBuf.writeUInt32BE(slicePayload.length, 0);
+    this.currentAuAvccBuffers.push(lenBuf, slicePayload);
+
+    if (nalType === 5) {
       // IDR slice
       this.currentAuHasKeyframe = true;
       this.currentAuHasSlice = true;
@@ -645,10 +673,9 @@ export class VaapiEncoder extends EventEmitter {
   }
 
   private flushCurrentAccessUnit(): void {
-    if (this.currentAuNals.length === 0) return;
-
-    const frameData = Buffer.concat(this.currentAuNals);
-    this.currentAuNals = [];
+    if (this.currentAuAvccBuffers.length === 0 && this.currentAuConfigNals.length === 0) {
+      return;
+    }
 
     const nowUs = BigInt(Math.round(performance.now() * 1000));
     this.videoPts =
@@ -656,23 +683,38 @@ export class VaapiEncoder extends EventEmitter {
         ? nowUs - this.streamStartTimeUs
         : this.videoPts + this.videoFrameDurationUs;
 
-    let flags = 0;
-    if (this.currentAuHasConfig) {
-      flags |= VIDEO_FLAGS.CONFIG;
-      this.cachedSpsPps = frameData;
-    }
-    if (this.currentAuHasKeyframe) {
-      flags |= VIDEO_FLAGS.KEYFRAME;
-      this.cachedKeyframe = { data: frameData, pts: this.videoPts };
+    // 1. Emit/update parameter sets (SPS / PPS)
+    if (this.currentAuHasConfig && this.currentAuConfigNals.length > 0) {
+      const spsPpsData = Buffer.concat(this.currentAuConfigNals);
+      this.currentAuConfigNals = [];
+      this.cachedSpsPps = spsPpsData;
+
+      this.emit('video', {
+        flags: VIDEO_FLAGS.CONFIG,
+        pts: 0n,
+        data: spsPpsData,
+      });
     }
 
-    this.lastVideoEmitTime = performance.now();
+    // 2. Emit AVCC video frame (IDR keyframe or P-frame)
+    if (this.currentAuAvccBuffers.length > 0) {
+      const frameData = Buffer.concat(this.currentAuAvccBuffers);
+      this.currentAuAvccBuffers = [];
 
-    this.emit('video', {
-      flags,
-      pts: this.videoPts,
-      data: frameData,
-    });
+      let flags: number = VIDEO_FLAGS.AVCC;
+      if (this.currentAuHasKeyframe) {
+        flags |= VIDEO_FLAGS.KEYFRAME;
+        this.cachedKeyframe = { data: frameData, pts: this.videoPts };
+      }
+
+      this.lastVideoEmitTime = performance.now();
+
+      this.emit('video', {
+        flags,
+        pts: this.videoPts,
+        data: frameData,
+      });
+    }
 
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;

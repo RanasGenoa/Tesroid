@@ -314,7 +314,7 @@ export class WebSocketHandler {
       }
       session.socket.send(
         MessageMultiplexer.packVideo(
-          VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG,
+          VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
           cachedKeyframe.pts,
           cachedKeyframe.data,
         ),
@@ -459,8 +459,12 @@ export class WebSocketHandler {
         console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
       });
     } else if (cachedKeyframe && socket.readyState === 1) {
+      const cachedSpsPps = this.encoder.getCachedSpsPps();
+      if (cachedSpsPps) {
+        socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
+      }
       const packet = MessageMultiplexer.packVideo(
-        VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.CONFIG,
+        VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
         cachedKeyframe.pts,
         cachedKeyframe.data,
       );
