@@ -159,9 +159,19 @@ export function registerSettingsRoutes(
                 'Invalid audioBitrate: Must be between 128000 and 320000 bps (128kbps - 320kbps).',
             });
           }
-          stream.audioBitrate = Math.round(ab);
+          const normalizedBitrate = Math.round(ab);
+          stream.audioBitrate = normalizedBitrate;
         }
-        updates.stream = { ...configStore.getConfig().stream, ...(stream as any) };
+        const currentStream = configStore.getConfig().stream;
+        updates.stream = {
+          bitrate: stream.bitrate !== undefined ? stream.bitrate : currentStream.bitrate,
+          maxFps: stream.maxFps !== undefined ? stream.maxFps : currentStream.maxFps,
+          maxSize: stream.maxSize !== undefined ? stream.maxSize : currentStream.maxSize,
+          audioBitrate:
+            typeof stream.audioBitrate === 'number'
+              ? stream.audioBitrate
+              : currentStream.audioBitrate,
+        };
       }
 
       configStore.updateConfig(updates);

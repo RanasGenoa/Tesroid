@@ -143,12 +143,12 @@ describe('Audio Bitrate Setting (Issue 10) - Backend Tests', () => {
       expect(restartSpy).toHaveBeenCalled();
       expect(restartAudioSpy).not.toHaveBeenCalled();
 
-      // Both changed
+      // Both changed: videoNeedsRestart triggers coordinated restart with audioBitrate as 5th argument
       restartAudioSpy.mockClear();
       restartSpy.mockClear();
       await encoder.updateConfig({ bitrate: 2000000, audioBitrate: 192000 });
-      expect(restartSpy).toHaveBeenCalled();
-      expect(restartAudioSpy).toHaveBeenCalledWith(192000);
+      expect(restartSpy).toHaveBeenCalledWith(undefined, undefined, undefined, 2000000, 192000);
+      expect(restartAudioSpy).not.toHaveBeenCalled();
     });
   });
 

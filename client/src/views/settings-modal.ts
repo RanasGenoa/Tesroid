@@ -464,7 +464,16 @@ async function showSettingsModal(
     );
     const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
-    const body: any = {
+    interface SettingsUpdatePayload {
+      displayScale: number;
+      stream: {
+        audioBitrate: number;
+      };
+      pin?: string;
+      locale?: string;
+    }
+
+    const body: SettingsUpdatePayload = {
       displayScale,
       stream: {
         audioBitrate,

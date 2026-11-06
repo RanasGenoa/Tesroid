@@ -438,19 +438,21 @@ export class VaapiEncoder extends EventEmitter {
 
   /**
    * Restart FFmpeg video encoder, optionally with new resolution, fps, or bitrate.
-   * Audio encoder is completely undisturbed to guarantee zero audio dropout during resize or settings change.
+   * If audioBitrate is provided, audio encoder is also cleanly reconfigured without race conditions.
+   * Otherwise, audio encoder is completely undisturbed to guarantee zero audio dropout during resize or video settings change.
    */
   public async restart(
     width?: number,
     height?: number,
     fps?: number,
     bitrate?: string | number,
+    audioBitrate?: string | number,
   ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
         `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
         `fps=${fps || this.fps}, ` +
-        `bitrate=${bitrate || this.bitrate})...`,
+        `bitrate=${bitrate || this.bitrate}${audioBitrate ? `, audioBitrate=${audioBitrate}` : ''})...`,
     );
     this.stopVideo();
 
@@ -473,9 +475,12 @@ export class VaapiEncoder extends EventEmitter {
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuNals = [];
 
+    const audioRestartPromise = audioBitrate ? this.restartAudio(audioBitrate) : Promise.resolve();
+
     // Allow old process to fully exit
     await new Promise((r) => setTimeout(r, 100));
     this.startVideo();
+    await audioRestartPromise;
   }
 
   /**
@@ -531,6 +536,7 @@ export class VaapiEncoder extends EventEmitter {
    * Dynamically update streaming settings (FPS / Bitrate / AudioBitrate) and restart encoders.
    * If only audioBitrate changes, video is completely undisturbed.
    * If only video settings change, audio is completely undisturbed.
+   * If both change, video and audio are coordinated without race conditions.
    */
   public async updateConfig(config: {
     fps?: number;
@@ -545,14 +551,17 @@ export class VaapiEncoder extends EventEmitter {
       config.fps !== undefined ||
       config.bitrate !== undefined;
 
-    const tasks: Promise<void>[] = [];
     if (videoNeedsRestart) {
-      tasks.push(this.restart(config.width, config.height, config.fps, config.bitrate));
+      await this.restart(
+        config.width,
+        config.height,
+        config.fps,
+        config.bitrate,
+        config.audioBitrate,
+      );
+    } else if (config.audioBitrate !== undefined) {
+      await this.restartAudio(config.audioBitrate);
     }
-    if (config.audioBitrate !== undefined) {
-      tasks.push(this.restartAudio(config.audioBitrate));
-    }
-    await Promise.all(tasks);
   }
 
   /**
