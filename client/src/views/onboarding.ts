@@ -50,6 +50,21 @@ export function renderOnboardingGuide(container: HTMLElement, onNext: () => void
     reverse_proxy 127.0.0.1:9001 # またはサーバーIP (例: 192.168.1.100:9001)
 }</pre>
 
+      <div style="background-color: #222; border-left: 4px solid #34c759; padding: 12px; margin-top: 16px; margin-bottom: 16px; border-radius: 4px;">
+        <h3 style="font-size: 15px; margin-bottom: 6px; color: #fff;">💡 重要: 車載ブラウザでの文字入力方法（Google / YouTube ログイン等）</h3>
+        <p style="font-size: 13px; margin: 0 0 8px 0; color: #bbb;">
+          テスラ車載ブラウザは、映像描画キャンバス（<code>&lt;canvas&gt;</code>）をタップしても OS のソフトウェアキーボードが表示されません。
+        </p>
+        <p style="font-size: 13px; margin: 0 0 8px 0; color: #bbb;">
+          検索や Google アカウントへのサインイン（メールアドレス・パスワード入力）を行う際は、<strong>上部 HUD の ⌨️（キーボード）ボタン</strong> をタップしてください。
+        </p>
+        <ul style="font-size: 13px; color: #bbb; padding-left: 20px; margin: 0;">
+          <li>展開された入力バーをタップするとテスラ車載キーボードが起動します。</li>
+          <li>文字を入力して <strong>「送信」</strong> または <strong>「Enter ⏎」</strong> を押すと、画面内の入力欄へ直接注入されます。</li>
+          <li>パスキー設定済みアカウントでも、Tesroid が自動でダイアログを抑止するため「パスワードを入力」から安全にログイン可能です。</li>
+        </ul>
+      </div>
+
       <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
         <button id="guide-next-btn" class="btn">理解しました。初期設定へ進む ➔</button>
       </div>

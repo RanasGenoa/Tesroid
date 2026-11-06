@@ -131,6 +131,8 @@ Tesroid/
    `Dockerfile` はビルド時に Google Chrome 公式パッケージを取得します。再配布規約を遵守し、ソースコードおよび `Dockerfile` のみを提供してください。
 5. **WebAuthn / パスキーのネイティブ UI 抑止を外さない**:
    Docker/Xvfb 環境には物理・プラットフォーム認証器がなく、Chrome ネイティブダイアログ（"No passkeys available"）が表示されると車載タッチ操作で閉じられず操作不能になります。WebAuthn インターセプト（`content.js` / CDP）を維持してください。
+6. **車載文字入力を `<canvas>` への直接タッチに依存させない**:
+   テスラ車載 Chromium は `<canvas>` タッチでは OS ソフトウェアキーボードを起動しません。必ず DOM `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由した CDP 入力注入を行ってください。
 
 ---
 
