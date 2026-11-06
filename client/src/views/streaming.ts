@@ -73,6 +73,11 @@ export function renderStreamingView(
 
         <!-- Right Group: Navigation, Search, Settings -->
         <div class="hud-right-group">
+          <!-- Virtual Keyboard Drawer Toggle -->
+          <button id="hud-keyboard-btn" class="hud-btn" title="文字入力バーを展開 (車載キーボード入力)">
+            ${ICONS.keyboard}
+          </button>
+
           <!-- Browser Navigation Controls -->
           <button id="hud-back-btn" class="hud-btn" title="戻る (Back)">${ICONS.back}</button>
           <button id="hud-home-btn" class="hud-btn" title="YouTube ホーム (Home)">${ICONS.home}</button>
@@ -95,6 +100,33 @@ export function renderStreamingView(
           <!-- Settings Console Trigger -->
           <button id="hud-settings-btn" class="hud-btn" title="設定コンソール">${ICONS.settings}</button>
         </div>
+      </div>
+
+      <!-- Virtual Keyboard Drawer (Expands below Top HUD) -->
+      <div id="hud-keyboard-drawer" class="hud-keyboard-drawer" style="display: none;">
+        <form id="hud-keyboard-form" class="hud-keyboard-form">
+          <input
+            id="hud-keyboard-input"
+            type="text"
+            placeholder="文字を入力して送信（テスラキーボードで入力）..."
+            autocomplete="off"
+          />
+          <button id="hud-keyboard-send-btn" type="submit" class="hud-kbd-btn hud-kbd-send-btn" title="入力文字をChromeに送信">
+            送信
+          </button>
+          <button id="hud-keyboard-enter-btn" type="button" class="hud-kbd-btn" title="決定 / フォーム送信 (Enter)">
+            Enter ⏎
+          </button>
+          <button id="hud-keyboard-backspace-btn" type="button" class="hud-kbd-btn" title="1文字削除 (Backspace)">
+            ⌫
+          </button>
+          <button id="hud-keyboard-tab-btn" type="button" class="hud-kbd-btn" title="次の項目へ移動 (Tab)">
+            Tab ⇥
+          </button>
+          <button id="hud-keyboard-close-btn" type="button" class="hud-kbd-close-btn" title="閉じる">
+            ${ICONS.close}
+          </button>
+        </form>
       </div>
 
       <!-- Dedicated Stream Viewport below the Top HUD Dock -->
@@ -1173,6 +1205,86 @@ export function renderStreamingView(
   searchInput?.addEventListener('blur', () => {
     searchInput.style.width = '120px';
     searchInput.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+  });
+
+  // Virtual Keyboard Drawer Handlers (In-Car Tesla On-Screen Keyboard)
+  const kbdBtn = document.getElementById('hud-keyboard-btn') as HTMLButtonElement | null;
+  const kbdDrawer = document.getElementById('hud-keyboard-drawer') as HTMLElement | null;
+  const kbdForm = document.getElementById('hud-keyboard-form') as HTMLFormElement | null;
+  const kbdInput = document.getElementById('hud-keyboard-input') as HTMLInputElement | null;
+  const kbdEnterBtn = document.getElementById('hud-keyboard-enter-btn') as HTMLButtonElement | null;
+  const kbdBackspaceBtn = document.getElementById(
+    'hud-keyboard-backspace-btn',
+  ) as HTMLButtonElement | null;
+  const kbdTabBtn = document.getElementById('hud-keyboard-tab-btn') as HTMLButtonElement | null;
+  const kbdCloseBtn = document.getElementById('hud-keyboard-close-btn') as HTMLButtonElement | null;
+
+  const toggleKeyboardDrawer = (show?: boolean) => {
+    if (!kbdDrawer || !kbdBtn) return;
+    const isCurrentlyOpen = kbdDrawer.style.display !== 'none';
+    const nextState = show !== undefined ? show : !isCurrentlyOpen;
+
+    if (nextState) {
+      kbdDrawer.style.display = 'flex';
+      kbdBtn.classList.add('is-active');
+      setTimeout(() => {
+        kbdInput?.focus();
+      }, 50);
+    } else {
+      kbdDrawer.style.display = 'none';
+      kbdBtn.classList.remove('is-active');
+      kbdInput?.blur();
+    }
+  };
+
+  kbdBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleKeyboardDrawer();
+  });
+
+  kbdCloseBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleKeyboardDrawer(false);
+  });
+
+  const sendTypedText = (text: string) => {
+    if (!text) return;
+    wsClient.send(ClientProtocol.packCommand({ type: 'TYPE_TEXT', text, enter: false }));
+    showToast(`送信: "${text}"`, 'info', 1500);
+  };
+
+  kbdForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!kbdInput) return;
+    const text = kbdInput.value;
+    if (text) {
+      sendTypedText(text);
+      kbdInput.value = '';
+    }
+  });
+
+  kbdEnterBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (kbdInput && kbdInput.value) {
+      const text = kbdInput.value;
+      kbdInput.value = '';
+      wsClient.send(ClientProtocol.packCommand({ type: 'TYPE_TEXT', text, enter: true }));
+      showToast(`送信 & 決定: "${text}"`, 'info', 1500);
+    } else {
+      wsClient.send(ClientProtocol.packCommand({ type: 'SEND_KEY', key: 'Enter' }));
+      showToast('Enter ⏎', 'info', 1000);
+    }
+  });
+
+  kbdBackspaceBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    wsClient.send(ClientProtocol.packCommand({ type: 'SEND_KEY', key: 'Backspace' }));
+  });
+
+  kbdTabBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    wsClient.send(ClientProtocol.packCommand({ type: 'SEND_KEY', key: 'Tab' }));
+    showToast('Tab ⇥ (フォーカス移動)', 'info', 1000);
   });
 
   // Tap-to-resume handlers

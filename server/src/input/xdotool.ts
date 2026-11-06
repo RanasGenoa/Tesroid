@@ -331,6 +331,124 @@ class CdpTouchBridge {
     return true;
   }
 
+  /**
+   * Injects text directly into the currently focused DOM element via CDP Input.insertText.
+   * Perfect for IME-committed strings, symbols, and virtual keyboard inputs.
+   */
+  public insertText(text: string): boolean {
+    if (!this.isConnected() || !text) return false;
+    this.send('Input.insertText', { text });
+    return true;
+  }
+
+  /**
+   * Dispatches key events (keydown, char, keyup) for special navigation/action keys.
+   */
+  public sendKeyEvent(key: string): boolean {
+    if (!this.isConnected() || !key) return false;
+    const keyLower = key.toLowerCase();
+    let vk = 0;
+    let code = key;
+    let keyName = key;
+    let charText: string | undefined;
+
+    switch (keyLower) {
+      case 'enter':
+      case 'return':
+        vk = 13;
+        code = 'Enter';
+        keyName = 'Enter';
+        charText = '\r';
+        break;
+      case 'backspace':
+        vk = 8;
+        code = 'Backspace';
+        keyName = 'Backspace';
+        break;
+      case 'tab':
+        vk = 9;
+        code = 'Tab';
+        keyName = 'Tab';
+        break;
+      case 'escape':
+      case 'esc':
+        vk = 27;
+        code = 'Escape';
+        keyName = 'Escape';
+        break;
+      case 'space':
+        vk = 32;
+        code = 'Space';
+        keyName = ' ';
+        charText = ' ';
+        break;
+      case 'delete':
+        vk = 46;
+        code = 'Delete';
+        keyName = 'Delete';
+        break;
+      case 'arrowdown':
+        vk = 40;
+        code = 'ArrowDown';
+        keyName = 'ArrowDown';
+        break;
+      case 'arrowup':
+        vk = 38;
+        code = 'ArrowUp';
+        keyName = 'ArrowUp';
+        break;
+      case 'arrowleft':
+        vk = 37;
+        code = 'ArrowLeft';
+        keyName = 'ArrowLeft';
+        break;
+      case 'arrowright':
+        vk = 39;
+        code = 'ArrowRight';
+        keyName = 'ArrowRight';
+        break;
+      default:
+        if (key.length === 1) {
+          vk = key.toUpperCase().charCodeAt(0);
+          code = `Key${key.toUpperCase()}`;
+          keyName = key;
+          charText = key;
+        } else {
+          return false;
+        }
+        break;
+    }
+
+    this.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: keyName,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+      text: charText,
+      unmodifiedText: charText,
+    });
+    if (charText) {
+      this.send('Input.dispatchKeyEvent', {
+        type: 'char',
+        key: keyName,
+        code,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk,
+        text: charText,
+        unmodifiedText: charText,
+      });
+    }
+    this.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: keyName,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+    });
+    return true;
+  }
+
   public toggleVideoFullscreen(): boolean {
     if (!this.isConnected()) return false;
     const expr = `
@@ -805,8 +923,33 @@ export class X11InputManager {
     }
   }
 
+  /**
+   * Dispatches keys (Enter, Backspace, Tab, Escape, etc.).
+   * Prioritizes CDP native Input.dispatchKeyEvent, falling back to xdotool key.
+   */
   public sendKey(key: string): void {
-    this.sendCommand(`key ${key}`);
+    if (!key) return;
+    if (this.cdpBridge.sendKeyEvent(key)) {
+      return;
+    }
+    // Fallback: xdotool key
+    const keyLower = key.toLowerCase();
+    let xkey = key;
+    if (keyLower === 'enter' || keyLower === 'return') xkey = 'Return';
+    else if (keyLower === 'backspace') xkey = 'BackSpace';
+    else if (keyLower === 'tab') xkey = 'Tab';
+    else if (keyLower === 'escape' || keyLower === 'esc') xkey = 'Escape';
+    else if (keyLower === 'space') xkey = 'space';
+    else if (keyLower === 'delete') xkey = 'Delete';
+    else if (keyLower === 'arrowdown') xkey = 'Down';
+    else if (keyLower === 'arrowup') xkey = 'Up';
+    else if (keyLower === 'arrowleft') xkey = 'Left';
+    else if (keyLower === 'arrowright') xkey = 'Right';
+    this.sendCommand(`key ${xkey}`);
+  }
+
+  public sendSpecialKey(key: string): void {
+    this.sendKey(key);
   }
 
   public navigateBack(): void {

@@ -474,6 +474,119 @@ canvas#stream-canvas {
   border-radius: 3px !important;
 }
 
+/* Keyboard Drawer Styling */
+.hud-keyboard-drawer {
+  background: rgba(18, 18, 18, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  z-index: 100;
+  animation: kbdSlideDown 0.15s ease-out;
+}
+
+@keyframes kbdSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hud-keyboard-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+#hud-keyboard-input {
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  color: #fff;
+  padding: 8px 12px;
+  font-size: 15px;
+  flex: 1;
+  max-width: 480px;
+  height: 42px;
+  outline: none;
+  margin: 0;
+  transition: all 0.2s ease;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#hud-keyboard-input:focus {
+  border-color: var(--primary-color, #3e6ae1);
+  box-shadow: 0 0 8px rgba(62, 106, 225, 0.5);
+  background: rgba(0, 0, 0, 0.85);
+}
+
+.hud-kbd-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #fff;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  height: 42px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.hud-kbd-btn:active {
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(0.96);
+}
+
+.hud-kbd-send-btn {
+  background: var(--primary-color, #3e6ae1);
+  border-color: var(--primary-color, #3e6ae1);
+  font-weight: 600;
+}
+
+.hud-kbd-send-btn:active {
+  background: var(--primary-hover, #3457b2);
+}
+
+.hud-kbd-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #8e8e93);
+  padding: 8px;
+  height: 42px;
+  min-width: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.hud-kbd-close-btn:active {
+  color: #fff;
+}
+
+.hud-btn.is-active {
+  background-color: var(--primary-color, #3e6ae1) !important;
+  color: #fff !important;
+  border-color: var(--primary-color, #3e6ae1) !important;
+}
+
 /* Status notice overlay */
 .stream-notice-overlay {
   position: absolute;

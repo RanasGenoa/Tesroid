@@ -1046,6 +1046,7 @@ export class WebSocketHandler {
           break;
 
         case 'KEY':
+        case 'SEND_KEY':
           this.recordInputActivity(socket);
           if (cmd.key) {
             this.inputManager.sendKey(cmd.key);
@@ -1055,7 +1056,7 @@ export class WebSocketHandler {
         case 'TYPE_TEXT':
           this.recordInputActivity(socket);
           if (cmd.text) {
-            await this.browserManager.typeText(cmd.text, cmd.enter !== false);
+            await this.browserManager.typeText(cmd.text, cmd.enter === true);
           }
           break;
 
