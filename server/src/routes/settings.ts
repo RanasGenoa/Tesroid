@@ -21,7 +21,7 @@ interface UpdateSettingsBody {
     bitrate?: number;
     maxFps?: number;
     maxSize?: number;
-    audioBitrate?: number;
+    audioBitrate?: number | string;
   };
 }
 
@@ -137,7 +137,19 @@ export function registerSettingsRoutes(
       }
       if (stream) {
         if (stream.audioBitrate !== undefined) {
-          let ab = Number(stream.audioBitrate);
+          let ab: number;
+          if (typeof stream.audioBitrate === 'string') {
+            const str = stream.audioBitrate.toLowerCase().trim();
+            if (str.endsWith('k')) {
+              ab = parseFloat(str) * 1000;
+            } else if (str.endsWith('m')) {
+              ab = parseFloat(str) * 1000 * 1000;
+            } else {
+              ab = Number(str);
+            }
+          } else {
+            ab = Number(stream.audioBitrate);
+          }
           if (ab >= 128 && ab <= 320) {
             ab = ab * 1000;
           }
@@ -147,9 +159,9 @@ export function registerSettingsRoutes(
                 'Invalid audioBitrate: Must be between 128000 and 320000 bps (128kbps - 320kbps).',
             });
           }
-          stream.audioBitrate = ab;
+          stream.audioBitrate = Math.round(ab);
         }
-        updates.stream = { ...configStore.getConfig().stream, ...stream };
+        updates.stream = { ...configStore.getConfig().stream, ...(stream as any) };
       }
 
       configStore.updateConfig(updates);

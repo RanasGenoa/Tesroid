@@ -249,6 +249,36 @@ describe('Audio Bitrate Setting (Issue 10) - Backend Tests', () => {
       expect(configStore.getConfig().stream.audioBitrate).toBe(192000);
     });
 
+    it('PUT /api/settings accepts string format with units (e.g. "256k" -> 256000)', async () => {
+      const configStore = new ConfigStore(path.join(tmpDir, 'routes-test-string'));
+      const lockoutManager = new LockoutManager(path.join(tmpDir, 'routes-test-string'));
+      const authService = new AuthService(configStore, lockoutManager);
+      await authService.setPin('1234');
+      const { token } = await authService.verifyPin('1234');
+
+      const browserManager = {
+        getState: vi.fn().mockReturnValue('active'),
+        getCurrentUrl: vi.fn().mockReturnValue('https://www.youtube.com'),
+      } as unknown as BrowserManager;
+
+      const app = fastify();
+      registerSettingsRoutes(app, configStore, authService, browserManager);
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          stream: {
+            audioBitrate: '256k',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(configStore.getConfig().stream.audioBitrate).toBe(256000);
+    });
+
     it('PUT /api/settings rejects audioBitrate outside 128k - 320k range with 400 Bad Request', async () => {
       const configStore = new ConfigStore(path.join(tmpDir, 'routes-test-4'));
       const lockoutManager = new LockoutManager(path.join(tmpDir, 'routes-test-4'));

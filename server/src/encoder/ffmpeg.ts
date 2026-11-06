@@ -545,12 +545,14 @@ export class VaapiEncoder extends EventEmitter {
       config.fps !== undefined ||
       config.bitrate !== undefined;
 
+    const tasks: Promise<void>[] = [];
     if (videoNeedsRestart) {
-      await this.restart(config.width, config.height, config.fps, config.bitrate);
+      tasks.push(this.restart(config.width, config.height, config.fps, config.bitrate));
     }
     if (config.audioBitrate !== undefined) {
-      await this.restartAudio(config.audioBitrate);
+      tasks.push(this.restartAudio(config.audioBitrate));
     }
+    await Promise.all(tasks);
   }
 
   /**
