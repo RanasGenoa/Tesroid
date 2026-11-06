@@ -308,17 +308,7 @@ export class WebSocketHandler {
         console.error('[WebSocketHandler] Failed to restart encoder on input interrupt:', err);
       });
     } else if (cachedKeyframe && session.socket.readyState === 1) {
-      const cachedSpsPps = this.encoder.getCachedSpsPps();
-      if (cachedSpsPps) {
-        session.socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
-      }
-      session.socket.send(
-        MessageMultiplexer.packVideo(
-          VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
-          cachedKeyframe.pts,
-          cachedKeyframe.data,
-        ),
-      );
+      this.sendCachedKeyframeAndConfig(session.socket);
     }
   }
 
@@ -437,6 +427,28 @@ export class WebSocketHandler {
   }
 
   /**
+   * Send cached SPS/PPS parameter sets (CONFIG) followed by the cached AVCC keyframe
+   * to immediately initialize and display video on the client with zero copy.
+   */
+  private sendCachedKeyframeAndConfig(socket: WebSocket): void {
+    if (socket.readyState !== 1) return;
+    const cachedKeyframe = this.encoder.getCachedKeyframe();
+    if (!cachedKeyframe) return;
+
+    const cachedSpsPps = this.encoder.getCachedSpsPps();
+    if (cachedSpsPps) {
+      socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
+    }
+    socket.send(
+      MessageMultiplexer.packVideo(
+        VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
+        cachedKeyframe.pts,
+        cachedKeyframe.data,
+      ),
+    );
+  }
+
+  /**
    * LIVE 再接続処理 (現挙動を完全維持: stale判定 -> restart -> ライブ)
    */
   private startLive(socket: WebSocket): void {
@@ -449,6 +461,8 @@ export class WebSocketHandler {
         const currentPts = (this.encoder as any).getCurrentPts();
         isStale = currentPts - cachedKeyframe.pts >= 2000000n;
       }
+    } else {
+      isStale = true;
     }
 
     if (isStale) {
@@ -459,16 +473,7 @@ export class WebSocketHandler {
         console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
       });
     } else if (cachedKeyframe && socket.readyState === 1) {
-      const cachedSpsPps = this.encoder.getCachedSpsPps();
-      if (cachedSpsPps) {
-        socket.send(MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, cachedSpsPps));
-      }
-      const packet = MessageMultiplexer.packVideo(
-        VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC,
-        cachedKeyframe.pts,
-        cachedKeyframe.data,
-      );
-      socket.send(packet);
+      this.sendCachedKeyframeAndConfig(socket);
     } else {
       const cachedSpsPps = this.encoder.getCachedSpsPps();
       if (cachedSpsPps && socket.readyState === 1) {
