@@ -396,7 +396,7 @@ async function showSettingsModal(
   overlay.querySelector('#cfg-restart-browser-btn')?.addEventListener('click', async () => {
     try {
       showToast('ブラウザを再起動しています...', 'info');
-      const res = await fetch('/api/system/restart-browser', {
+      const res = await fetch('/api/browser/restart', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -465,12 +465,19 @@ async function showSettingsModal(
         if (initialLocale && locale && locale !== initialLocale) {
           showToast('設定を保存しました。ブラウザを再起動して言語を反映中...', 'info');
           try {
-            await fetch('/api/system/restart-browser', {
+            const restartRes = await fetch('/api/browser/restart', {
               method: 'POST',
               headers: { Authorization: `Bearer ${token}` },
             });
-            initialLocale = locale;
-            showToast('ブラウザを再起動し、新しい言語を適用しました。', 'success');
+            if (restartRes.ok) {
+              initialLocale = locale;
+              showToast('ブラウザを再起動し、新しい言語を適用しました。', 'success');
+            } else {
+              showToast(
+                `設定は保存されましたが、ブラウザ再起動に失敗しました (HTTP ${restartRes.status})。手動で再起動してください。`,
+                'error',
+              );
+            }
           } catch {
             showToast('設定を保存しました（次回ブラウザ起動時に反映されます）。', 'success');
           }

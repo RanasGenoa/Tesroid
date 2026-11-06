@@ -27,12 +27,15 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     } catch {}
   });
 
-  it('initializes with default locale ja-JP and updates via setLocale', () => {
+  it('initializes with default locale ja-JP & Asia/Tokyo and updates via setLocale & setTimezone', () => {
     const bm = new BrowserManager({ profileDir });
     expect(bm.getLocale()).toBe('ja-JP');
+    expect(bm.getTimezone()).toBe('Asia/Tokyo');
 
     bm.setLocale('en-US');
+    bm.setTimezone('America/New_York');
     expect(bm.getLocale()).toBe('en-US');
+    expect(bm.getTimezone()).toBe('America/New_York');
   });
 
   it('writes translate: { enabled: false } and Japanese accept_languages to Chrome Preferences', () => {
@@ -61,8 +64,8 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(updated.intl.selected_languages).toBe('ja-JP,ja,en-US,en');
   });
 
-  it('configures Chrome spawn arguments with Translate disabled and Japanese lang switches', () => {
-    const bm = new BrowserManager({ profileDir, locale: 'ja-JP' });
+  it('configures Chrome spawn arguments with Translate disabled, Japanese lang switches, and TZ env', () => {
+    const bm = new BrowserManager({ profileDir, locale: 'ja-JP', timezone: 'Asia/Tokyo' });
 
     const args = bm.buildChromeArgs('https://www.youtube.com');
     const env = bm.buildChromeEnv();
@@ -74,7 +77,8 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(args).toContain('--disable-features=Av1Decoder,AudioServiceSandbox,Translate');
     expect(args).toContain('--app=https://www.youtube.com');
 
-    // Verify Linux system locale env:
+    // Verify Linux system locale env & TZ:
+    expect(env.TZ).toBe('Asia/Tokyo');
     expect(env.LANG).toBe('ja_JP.UTF-8');
     expect(env.LANGUAGE).toBe('ja_JP:ja');
     expect(env.LC_ALL).toBe('ja_JP.UTF-8');
@@ -89,6 +93,7 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
       getState: vi.fn(() => 'stopped'),
       getCurrentUrl: vi.fn(() => 'https://www.youtube.com'),
       setLocale: vi.fn(),
+      setTimezone: vi.fn(),
     } as unknown as BrowserManager;
 
     const app = fastify();
@@ -110,9 +115,10 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(savedConfig.locale).toBe('ja-JP');
     expect(savedConfig.timezone).toBe('Asia/Tokyo');
     expect(mockBrowser.setLocale).toHaveBeenCalledWith('ja-JP');
+    expect(mockBrowser.setTimezone).toHaveBeenCalledWith('Asia/Tokyo');
   });
 
-  it('GET and PUT /api/settings manage locale and timezone correctly', async () => {
+  it('GET and PUT /api/settings manage locale and timezone correctly and reject invalid values', async () => {
     const configStore = new ConfigStore(tmpDir);
     const lockoutManager = new LockoutManager(tmpDir);
     const authService = new AuthService(configStore, lockoutManager);
@@ -125,6 +131,7 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
       getCurrentUrl: vi.fn(() => 'https://www.youtube.com'),
       setDisplayScale: vi.fn(async () => true),
       setLocale: vi.fn(),
+      setTimezone: vi.fn(),
     } as unknown as BrowserManager;
 
     const app = fastify();
@@ -156,19 +163,30 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(saved.locale).toBe('en-US');
     expect(saved.timezone).toBe('America/New_York');
     expect(mockBrowser.setLocale).toHaveBeenCalledWith('en-US');
+    expect(mockBrowser.setTimezone).toHaveBeenCalledWith('America/New_York');
 
-    // 3. PUT /api/settings safely falls back on invalid locale and invalid timezone
-    await app.inject({
+    // 3. PUT /api/settings rejects invalid locale with 400 and preserves existing settings
+    const badLocaleRes = await app.inject({
       method: 'PUT',
       url: '/api/settings',
       headers: { authorization: `Bearer ${token}` },
       payload: {
         locale: 'invalid-locale-hack',
+      },
+    });
+    expect(badLocaleRes.statusCode).toBe(400);
+    expect(configStore.getConfig().locale).toBe('en-US');
+
+    // 4. PUT /api/settings rejects invalid timezone with 400 and preserves existing settings
+    const badTzRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
         timezone: 'Invalid/NonExistent_Zone',
       },
     });
-    const fallbackSaved = configStore.getConfig();
-    expect(fallbackSaved.locale).toBe('ja-JP');
-    expect(fallbackSaved.timezone).toBe('Asia/Tokyo');
+    expect(badTzRes.statusCode).toBe(400);
+    expect(configStore.getConfig().timezone).toBe('America/New_York');
   });
 });

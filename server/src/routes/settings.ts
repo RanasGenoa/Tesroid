@@ -118,13 +118,21 @@ export function registerSettingsRoutes(
         updates.displayScale = clampedScale;
         updates.displayScaleUserSet = true;
       }
-      if (locale !== undefined && typeof locale === 'string') {
-        const trimmed = locale.trim();
-        updates.locale = ALLOWED_LOCALES.includes(trimmed) ? trimmed : 'ja-JP';
+      if (locale !== undefined) {
+        if (typeof locale !== 'string' || !ALLOWED_LOCALES.includes(locale.trim())) {
+          return reply.status(400).send({
+            error: `Invalid locale: "${locale}". Allowed locales are: ${ALLOWED_LOCALES.join(', ')}`,
+          });
+        }
+        updates.locale = locale.trim();
       }
-      if (timezone !== undefined && typeof timezone === 'string') {
-        const trimmed = timezone.trim();
-        updates.timezone = isValidTimezone(trimmed) ? trimmed : 'Asia/Tokyo';
+      if (timezone !== undefined) {
+        if (typeof timezone !== 'string' || !isValidTimezone(timezone.trim())) {
+          return reply.status(400).send({
+            error: `Invalid timezone: "${timezone}". Must be a valid IANA timezone string (e.g. Asia/Tokyo).`,
+          });
+        }
+        updates.timezone = timezone.trim();
       }
       if (stream) updates.stream = { ...configStore.getConfig().stream, ...stream };
 
@@ -132,6 +140,9 @@ export function registerSettingsRoutes(
 
       if (updates.locale !== undefined && typeof browserManager.setLocale === 'function') {
         browserManager.setLocale(updates.locale);
+      }
+      if (updates.timezone !== undefined && typeof browserManager.setTimezone === 'function') {
+        browserManager.setTimezone(updates.timezone);
       }
 
       if (updates.displayScale !== undefined) {

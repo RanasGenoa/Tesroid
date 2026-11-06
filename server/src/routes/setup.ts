@@ -78,6 +78,9 @@ export function registerSetupRoutes(
     if (typeof browserManager.setLocale === 'function') {
       browserManager.setLocale(safeLocale);
     }
+    if (typeof browserManager.setTimezone === 'function') {
+      browserManager.setTimezone(safeTimezone);
+    }
 
     return { success: true, message: 'Setup completed successfully.' };
   });

@@ -17,6 +17,7 @@ export interface BrowserManagerOptions {
   vaapiDevice?: string; // e.g. '/dev/dri/renderD128'
   displayScale?: number; // e.g. 120 = 120%
   locale?: string; // e.g. 'ja-JP'
+  timezone?: string; // e.g. 'Asia/Tokyo'
 }
 
 export type BrowserState = 'stopped' | 'starting' | 'running' | 'paused' | 'error';
@@ -43,6 +44,7 @@ export class BrowserManager {
   private vaapiDevice: string;
   private displayScale: number;
   private locale: string;
+  private timezone: string;
 
   private xvfbProcess: ChildProcess | null = null;
   private openboxProcess: ChildProcess | null = null;
@@ -67,6 +69,7 @@ export class BrowserManager {
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.displayScale = options.displayScale || Number(process.env.DISPLAY_SCALE) || 120;
     this.locale = options.locale || process.env.LOCALE || 'ja-JP';
+    this.timezone = options.timezone || process.env.TZ || 'Asia/Tokyo';
     this.currentUrl = this.defaultUrl;
   }
 
@@ -79,6 +82,17 @@ export class BrowserManager {
     if (trimmed && this.locale !== trimmed) {
       this.locale = trimmed;
       this.applyChromePreferences();
+    }
+  }
+
+  public getTimezone(): string {
+    return this.timezone;
+  }
+
+  public setTimezone(timezone: string): void {
+    const trimmed = (timezone || '').trim();
+    if (trimmed && this.timezone !== trimmed) {
+      this.timezone = trimmed;
     }
   }
 
@@ -1233,6 +1247,7 @@ export class BrowserManager {
       LIBVA_DRIVER_NAME: 'iHD',
       PULSE_SERVER: 'unix:/tmp/pulse-socket',
       PULSE_SINK: 'virtual_sink',
+      TZ: this.timezone || 'Asia/Tokyo',
       LANG: linuxLocale,
       LANGUAGE: lang.startsWith('ja') ? 'ja_JP:ja' : linuxLocale,
       LC_ALL: linuxLocale,
