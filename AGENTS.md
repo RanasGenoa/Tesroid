@@ -58,14 +58,8 @@ docker compose up -d --build
 npm run docker:logs
 ```
 
-### リモートホストへの自動同期デプロイ (`scripts/deploy.sh`)
-`.env`（Git管理外）に `DEPLOY_HOST` 等を設定している場合、以下のコマンドでローカルテスト ➔ `rsync` 差分同期 ➔ リモートビルド・再起動 ➔ ヘルスチェックを一括実行できます：
-
-```bash
-npm run deploy
-# テストをスキップする場合: npm run deploy -- --skip-test
-# デプロイ後にログを追跡する場合: npm run deploy -- --logs
-```
+### 本番環境・NAS での更新デプロイ
+本番環境や NAS での最新版更新手順、および永続化データの初期化方法については [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#4-リモートホストnas-上での更新--再デプロイ手順) を参照してください。
 
 ---
 

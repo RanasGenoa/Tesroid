@@ -1056,7 +1056,14 @@ export class WebSocketHandler {
         case 'TYPE_TEXT':
           this.recordInputActivity(socket);
           if (cmd.text) {
-            await this.browserManager.typeText(cmd.text, cmd.enter === true);
+            if (typeof (this.inputManager as any).insertText === 'function') {
+              (this.inputManager as any).insertText(cmd.text);
+              if (cmd.enter === true) {
+                this.inputManager.sendKey('Enter');
+              }
+            } else if (typeof (this.browserManager as any).typeText === 'function') {
+              await this.browserManager.typeText(cmd.text, cmd.enter === true);
+            }
           }
           break;
 

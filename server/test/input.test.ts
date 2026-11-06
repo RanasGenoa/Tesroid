@@ -337,5 +337,11 @@ describe('X11InputManager & CdpTouchBridge', () => {
     expect(bsCalls[0].params.type).toBe('rawKeyDown');
     expect(bsCalls[0].params.windowsVirtualKeyCode).toBe(8);
     expect(bsCalls[1].params.type).toBe('keyUp');
+
+    // Number key dispatches Digit prefix code
+    inputManager.sendKey('5');
+    const digitCalls = sentCdp.filter((c) => c.params.code === 'Digit5');
+    expect(digitCalls.length).toBe(3);
+    expect(digitCalls[0].params.windowsVirtualKeyCode).toBe(53); // '5'.charCodeAt(0)
   });
 });

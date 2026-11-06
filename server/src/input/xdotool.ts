@@ -409,10 +409,17 @@ class CdpTouchBridge {
         break;
       default:
         if (key.length === 1) {
-          vk = key.toUpperCase().charCodeAt(0);
-          code = `Key${key.toUpperCase()}`;
-          keyName = key;
-          charText = key;
+          if (key >= '0' && key <= '9') {
+            vk = key.charCodeAt(0);
+            code = `Digit${key}`;
+            keyName = key;
+            charText = key;
+          } else {
+            vk = key.toUpperCase().charCodeAt(0);
+            code = `Key${key.toUpperCase()}`;
+            keyName = key;
+            charText = key;
+          }
         } else {
           return false;
         }
@@ -946,6 +953,20 @@ export class X11InputManager {
     else if (keyLower === 'arrowleft') xkey = 'Left';
     else if (keyLower === 'arrowright') xkey = 'Right';
     this.sendCommand(`key ${xkey}`);
+  }
+
+  /**
+   * Types or inserts text into the active input field.
+   * Prioritizes CDP native Input.insertText, falling back to xdotool.
+   */
+  public insertText(text: string): void {
+    if (!text) return;
+    if (this.cdpBridge.insertText(text)) {
+      return;
+    }
+    // Fallback: xdotool type
+    const sanitized = text.replace(/([\\"])/g, '\\$1');
+    this.sendCommand(`type --clearmodifiers --delay 0 -- "${sanitized}"`);
   }
 
   public sendSpecialKey(key: string): void {

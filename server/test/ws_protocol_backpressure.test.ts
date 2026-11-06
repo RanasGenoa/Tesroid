@@ -101,6 +101,7 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
       reloadPage: vi.fn(),
       toggleVideoFullscreen: vi.fn(),
       sendKey: vi.fn(),
+      insertText: vi.fn(),
     };
 
     wsHandler = new WebSocketHandler(
@@ -387,7 +388,7 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
       client,
       ClientProtocol.packCommand({ type: 'TYPE_TEXT', text: 'Tesla', enter: false }),
     );
-    expect(mockBrowser.typeText).toHaveBeenCalledWith('Tesla', false);
+    expect(mockInput.insertText).toHaveBeenCalledWith('Tesla');
 
     await sendClientMsg(client, ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));
     expect(mockBrowser.pause).toHaveBeenCalled();

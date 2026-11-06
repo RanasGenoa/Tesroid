@@ -166,8 +166,9 @@ npm test
 # フロントエンド & バックエンドのビルド確認
 npm run build
 
-# リモート Docker ホストへの自動テスト＆同期デプロイ (.env に DEPLOY_HOST 設定時)
-npm run deploy
+# ローカルコンテナのビルド & 起動
+npm run docker:build
+npm run docker:up
 ```
 
 ---

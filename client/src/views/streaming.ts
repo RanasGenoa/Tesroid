@@ -1247,10 +1247,10 @@ export function renderStreamingView(
     toggleKeyboardDrawer(false);
   });
 
-  const sendTypedText = (text: string) => {
+  const sendTypedText = (text: string, enter = false) => {
     if (!text) return;
-    wsClient.send(ClientProtocol.packCommand({ type: 'TYPE_TEXT', text, enter: false }));
-    showToast(`送信: "${text}"`, 'info', 1500);
+    wsClient.send(ClientProtocol.packCommand({ type: 'TYPE_TEXT', text, enter }));
+    showToast(enter ? `送信 & 決定: "${text}"` : `送信: "${text}"`, 'info', 1500);
   };
 
   kbdForm?.addEventListener('submit', (e) => {
@@ -1258,7 +1258,20 @@ export function renderStreamingView(
     if (!kbdInput) return;
     const text = kbdInput.value;
     if (text) {
-      sendTypedText(text);
+      // OSK Enter / Form submission defaults to enter: true for seamless search / next action
+      sendTypedText(text, true);
+      kbdInput.value = '';
+    }
+  });
+
+  // Explicit 'Send' button sends text only (enter: false)
+  document.getElementById('hud-keyboard-send-btn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!kbdInput) return;
+    const text = kbdInput.value;
+    if (text) {
+      sendTypedText(text, false);
       kbdInput.value = '';
     }
   });
@@ -1268,8 +1281,7 @@ export function renderStreamingView(
     if (kbdInput && kbdInput.value) {
       const text = kbdInput.value;
       kbdInput.value = '';
-      wsClient.send(ClientProtocol.packCommand({ type: 'TYPE_TEXT', text, enter: true }));
-      showToast(`送信 & 決定: "${text}"`, 'info', 1500);
+      sendTypedText(text, true);
     } else {
       wsClient.send(ClientProtocol.packCommand({ type: 'SEND_KEY', key: 'Enter' }));
       showToast('Enter ⏎', 'info', 1000);
