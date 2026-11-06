@@ -662,6 +662,7 @@ export class VaapiEncoder extends EventEmitter {
     if (slicePayload.length === 0) return;
 
     // Convert slice to AVCC format: 4-byte big-endian length prefix
+    // 4バイト全域を直後の writeUInt32BE で即座に上書きするため Buffer.allocUnsafe(4) で未初期化メモリ露出なく安全かつ最速
     const lenBuf = Buffer.allocUnsafe(4);
     lenBuf.writeUInt32BE(slicePayload.length, 0);
     this.currentAuAvccBuffers.push(lenBuf, slicePayload);
