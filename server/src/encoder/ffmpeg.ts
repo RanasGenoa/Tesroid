@@ -634,8 +634,9 @@ export class VaapiEncoder extends EventEmitter {
     const nalType = nalWithPrefix[offset] & 0x1f;
 
     // Frame boundary detection:
-    // 1. Explicit AUD (Type 9)
-    // 2. Fallback: new slice (Type 1 or 5) or SPS (Type 7) when AUD is absent in stream and we already accumulated a slice
+    // 1. Explicit AUD (Type 9): triggers AU flush immediately; marks currentAuHasExplicitAud = true for incoming AU.
+    // 2. Fallback without AUD: a new slice (Type 1 or 5) or SPS (Type 7) flushes previous AU once a slice exists.
+    // 3. Fallback with AUD: if SPS (Type 7) appears after a slice without preceding AUD, flush previous AU safely.
     const hasExistingSlice = this.currentAuHasSlice;
 
     if (
