@@ -720,7 +720,9 @@ export class VaapiEncoder extends EventEmitter {
         totalLength += 4 + this.currentAuSlices[i].length;
       }
 
-      // Single contiguous buffer allocation; every byte is explicitly written below
+      // Single contiguous buffer allocation; 0 から totalLength までの全領域が
+      // 直後のループで writeUInt32BE（4バイト）および slice.copy（slice.length バイト）により
+      // 隙間なく完全に上書きされるため、Buffer.allocUnsafe(totalLength) でも未初期化メモリ漏洩リスクはなく最速
       const frameData = Buffer.allocUnsafe(totalLength);
       let writeOffset = 0;
       for (let i = 0; i < this.currentAuSlices.length; i++) {
