@@ -160,7 +160,8 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
       isChromeAlive: () => true,
     };
 
-    const keyframeData = Buffer.from([0, 0, 0, 1, 0x65]);
+    const keyframeData = Buffer.from([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    const spsPpsData = Buffer.from([0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68]);
     const mockEncoder: any = {
       isRunning: vi.fn(() => true),
       start: vi.fn(),
@@ -168,7 +169,7 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
       restart: vi.fn().mockResolvedValue(undefined),
       getCachedKeyframe: vi.fn(() => ({ data: keyframeData, pts: 2500000n })),
       isKeyframeStale: vi.fn(() => false),
-      getCachedSpsPps: () => null,
+      getCachedSpsPps: vi.fn(() => spsPpsData),
       getCachedOpusHead: () => null,
       on: vi.fn(),
     };
@@ -199,12 +200,73 @@ describe('WebSocketHandler Idle & Metrics Lifecycle', () => {
     expect(mockEncoder.isKeyframeStale).toHaveBeenCalled();
     expect(mockEncoder.restart).not.toHaveBeenCalled();
 
-    // Keyframe packet SHOULD have been sent
+    // Both CONFIG (SPS/PPS) and AVCC Keyframe packets SHOULD have been sent
     const sentVideoPackets = mockSocket.send.mock.calls.filter((call: any[]) => {
       const buf = call[0];
       return Buffer.isBuffer(buf) && buf[0] === WSS_CHANNEL.VIDEO;
     });
-    expect(sentVideoPackets.length).toBe(1);
+    expect(sentVideoPackets.length).toBe(2);
+
+    handler.close();
+  });
+
+  it('should restart encoder when keyframe is fresh but cachedSpsPps is missing', async () => {
+    const mockAuth: any = {
+      verifyPin: vi.fn().mockResolvedValue({ success: true, token: 'mock-token' }),
+    };
+
+    const mockBrowser: any = {
+      getDimensions: () => ({ width: 1280, height: 720 }),
+      getState: () => 'running',
+      getCurrentUrl: () => 'https://www.youtube.com',
+      resume: vi.fn(),
+      isChromeAlive: () => true,
+    };
+
+    const keyframeData = Buffer.from([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    const mockEncoder: any = {
+      isRunning: vi.fn(() => true),
+      start: vi.fn(),
+      stop: vi.fn(),
+      restart: vi.fn().mockResolvedValue(undefined),
+      getCachedKeyframe: vi.fn(() => ({ data: keyframeData, pts: 2500000n })),
+      isKeyframeStale: vi.fn(() => false),
+      getCachedSpsPps: vi.fn(() => null), // Missing SPS/PPS
+      getCachedOpusHead: () => null,
+      on: vi.fn(),
+    };
+
+    const mockInput: any = {};
+    const mockConfig: any = {
+      getConfig: () => ({ isSetupCompleted: true }),
+    };
+
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+
+    const mockSocket: any = {
+      readyState: 1,
+      send: vi.fn(),
+      on: vi.fn(),
+    };
+
+    handler.handleConnection(mockSocket);
+    const messageListener = mockSocket.on.mock.calls.find(
+      (call: any[]) => call[0] === 'message',
+    )?.[1];
+
+    // Authenticate client
+    const authBuf = Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]);
+    await messageListener(authBuf);
+
+    // Missing SPS/PPS must trigger restart even if keyframe is fresh
+    expect(mockEncoder.restart).toHaveBeenCalledTimes(1);
+
+    // No video packets should be sent when cache is incomplete
+    const sentVideoPackets = mockSocket.send.mock.calls.filter((call: any[]) => {
+      const buf = call[0];
+      return Buffer.isBuffer(buf) && buf[0] === WSS_CHANNEL.VIDEO;
+    });
+    expect(sentVideoPackets.length).toBe(0);
 
     handler.close();
   });

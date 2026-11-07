@@ -54,6 +54,36 @@ export class FramePacer {
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
+  private computePllShift(
+    currentScheduleMs: number,
+    videoPtsUs: number,
+    playingAudioPtsUs: number,
+    dMs: number,
+    nowMs: number,
+  ): number {
+    const targetRenderTime = nowMs + (videoPtsUs - playingAudioPtsUs) / 1000;
+    const syncErrorMs = targetRenderTime - currentScheduleMs;
+
+    const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+    const earliestAllowedTime = Math.max(
+      nowMs + 8,
+      this.lastScheduledTimeMs + minCatchupIntervalMs,
+    );
+    const maxNegativeShiftAllowed = Math.min(0, earliestAllowedTime - currentScheduleMs);
+
+    if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
+      const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
+      const desiredShift = Math.max(-FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS, syncErrorMs * 0.15);
+      return syncErrorMs > 0
+        ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+        : Math.max(maxNegativeShiftAllowed, desiredShift);
+    } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
+      const errorMagnitude = Math.min(FramePacer.AV_SYNC_MAX_ERROR_MS, Math.abs(syncErrorMs));
+      const rawNudge = Math.sign(syncErrorMs) * (errorMagnitude * FramePacer.AV_SYNC_KP);
+      return rawNudge < 0 ? Math.max(maxNegativeShiftAllowed, rawNudge) : rawNudge;
+    }
+    return 0;
+  }
   // A/V Sync PLL constants:
   // Deadband threshold (ms) within which lip-sync differences are imperceptible to human eyes.
   // Prevents micro-hunting (jittering between +nudge and -nudge) during steady-state playback.
@@ -320,7 +350,13 @@ export class FramePacer {
           earliestNextSlot = now;
         }
       } else {
-        earliestNextSlot = this.lastScheduledTimeMs + deltaMs;
+        const paceTime = this.lastScheduledTimeMs + deltaMs;
+        if (typeof playingAudioPts === 'number' && playingAudioPts > 0) {
+          const shift = this.computePllShift(paceTime, ptsUs, playingAudioPts, deltaMs, now);
+          earliestNextSlot = paceTime + shift;
+        } else {
+          earliestNextSlot = paceTime;
+        }
       }
 
       const targetRealtimeSlot =
@@ -332,7 +368,10 @@ export class FramePacer {
       // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
       if (scheduledRenderTime <= now + 2) {
         this.renderFrameInternal(frame, ptsUs, now);
-        this.lastScheduledTimeMs = now;
+        // Preserve accumulated PLL shift on earliestNextSlot even when rendered immediately at `now`,
+        // bounded to (now - deltaMs * 0.5) to avoid excessive historical slip while allowing true phase accumulation!
+        const minIntervalMs = Math.max(8, deltaMs * 0.5);
+        this.lastScheduledTimeMs = Math.max(now - minIntervalMs, earliestNextSlot);
         this.lastScheduledPtsUs = ptsUs;
         return;
       }
@@ -442,13 +481,30 @@ export class FramePacer {
 
     // Re-anchor queued frames starting from `now` at strict 1x PTS intervals so they play smoothly without fast-forward
     if (this.frameQueue.length > 0) {
-      let cursorTime = now;
       const playingAudioPts =
         typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
           ? this.avSync.getCurrentPlayingAudioPtsUs()
           : null;
 
+      // Only drop truly stale video on major timeline discontinuity (> 1500ms behind)
       if (playingAudioPts !== null && playingAudioPts > 0) {
+        while (
+          this.frameQueue.length > 1 &&
+          (playingAudioPts - this.frameQueue[0].ptsUs) / 1000 > 1500
+        ) {
+          const stale = this.frameQueue.shift();
+          if (stale) {
+            try {
+              stale.frame.close();
+            } catch {}
+            this.onFrameDropped?.();
+            this.onFrameProcessed?.();
+          }
+        }
+      }
+
+      let cursorTime = now;
+      if (playingAudioPts !== null && playingAudioPts > 0 && this.frameQueue.length > 0) {
         const audioAlignedStart = now + (this.frameQueue[0].ptsUs - playingAudioPts) / 1000;
         // バッファリング明けに音声遅延があっても、映像の即時再生開始を妨げないよう1フレーム分以内に制限
         cursorTime = Math.max(now, Math.min(now + this.getFrameIntervalMs(), audioAlignedStart));
@@ -500,7 +556,8 @@ export class FramePacer {
       if (this.frameQueue.length > 0) {
         let totalShift = 0;
         const dMs = this.computeDeltaPtsMs(this.frameQueue[0].ptsUs, nextItem.ptsUs);
-        const minNextTime = now + Math.max(8, dMs);
+        const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+        const minNextTime = now + minCatchupIntervalMs;
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
           totalShift += minNextTime - this.frameQueue[0].scheduledRenderTime;
         }
@@ -515,21 +572,26 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
+            const earliestHeadTime = Math.max(
+              now + 8,
+              this.lastScheduledTimeMs + minCatchupIntervalMs,
+            );
+            const maxNegativeShiftAllowed = Math.min(0, earliestHeadTime - currentHeadSchedule);
+
             if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
               // 150ms以上の顕著なズレ:
               // 重要: プラス/マイナス両方向のスルーレートを ±2.0ms/frame に厳格にクランプすることで、
               // 描画間隔（約31.3ms〜35.3ms）を維持し、画面フリーズや急激な前倒しによる激しいカクつき（スタッター）を
               // 完全に防ぎながら、音声へスムーズに吸着・同期させる。
               const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
-              const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
-              const maxNegativeShift = -Math.min(
-                FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
-                Math.max(0, currentHeadSchedule - (now + minCatchupIntervalMs)),
+              const desiredShift = Math.max(
+                -FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
+                syncErrorMs * 0.15,
               );
               const pllShift =
                 syncErrorMs > 0
                   ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
-                  : Math.max(maxNegativeShift, syncErrorMs * 0.15);
+                  : Math.max(maxNegativeShiftAllowed, desiredShift);
 
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastLargeShiftLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
@@ -556,8 +618,7 @@ export class FramePacer {
                 Math.abs(syncErrorMs),
               );
               const rawNudge = Math.sign(syncErrorMs) * (errorMagnitude * FramePacer.AV_SYNC_KP);
-              const minFloorShift = Math.min(0, now + 8 - currentHeadSchedule);
-              const nudge = rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
+              const nudge = rawNudge < 0 ? Math.max(maxNegativeShiftAllowed, rawNudge) : rawNudge;
               if (this.telemetry?.isEnabled()) {
                 if (now - this.lastPllNudgeLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
                   this.telemetry.recordAvSync('pll_nudge', {

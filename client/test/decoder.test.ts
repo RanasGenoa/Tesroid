@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoStreamDecoder } from '../src/core/decoder.js';
+import { H264Parser } from '../src/core/h264-parser.js';
 import { VIDEO_FLAGS } from '../src/transport/protocol.js';
 
 describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
@@ -353,5 +354,93 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(decoder.getPendingPacketsCount()).toBe(0);
     expect(decoder.getPendingBytes()).toBe(0);
     expect(decoder.getPendingBufferedMs()).toBe(0);
+  });
+
+  it('decodes VIDEO_FLAGS.AVCC packets with zero-copy bypassing H264Parser.annexBToAvcc', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+    const annexBToAvccSpy = vi.spyOn(H264Parser, 'annexBToAvcc');
+
+    // 1. Send CONFIG packet (Annex-B SPS + PPS)
+    const spsPpsData = new Uint8Array([
+      0,
+      0,
+      0,
+      1,
+      0x67,
+      0x42,
+      0xc0,
+      0x1f, // SPS
+      0,
+      0,
+      0,
+      1,
+      0x68,
+      0xce,
+      0x3c,
+      0x80, // PPS
+    ]);
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG, 0n, spsPpsData);
+    await new Promise((r) => setTimeout(r, 15));
+    expect(mockDecoderInstance.configure).toHaveBeenCalled();
+
+    // 2. Send AVCC IDR Keyframe: 4-byte length prefix (4) + IDR slice
+    const avccKeyframe = new Uint8Array([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC, 1000n, avccKeyframe);
+
+    expect(mockDecoderInstance.decode).toHaveBeenCalledTimes(1);
+    const decodedKey = mockDecoderInstance.decode.mock.calls[0][0];
+    expect(decodedKey.type).toBe('key');
+    expect(decodedKey.data).toBe(avccKeyframe); // Exactly same Uint8Array reference (zero copy!)
+
+    // 3. Send AVCC Delta frame: 4-byte length prefix (4) + P-slice
+    const avccDelta = new Uint8Array([0, 0, 0, 4, 0x41, 0x9a, 0x12, 0x34]);
+    await decoder.handlePacket(VIDEO_FLAGS.AVCC, 1033n, avccDelta);
+
+    expect(mockDecoderInstance.decode).toHaveBeenCalledTimes(2);
+    const decodedDelta = mockDecoderInstance.decode.mock.calls[1][0];
+    expect(decodedDelta.type).toBe('delta');
+    expect(decodedDelta.data).toBe(avccDelta); // Exactly same Uint8Array reference (zero copy!)
+
+    // annexBToAvcc should NOT have been called for either AVCC frame!
+    expect(annexBToAvccSpy).not.toHaveBeenCalled();
+
+    // 4. Send legacy Annex-B delta frame (no AVCC flag) -> should fall back to annexBToAvcc
+    const legacyDelta = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
+    await decoder.handlePacket(0, 1066n, legacyDelta);
+
+    expect(mockDecoderInstance.decode).toHaveBeenCalledTimes(3);
+    expect(annexBToAvccSpy).toHaveBeenCalledWith(legacyDelta);
+  });
+
+  it('safely drops AVCC packets arriving before decoder is configured without calling decode', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+
+    // Send AVCC keyframe before any SPS/PPS CONFIG packet has arrived
+    const avccKeyframe = new Uint8Array([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC, 1000n, avccKeyframe);
+
+    // Decoder is unconfigured, so chunk MUST NOT be sent to VideoDecoder.decode()
+    expect(mockDecoderInstance.decode).not.toHaveBeenCalled();
+  });
+
+  it('safely drops packets if decoder state is unconfigured or closed', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+
+    // Configure decoder with SPS/PPS
+    const spsPpsData = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
+    ]);
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG, 0n, spsPpsData);
+    await new Promise((r) => setTimeout(r, 15));
+    expect(mockDecoderInstance.configure).toHaveBeenCalled();
+
+    // Force decoder state to 'closed'
+    mockDecoderInstance.state = 'closed';
+
+    const avccKeyframe = new Uint8Array([0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00]);
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC, 1000n, avccKeyframe);
+
+    // Must NOT call decode when state is not 'configured'
+    expect(mockDecoderInstance.decode).not.toHaveBeenCalled();
   });
 });

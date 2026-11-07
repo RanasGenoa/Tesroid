@@ -66,14 +66,22 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
         (encoder as any).handleVideoChunk(annexBStream.subarray(i, i + chunkSize));
       }
 
-      expect(emitted).toHaveLength(2);
-      // Frame 1: CONFIG | KEYFRAME
-      expect(emitted[0].flags).toBe(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME);
+      expect(emitted).toHaveLength(3);
+      // Packet 1: Parameter sets (CONFIG) in Annex-B
+      expect(emitted[0].flags).toBe(VIDEO_FLAGS.CONFIG);
       expect(encoder.getCachedSpsPps()).not.toBeNull();
-      expect(encoder.getCachedKeyframe()).not.toBeNull();
 
-      // Frame 2: Delta P-frame (flags = 0)
-      expect(emitted[1].flags).toBe(0);
+      // Packet 2: IDR Keyframe in AVCC format (4-byte length prefix)
+      expect(emitted[1].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+      expect(encoder.getCachedKeyframe()).not.toBeNull();
+      // Length prefix must match IDR payload length (5 bytes)
+      expect(emitted[1].data.readUInt32BE(0)).toBe(5);
+      expect(emitted[1].data.subarray(4)).toEqual(Buffer.from([0x65, 0x88, 0x84, 0x21, 0xa0]));
+
+      // Packet 3: Delta P-frame in AVCC format (4-byte length prefix)
+      expect(emitted[2].flags).toBe(VIDEO_FLAGS.AVCC);
+      expect(emitted[2].data.readUInt32BE(0)).toBe(5);
+      expect(emitted[2].data.subarray(4)).toEqual(Buffer.from([0x41, 0x9a, 0x22, 0x11, 0x05]));
     }
   });
 
@@ -90,8 +98,47 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
 
     (encoder as any).handleVideoChunk(noAudStream);
     expect(emitted).toHaveLength(2);
-    expect(emitted[0].flags & VIDEO_FLAGS.KEYFRAME).toBe(VIDEO_FLAGS.KEYFRAME);
-    expect(emitted[1].flags).toBe(0);
+    expect(emitted[0].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+    expect(emitted[0].data.readUInt32BE(0)).toBe(4);
+    expect(emitted[1].flags).toBe(VIDEO_FLAGS.AVCC);
+    expect(emitted[1].data.readUInt32BE(0)).toBe(4);
+  });
+
+  it('packs multiple slices within a single Access Unit into a contiguous AVCC buffer with 4-byte length prefixes', () => {
+    const encoder = new VaapiEncoder();
+    const emitted: Array<{ flags: number; data: Buffer }> = [];
+    encoder.on('video', (pkt) => emitted.push(pkt));
+
+    // Access Unit with AUD + IDR slice 1 (4 bytes payload) + IDR slice 2 (3 bytes payload) + AUD (flush)
+    const multiSliceStream = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0x10]), // AUD
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0xaa, 0xbb, 0xcc]), // IDR Slice 1 (4 bytes)
+      Buffer.from([0x00, 0x00, 0x01, 0x65, 0xdd, 0xee]), // IDR Slice 2 (3 bytes)
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0x10]), // AUD -> flushes AU
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x06]), // trailing bytes
+    ]);
+
+    (encoder as any).handleVideoChunk(multiSliceStream);
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+
+    // Total length: (4 + 4) + (4 + 3) = 15 bytes
+    expect(emitted[0].data.length).toBe(15);
+
+    // Slice 1: length prefix = 4
+    expect(emitted[0].data.readUInt32BE(0)).toBe(4);
+    expect(emitted[0].data.subarray(4, 8)).toEqual(Buffer.from([0x65, 0xaa, 0xbb, 0xcc]));
+
+    // Slice 2: length prefix = 3
+    expect(emitted[0].data.readUInt32BE(8)).toBe(3);
+    expect(emitted[0].data.subarray(12, 15)).toEqual(Buffer.from([0x65, 0xdd, 0xee]));
+
+    // Verify 100% byte-exact coverage (no uninitialized memory gaps)
+    const expectedFullBuffer = Buffer.from([
+      0x00, 0x00, 0x00, 0x04, 0x65, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x03, 0x65, 0xdd, 0xee,
+    ]);
+    expect(emitted[0].data).toEqual(expectedFullBuffer);
   });
 
   it('parses OggOpus pages (OpusHead, OpusTags skip, >255B multi-lacing audio, chunk splits, and OggS resync)', () => {

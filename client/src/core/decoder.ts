@@ -231,9 +231,10 @@ export class VideoStreamDecoder {
   private async processSinglePacket(flags: number, pts: bigint, data: Uint8Array): Promise<void> {
     const isConfig = (flags & VIDEO_FLAGS.CONFIG) !== 0;
     const isKeyframe = (flags & VIDEO_FLAGS.KEYFRAME) !== 0;
+    const isAvcc = (flags & VIDEO_FLAGS.AVCC) !== 0;
 
-    // 1. If config packet or not yet configured, extract SPS/PPS
-    if (isConfig || !this.isConfigured) {
+    // 1. If config packet (or legacy unconfigured Annex-B packet), extract SPS/PPS
+    if (isConfig || (!this.isConfigured && !isAvcc)) {
       const nalUnits = H264Parser.extractNalUnits(data);
       for (const n of nalUnits) {
         if (n.type === 7) this.pendingSps = n.data;
@@ -263,8 +264,15 @@ export class VideoStreamDecoder {
       this.configPromise = null;
     }
 
-    if (!this.isConfigured || !this.decoder) {
-      // Waiting for initial SPS/PPS
+    // Defensive guard: Ensure decoder is initialized and configured before decoding.
+    // If an AVCC packet arrives before CONFIG, or decoder is not in 'configured' state,
+    // safely drop it to prevent DOMException (InvalidStateError).
+    if (
+      !this.isConfigured ||
+      !this.decoder ||
+      (typeof this.decoder.state === 'string' && this.decoder.state !== 'configured')
+    ) {
+      // Waiting for initial SPS/PPS or decoder configuration
       return;
     }
 
@@ -276,8 +284,14 @@ export class VideoStreamDecoder {
       this.waitingForKeyframe = false;
     }
 
-    // Convert Annex-B chunk to AVCC format required by WebCodecs with description
-    const avccData = H264Parser.annexBToAvcc(data);
+    // Convert Annex-B chunk to AVCC format required by WebCodecs with description.
+    // ZERO-COPY GUARANTEE:
+    // When VIDEO_FLAGS.AVCC is set, payload is already packed by the server as 4-byte
+    // length-prefixed slices (AVCC format). We pass `data` directly into `EncodedVideoChunk`
+    // without any `.slice()` or `.subarray()` copying.
+    // WebCodecs native constructor accepts ArrayBufferView (BufferSource) and respects
+    // its byteOffset/byteLength directly, ensuring 0 heap allocations and 0 GC overhead.
+    const avccData = isAvcc ? data : H264Parser.annexBToAvcc(data);
     if (avccData.length === 0) {
       return;
     }

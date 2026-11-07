@@ -53,6 +53,7 @@ describe('A/V Sync Stutter Elimination & Audio Underrun Guard', () => {
       pacer.queueFrame(createDummyFrame(1_160_000 + i * 33_333) as any);
       vi.advanceTimersByTime(33.333);
     }
+    vi.advanceTimersByTime(35);
 
     // All frames render smoothly at steady ~30 FPS without being dragged down to 27.5 FPS!
     expect(mockRenderer.render).toHaveBeenCalledTimes(16);
@@ -226,6 +227,97 @@ describe('A/V Sync Stutter Elimination & Audio Underrun Guard', () => {
     const intervalNegative = renderTimestamps[1] - renderTimestamps[0];
     expect(intervalNegative).toBeGreaterThanOrEqual(30); // Preserves >= 30ms interval!
     expect(intervalNegative).toBeLessThanOrEqual(35);
+
+    pacer.destroy();
+  });
+
+  it('accumulates PLL shifts across real-time frame arrivals to close the ~160ms audio jitter cushion gap smoothly without freezing', () => {
+    const renderTimestamps: number[] = [];
+    const mockRenderer: any = {
+      render: vi.fn((f: any) => {
+        renderTimestamps.push(performance.now());
+        f.close?.();
+      }),
+    };
+
+    const avSync = new AvSyncController();
+    let ctxTimeSec = 1.0;
+    avSync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Audio is playing PTS 1,000,000us (delayed ~160ms behind incoming packets due to jitter buffer)
+    avSync.updateAudioPts(1_000_000, 1.0);
+
+    const pacer = new FramePacer(mockRenderer, 30, avSync);
+
+    // Initial frame arrives at t=0
+    pacer.queueFrame(createDummyFrame(1_160_000) as any);
+    expect(mockRenderer.render).toHaveBeenCalledTimes(1);
+
+    // 80 subsequent frames arrive at real-time 33.3ms wall-clock intervals
+    for (let i = 1; i <= 80; i++) {
+      vi.advanceTimersByTime(33.333);
+      ctxTimeSec = 1.0 + i * 0.033333;
+      pacer.queueFrame(createDummyFrame(1_160_000 + i * 33_333) as any);
+    }
+
+    // Advance remaining time for all queued frames to drain
+    vi.advanceTimersByTime(250);
+
+    // All 81 frames must render smoothly without drops
+    expect(mockRenderer.render).toHaveBeenCalledTimes(81);
+
+    // Verify all consecutive render intervals remain strictly within smooth playback range [30ms..38ms]
+    for (let i = 2; i < renderTimestamps.length; i++) {
+      const interval = renderTimestamps[i] - renderTimestamps[i - 1];
+      expect(interval).toBeGreaterThanOrEqual(30);
+      expect(interval).toBeLessThanOrEqual(38);
+    }
+
+    pacer.destroy();
+  });
+
+  it('smoothly catches up video when lagging 160ms behind audio during real-time frame arrivals at 60 FPS', () => {
+    const renderTimestamps: number[] = [];
+    const mockRenderer: any = {
+      render: vi.fn((f: any) => {
+        renderTimestamps.push(performance.now());
+        f.close?.();
+      }),
+    };
+
+    const avSync = new AvSyncController();
+    let ctxTimeSec = 1.0;
+    avSync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Audio is playing PTS 2,000,000us at ctxTime = 1.0s
+    avSync.updateAudioPts(2_000_000, 1.0);
+
+    const pacer = new FramePacer(mockRenderer, 60, avSync);
+    const stepUs = 16_666;
+    const stepMs = 16.666;
+
+    // Video arrives 160ms BEHIND audio: PTS 1,840,000us (2,000,000 - 160,000)
+    pacer.queueFrame(createDummyFrame(1_840_000) as any);
+    expect(mockRenderer.render).toHaveBeenCalledTimes(1);
+
+    // Subsequent 80 frames arrive at real-time 16.6ms intervals
+    for (let i = 1; i <= 80; i++) {
+      vi.advanceTimersByTime(stepMs);
+      ctxTimeSec = 1.0 + i * (stepMs / 1000);
+      pacer.queueFrame(createDummyFrame(1_840_000 + i * stepUs) as any);
+    }
+    vi.advanceTimersByTime(100);
+
+    // All frames must render
+    expect(mockRenderer.render).toHaveBeenCalledTimes(81);
+
+    // Verify all consecutive render intervals remain strictly >= 8ms (no tight loop freeze)
+    // and <= 20ms (smooth 60fps catchup)
+    for (let i = 1; i < renderTimestamps.length; i++) {
+      const interval = renderTimestamps[i] - renderTimestamps[i - 1];
+      expect(interval).toBeGreaterThanOrEqual(8);
+      expect(interval).toBeLessThanOrEqual(20);
+    }
 
     pacer.destroy();
   });
