@@ -57,10 +57,11 @@ export class VaapiEncoder extends EventEmitter {
   // Stream buffers for Access Unit (frame) assembly
   private h264Remainder: Buffer = Buffer.alloc(0);
   private currentAuConfigNals: Buffer[] = [];
-  private currentAuAvccBuffers: Buffer[] = [];
+  private currentAuSlices: Buffer[] = [];
   private currentAuHasKeyframe = false;
   private currentAuHasConfig = false;
   private currentAuHasSlice = false;
+  private currentAuHasExplicitAud = false;
 
   private oggRemainder: Buffer = Buffer.alloc(0);
   private oggHeaderParsed = false;
@@ -177,10 +178,11 @@ export class VaapiEncoder extends EventEmitter {
     this.isVideoRunning = true;
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuConfigNals = [];
-    this.currentAuAvccBuffers = [];
+    this.currentAuSlices = [];
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
     this.currentAuHasSlice = false;
+    this.currentAuHasExplicitAud = false;
     this.videoPts = 0n;
     if (this.streamStartTimeUs === 0n) {
       this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
@@ -479,10 +481,11 @@ export class VaapiEncoder extends EventEmitter {
     this.cachedKeyframe = null;
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuConfigNals = [];
-    this.currentAuAvccBuffers = [];
+    this.currentAuSlices = [];
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
     this.currentAuHasSlice = false;
+    this.currentAuHasExplicitAud = false;
 
     const audioRestartPromise = audioBitrate ? this.restartAudio(audioBitrate) : Promise.resolve();
 
@@ -632,11 +635,21 @@ export class VaapiEncoder extends EventEmitter {
 
     // Frame boundary detection:
     // 1. Explicit AUD (Type 9)
-    // 2. Fallback: new slice (Type 1 or 5) or SPS (Type 7) when we already accumulated a slice
+    // 2. Fallback: new slice (Type 1 or 5) or SPS (Type 7) when AUD is absent in stream and we already accumulated a slice
     const hasExistingSlice = this.currentAuHasSlice;
 
-    if (nalType === 9 || (hasExistingSlice && (nalType === 1 || nalType === 5 || nalType === 7))) {
+    if (
+      nalType === 9 ||
+      (!this.currentAuHasExplicitAud &&
+        hasExistingSlice &&
+        (nalType === 1 || nalType === 5 || nalType === 7)) ||
+      (this.currentAuHasExplicitAud && nalType === 7 && hasExistingSlice)
+    ) {
       this.flushCurrentAccessUnit();
+    }
+
+    if (nalType === 9) {
+      this.currentAuHasExplicitAud = true;
     }
 
     // AUD (Access Unit Delimiter) and SEI (Supplemental Enhancement Information) are discarded from AVCC stream.
@@ -662,11 +675,8 @@ export class VaapiEncoder extends EventEmitter {
     const slicePayload = nalWithPrefix.subarray(offset);
     if (slicePayload.length === 0) return;
 
-    // Convert slice to AVCC format: 4-byte big-endian length prefix
-    // 4バイト全域を直後の writeUInt32BE で即座に上書きするため Buffer.allocUnsafe(4) で未初期化メモリ露出なく安全かつ最速
-    const lenBuf = Buffer.allocUnsafe(4);
-    lenBuf.writeUInt32BE(slicePayload.length, 0);
-    this.currentAuAvccBuffers.push(lenBuf, slicePayload);
+    // Accumulate slice payload (deferred length-prefix packing prevents creating many small Buffer objects)
+    this.currentAuSlices.push(slicePayload);
 
     if (nalType === 5) {
       // IDR slice
@@ -679,7 +689,7 @@ export class VaapiEncoder extends EventEmitter {
   }
 
   private flushCurrentAccessUnit(): void {
-    if (this.currentAuAvccBuffers.length === 0 && this.currentAuConfigNals.length === 0) {
+    if (this.currentAuSlices.length === 0 && this.currentAuConfigNals.length === 0) {
       return;
     }
 
@@ -703,9 +713,24 @@ export class VaapiEncoder extends EventEmitter {
     }
 
     // 2. Emit AVCC video frame (IDR keyframe or P-frame)
-    if (this.currentAuAvccBuffers.length > 0) {
-      const frameData = Buffer.concat(this.currentAuAvccBuffers);
-      this.currentAuAvccBuffers = [];
+    if (this.currentAuSlices.length > 0) {
+      // Pre-calculate exact total size: (4-byte length prefix per slice) + sum of slice lengths
+      let totalLength = 0;
+      for (let i = 0; i < this.currentAuSlices.length; i++) {
+        totalLength += 4 + this.currentAuSlices[i].length;
+      }
+
+      // Single contiguous buffer allocation; every byte is explicitly written below
+      const frameData = Buffer.allocUnsafe(totalLength);
+      let writeOffset = 0;
+      for (let i = 0; i < this.currentAuSlices.length; i++) {
+        const slice = this.currentAuSlices[i];
+        frameData.writeUInt32BE(slice.length, writeOffset);
+        writeOffset += 4;
+        slice.copy(frameData, writeOffset);
+        writeOffset += slice.length;
+      }
+      this.currentAuSlices = [];
 
       let flags: number = VIDEO_FLAGS.AVCC;
       if (this.currentAuHasKeyframe) {
@@ -725,6 +750,7 @@ export class VaapiEncoder extends EventEmitter {
     this.currentAuHasKeyframe = false;
     this.currentAuHasConfig = false;
     this.currentAuHasSlice = false;
+    this.currentAuHasExplicitAud = false;
   }
 
   /**

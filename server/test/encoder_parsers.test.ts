@@ -104,6 +104,37 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
     expect(emitted[1].data.readUInt32BE(0)).toBe(4);
   });
 
+  it('packs multiple slices within a single Access Unit into a contiguous AVCC buffer with 4-byte length prefixes', () => {
+    const encoder = new VaapiEncoder();
+    const emitted: Array<{ flags: number; data: Buffer }> = [];
+    encoder.on('video', (pkt) => emitted.push(pkt));
+
+    // Access Unit with AUD + IDR slice 1 (4 bytes payload) + IDR slice 2 (3 bytes payload) + AUD (flush)
+    const multiSliceStream = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0x10]), // AUD
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0xaa, 0xbb, 0xcc]), // IDR Slice 1 (4 bytes)
+      Buffer.from([0x00, 0x00, 0x01, 0x65, 0xdd, 0xee]), // IDR Slice 2 (3 bytes)
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x09, 0x10]), // AUD -> flushes AU
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x06]), // trailing bytes
+    ]);
+
+    (encoder as any).handleVideoChunk(multiSliceStream);
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].flags).toBe(VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC);
+
+    // Total length: (4 + 4) + (4 + 3) = 15 bytes
+    expect(emitted[0].data.length).toBe(15);
+
+    // Slice 1: length prefix = 4
+    expect(emitted[0].data.readUInt32BE(0)).toBe(4);
+    expect(emitted[0].data.subarray(4, 8)).toEqual(Buffer.from([0x65, 0xaa, 0xbb, 0xcc]));
+
+    // Slice 2: length prefix = 3
+    expect(emitted[0].data.readUInt32BE(8)).toBe(3);
+    expect(emitted[0].data.subarray(12, 15)).toEqual(Buffer.from([0x65, 0xdd, 0xee]));
+  });
+
   it('parses OggOpus pages (OpusHead, OpusTags skip, >255B multi-lacing audio, chunk splits, and OggS resync)', () => {
     const opusHead = Buffer.concat([Buffer.from('OpusHead', 'ascii'), Buffer.alloc(11, 0x02)]); // 19 bytes
     const opusTags = Buffer.concat([
