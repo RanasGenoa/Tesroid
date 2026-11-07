@@ -722,7 +722,8 @@ export class VaapiEncoder extends EventEmitter {
 
       // Single contiguous buffer allocation; 0 から totalLength までの全領域が
       // 直後のループで writeUInt32BE（4バイト）および slice.copy（slice.length バイト）により
-      // 隙間なく完全に上書きされるため、Buffer.allocUnsafe(totalLength) でも未初期化メモリ漏洩リスクはなく最速
+      // 隙間なく完全に上書きされるため、Buffer.allocUnsafe(totalLength) でも未初期化メモリ漏洩リスクはなく最速。
+      // 将来の変更時にも未初期化バイトが漏洩しないよう、writeOffset === totalLength の不変条件（Invariant）を検証。
       const frameData = Buffer.allocUnsafe(totalLength);
       let writeOffset = 0;
       for (let i = 0; i < this.currentAuSlices.length; i++) {
@@ -733,6 +734,12 @@ export class VaapiEncoder extends EventEmitter {
         writeOffset += slice.length;
       }
       this.currentAuSlices = [];
+
+      if (writeOffset !== totalLength) {
+        throw new Error(
+          `AVCC frame assembly invariant violation: expected ${totalLength} bytes, wrote ${writeOffset} bytes`,
+        );
+      }
 
       let flags: number = VIDEO_FLAGS.AVCC;
       if (this.currentAuHasKeyframe) {

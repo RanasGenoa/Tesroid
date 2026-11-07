@@ -133,6 +133,12 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
     // Slice 2: length prefix = 3
     expect(emitted[0].data.readUInt32BE(8)).toBe(3);
     expect(emitted[0].data.subarray(12, 15)).toEqual(Buffer.from([0x65, 0xdd, 0xee]));
+
+    // Verify 100% byte-exact coverage (no uninitialized memory gaps)
+    const expectedFullBuffer = Buffer.from([
+      0x00, 0x00, 0x00, 0x04, 0x65, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x03, 0x65, 0xdd, 0xee,
+    ]);
+    expect(emitted[0].data).toEqual(expectedFullBuffer);
   });
 
   it('parses OggOpus pages (OpusHead, OpusTags skip, >255B multi-lacing audio, chunk splits, and OggS resync)', () => {
