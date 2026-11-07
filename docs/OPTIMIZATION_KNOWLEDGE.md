@@ -382,6 +382,8 @@ Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄�
    - 車載 Chromium は `<canvas>` タップでは OS ソフトウェアキーボードを起動しません。必ず編集可能 `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由して CDP 注入を行ってください。
 10. ❌ **クライアント側で毎フレーム H.264 Annex-B 走査および Uint8Array 再確保を行うこと**
     - 車載ブラウザ（特に MCU2 Intel Atom）の V8 エンジンで頻繁な GC Pause が発生し、映像の定期的なカクつきやコマ落ちを招きます。H.264 パケットはサーバー側で AVCC 形式に事前パッキングし、クライアント側ではゼロコピーでデコードしてください。
+11. ❌ **`FramePacer` の空キュー時即時描画パスでリップシンク PLL シフトを破棄すること**
+    - `AudioPlayer` は Web Audio API の音途切れ防止のため 160ms のジッターバッファを持っています。`FramePacer` でキューが空の際に到着時刻 `now` に即時描画して `lastScheduledTimeMs = now` で時刻をリセットすると、PLL 補正が一切蓄積されず、映像が音より恒常的に ~160ms 先行する固定音ズレが発生します。キューが空であっても音声再生 PTS との差分から PLL シフトを算出し、`lastScheduledTimeMs = scheduledRenderTime` を維持してスケジュールを累積収束させてください。
 
 ---
 

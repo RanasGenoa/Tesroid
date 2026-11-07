@@ -54,6 +54,34 @@ export class FramePacer {
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
+  private computePllShift(
+    currentScheduleMs: number,
+    videoPtsUs: number,
+    playingAudioPtsUs: number,
+    dMs: number,
+    nowMs: number,
+  ): number {
+    const targetRenderTime = nowMs + (videoPtsUs - playingAudioPtsUs) / 1000;
+    const syncErrorMs = targetRenderTime - currentScheduleMs;
+
+    if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
+      const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
+      const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+      const maxNegativeShift = -Math.min(
+        FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
+        Math.max(0, currentScheduleMs - (nowMs + minCatchupIntervalMs)),
+      );
+      return syncErrorMs > 0
+        ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+        : Math.max(maxNegativeShift, syncErrorMs * 0.15);
+    } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
+      const errorMagnitude = Math.min(FramePacer.AV_SYNC_MAX_ERROR_MS, Math.abs(syncErrorMs));
+      const rawNudge = Math.sign(syncErrorMs) * (errorMagnitude * FramePacer.AV_SYNC_KP);
+      const minFloorShift = Math.min(0, nowMs + 8 - currentScheduleMs);
+      return rawNudge < 0 ? Math.max(minFloorShift, rawNudge) : rawNudge;
+    }
+    return 0;
+  }
   // A/V Sync PLL constants:
   // Deadband threshold (ms) within which lip-sync differences are imperceptible to human eyes.
   // Prevents micro-hunting (jittering between +nudge and -nudge) during steady-state playback.
@@ -320,7 +348,13 @@ export class FramePacer {
           earliestNextSlot = now;
         }
       } else {
-        earliestNextSlot = this.lastScheduledTimeMs + deltaMs;
+        const paceTime = this.lastScheduledTimeMs + deltaMs;
+        if (typeof playingAudioPts === 'number' && playingAudioPts > 0) {
+          const shift = this.computePllShift(paceTime, ptsUs, playingAudioPts, deltaMs, now);
+          earliestNextSlot = paceTime + shift;
+        } else {
+          earliestNextSlot = paceTime;
+        }
       }
 
       const targetRealtimeSlot =
@@ -332,7 +366,7 @@ export class FramePacer {
       // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
       if (scheduledRenderTime <= now + 2) {
         this.renderFrameInternal(frame, ptsUs, now);
-        this.lastScheduledTimeMs = now;
+        this.lastScheduledTimeMs = scheduledRenderTime;
         this.lastScheduledPtsUs = ptsUs;
         return;
       }
