@@ -120,6 +120,7 @@ async function showSettingsModal(
             <option value="custom">カスタム (詳細設定を表示)</option>
           </select>
 
+          <!-- 注意: カスタム設定内の VAAPI負荷優先度・scale_vaapi・-low_power 1 は Intel UHD 等・環境依存であり、環境によっては正しく動作しない場合があります（scale_vaapi / -low_power 1 は自動フォールバック対応） -->
           <div id="cfg-perf-custom-panel" style="display: none; margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color);">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div>
@@ -131,24 +132,27 @@ async function showSettingsModal(
                 </select>
               </div>
               <div>
-                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">VAAPI負荷優先度 (1-7)</label>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">VAAPI負荷優先度 (1-7・Intel UHD等 / VAAPI環境依存)</label>
                 <select id="cfg-vaapi-compression">
                   <option value="1">1 (最高画質・重)</option>
-                  <option value="4" selected>4 (標準)</option>
+                  <option value="4">4 (高画質)</option>
                   <option value="6">6 (高速・軽量)</option>
-                  <option value="7">7 (最速・最軽量)</option>
+                  <option value="7" selected>7 (標準・最軽量)</option>
                 </select>
               </div>
             </div>
 
             <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="cfg-vaapi-gpu-csc" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary, #38bdf8);" />
-              <span>GPU 色空間変換 (<code>scale_vaapi</code>) で CPU 負荷を削減</span>
+              <span>GPU 色空間変換 (<code>scale_vaapi</code>・Intel UHD等 / VAAPI環境依存) で CPU 負荷を削減</span>
             </label>
             <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="cfg-vaapi-low-power" style="width: 16px; height: 16px; accent-color: var(--accent-primary, #38bdf8);" />
-              <span>Intel VDEnc 低電力モード (<code>-low_power 1</code>) を使用</span>
+              <span>Intel VDEnc 低電力モード (<code>-low_power 1</code>・Intel UHD等 / 環境依存) を使用</span>
             </label>
+            <p style="font-size: 11px; color: #fbbf24; margin-top: 8px; margin-bottom: 0; line-height: 1.5;">
+              ※ VAAPI 負荷優先度・<code>scale_vaapi</code>・<code>-low_power 1</code> は Intel UHD 等・環境依存のオプションです（環境によっては正しく動作しない場合があります）。<code>scale_vaapi</code> と <code>-low_power 1</code> は起動失敗時に自動で安全側へフォールバックします。
+            </p>
           </div>
         </div>
 
@@ -564,7 +568,7 @@ async function showSettingsModal(
       (overlay.querySelector('#cfg-max-size') as HTMLSelectElement)?.value || 1280,
     );
     const vaapiCompressionLevel = Number(
-      (overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement)?.value || 4,
+      (overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement)?.value || 7,
     );
     const vaapiGpuColorConversion = Boolean(
       (overlay.querySelector('#cfg-vaapi-gpu-csc') as HTMLInputElement)?.checked,

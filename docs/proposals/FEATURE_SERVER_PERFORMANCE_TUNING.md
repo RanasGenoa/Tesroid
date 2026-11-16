@@ -96,11 +96,11 @@ export interface StreamConfig {
 
 2. **GPU 側色空間変換（デフォルト有効 + 自動フォールバック）**
    - `-vf hwupload,scale_vaapi=format=nv12` をデフォルト有効とし、CPU 側での RGB→NV12 変換負荷を GPU へオフロードします（TrueNAS UHD 630 実測で CPU 負荷約 72% 削減）。
-   - 非対応ドライバ等で起動直後（プロセス内出力フレーム数 `framesInCurrentProcess === 0` かつ起動後 3 秒未満）にエラー終了した場合は、自動的に CPU `format=nv12,hwupload` へフォールバックして再起動します。
+   - 非対応ドライバ等で起動直後（プロセス内出力フレーム数 `framesInCurrentProcess === 0` かつ起動後 5 秒未満）にエラー終了した場合は、自動的に CPU `format=nv12,hwupload` へフォールバックして再起動します。
 
 3. **`-low_power 1` (VDEnc) オプションと安全フォールバック**
    - `vaapiLowPower === true` の場合（`custom` または環境変数指定時）、`-c:v h264_vaapi` の後に `-low_power 1` を付与します。
-   - ホストカーネル設定（HuC ファームウェア未ロード等）により CBR/VBR で起動直後に異常終了した場合（`framesInCurrentProcess === 0` かつ 3 秒未満）は、自動的に `lowPower = false` へフォールバックして再起動します。
+   - ホストカーネル設定（HuC ファームウェア未ロード等）により CBR/VBR で起動直後に異常終了した場合（`framesInCurrentProcess === 0` かつ 5 秒未満）は、自動的に `lowPower = false` へフォールバックして再起動します。
 
 ---
 
@@ -111,6 +111,7 @@ export interface StreamConfig {
   - `PUT /api/settings`: プリセット指定時のサーバー側規定値展開および各値のバリデーションを実施し、`encoder.updateConfig()` 等へ即時反映。
 - **`client/src/views/settings-modal.ts`**
   - FPS・ビットレートは HUD 側トグルで変更する設計を維持し、設定モーダルでは **3 段階プリセット (`high` / `balanced` / `low_power`) + `custom`** を提供（`custom` 選択時のみ詳細設定パネルを表示）。
+  - `custom` 詳細設定パネル内の Intel UHD / VAAPI 環境依存オプション（VAAPI 負荷優先度 `compression_level`、`scale_vaapi`、`-low_power 1`）には、Intel UHD 等・環境依存であり環境によっては正しく動作しない場合がある旨の明示的な括弧書きラベル（`(...)`）および注意書きを表示（`scale_vaapi` と `-low_power 1` は起動失敗時に自動フォールバック）。
 
 ---
 

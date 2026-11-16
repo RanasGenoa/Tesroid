@@ -245,6 +245,8 @@ export function registerSettingsRoutes(
           vaapiLowPower,
           vaapiGpuColorConversion,
         } = stream;
+        // Only forward VAAPI tuning options when explicitly changed or when a preset was applied,
+        // avoiding unnecessary encoder restarts when only unrelated fields (e.g. bitrate/fps) change.
         const applyCompression =
           vaapiCompressionLevel !== undefined || stream.performancePreset !== undefined;
         const applyLowPower = vaapiLowPower !== undefined || stream.performancePreset !== undefined;

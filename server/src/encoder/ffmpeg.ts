@@ -311,7 +311,8 @@ export class VaapiEncoder extends EventEmitter {
 
       if (!intentional && code !== 0 && code !== null) {
         const elapsedMs = performance.now() - this.videoStartTimeMs;
-        const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 3000;
+        // Allow up to 5s for cold-boot driver/FFmpeg init on low-spec CPUs (e.g. Celeron N4000) before triggering fallback
+        const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 5000;
         if (this.lowPower && failedImmediately) {
           console.warn(
             '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
