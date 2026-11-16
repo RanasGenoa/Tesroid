@@ -42,6 +42,7 @@ export class VaapiEncoder extends EventEmitter {
   private lowPower: boolean;
   private gpuColorConversion: boolean;
   private videoStartTimeMs = 0;
+  private framesInCurrentProcess = 0;
 
   private videoProcess: ChildProcess | null = null;
   private audioProcess: ChildProcess | null = null;
@@ -93,7 +94,7 @@ export class VaapiEncoder extends EventEmitter {
     );
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
-    const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 4);
+    const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 7);
     this.compressionLevel = Math.max(1, Math.min(7, Math.round(rawComp)));
     this.lowPower =
       options.lowPower ??
@@ -262,6 +263,7 @@ export class VaapiEncoder extends EventEmitter {
     if (this.isVideoRunning) return;
     this.isVideoRunning = true;
     this.isIntentionalVideoStop = false;
+    this.framesInCurrentProcess = 0;
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuConfigNals = [];
     this.currentAuSlices = [];
@@ -309,12 +311,13 @@ export class VaapiEncoder extends EventEmitter {
 
       if (!intentional && code !== 0 && code !== null) {
         const elapsedMs = performance.now() - this.videoStartTimeMs;
-        if (this.lowPower && this.videoPts === 0n && elapsedMs < 3000) {
+        const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 3000;
+        if (this.lowPower && failedImmediately) {
           console.warn(
             '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
           );
           this.lowPower = false;
-        } else if (this.gpuColorConversion && this.videoPts === 0n && elapsedMs < 3000) {
+        } else if (this.gpuColorConversion && failedImmediately) {
           console.warn(
             '[VaapiEncoder] Video FFmpeg exited immediately with GPU scale_vaapi color conversion; falling back to CPU format=nv12 (gpuColorConversion=false).',
           );
@@ -341,6 +344,7 @@ export class VaapiEncoder extends EventEmitter {
   public startAudio(): void {
     if (this.isAudioRunning) return;
     this.isAudioRunning = true;
+    this.isIntentionalAudioStop = false;
     this.oggRemainder = Buffer.alloc(0);
     this.oggHeaderParsed = false;
     this.audioPts = 0n;
@@ -513,6 +517,7 @@ export class VaapiEncoder extends EventEmitter {
     audioBitrate?: string | number,
     compressionLevel?: number,
     lowPower?: boolean,
+    gpuColorConversion?: boolean,
   ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
@@ -520,7 +525,8 @@ export class VaapiEncoder extends EventEmitter {
         `fps=${fps || this.fps}, ` +
         `bitrate=${bitrate || this.bitrate}, ` +
         `compressionLevel=${compressionLevel ?? this.compressionLevel}, ` +
-        `lowPower=${lowPower ?? this.lowPower}` +
+        `lowPower=${lowPower ?? this.lowPower}, ` +
+        `gpuCsc=${gpuColorConversion ?? this.gpuColorConversion}` +
         `${audioBitrate ? `, audioBitrate=${audioBitrate}` : ''})...`,
     );
     this.stopVideo();
@@ -542,6 +548,9 @@ export class VaapiEncoder extends EventEmitter {
     }
     if (lowPower !== undefined) {
       this.lowPower = lowPower;
+    }
+    if (gpuColorConversion !== undefined) {
+      this.gpuColorConversion = gpuColorConversion;
     }
 
     // Reset caches and buffers so new resolution SPS/PPS and IDR keyframe are cleanly broadcast
@@ -832,6 +841,7 @@ export class VaapiEncoder extends EventEmitter {
       }
 
       this.lastVideoEmitTime = performance.now();
+      this.framesInCurrentProcess++;
 
       this.emit('video', {
         flags,

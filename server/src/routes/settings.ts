@@ -1,7 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthService } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
-import type { AppConfig, ConfigStore, PerformancePreset } from '../config.js';
+import {
+  type AppConfig,
+  type ConfigStore,
+  PERFORMANCE_PRESET_DEFAULTS,
+  type PerformancePreset,
+} from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
 import { isValidTimezone } from './setup.js';
 
@@ -167,6 +172,16 @@ export function registerSettingsRoutes(
           stream.audioBitrate = normalizedBitrate;
         }
         const currentStream = configStore.getConfig().stream;
+        const allowedPresets: PerformancePreset[] = ['high', 'balanced', 'low_power', 'custom'];
+        const nextPreset =
+          stream.performancePreset && allowedPresets.includes(stream.performancePreset)
+            ? stream.performancePreset
+            : currentStream.performancePreset;
+        const presetDefaults =
+          nextPreset && nextPreset !== 'custom' && stream.performancePreset !== undefined
+            ? PERFORMANCE_PRESET_DEFAULTS[nextPreset]
+            : undefined;
+
         const nextBitrate =
           stream.bitrate !== undefined && Number.isFinite(Number(stream.bitrate))
             ? Math.max(300000, Math.min(10000000, Math.round(Number(stream.bitrate))))
@@ -178,25 +193,20 @@ export function registerSettingsRoutes(
         const nextMaxSize =
           stream.maxSize !== undefined && Number.isFinite(Number(stream.maxSize))
             ? Math.max(640, Math.min(1920, Math.round(Number(stream.maxSize))))
-            : currentStream.maxSize;
+            : (presetDefaults?.maxSize ?? currentStream.maxSize);
         const nextCompressionLevel =
           stream.vaapiCompressionLevel !== undefined &&
           Number.isFinite(Number(stream.vaapiCompressionLevel))
             ? Math.max(1, Math.min(7, Math.round(Number(stream.vaapiCompressionLevel))))
-            : currentStream.vaapiCompressionLevel;
+            : (presetDefaults?.vaapiCompressionLevel ?? currentStream.vaapiCompressionLevel);
         const nextLowPower =
           stream.vaapiLowPower !== undefined
             ? Boolean(stream.vaapiLowPower)
-            : currentStream.vaapiLowPower;
+            : (presetDefaults?.vaapiLowPower ?? currentStream.vaapiLowPower);
         const nextGpuCsc =
           stream.vaapiGpuColorConversion !== undefined
             ? Boolean(stream.vaapiGpuColorConversion)
-            : currentStream.vaapiGpuColorConversion;
-        const allowedPresets: PerformancePreset[] = ['high', 'balanced', 'low_power', 'custom'];
-        const nextPreset =
-          stream.performancePreset && allowedPresets.includes(stream.performancePreset)
-            ? stream.performancePreset
-            : currentStream.performancePreset;
+            : (presetDefaults?.vaapiGpuColorConversion ?? currentStream.vaapiGpuColorConversion);
 
         updates.stream = {
           bitrate: nextBitrate,
@@ -226,7 +236,7 @@ export function registerSettingsRoutes(
         await browserManager.setDisplayScale(updates.displayScale);
       }
 
-      if (stream && encoder) {
+      if (stream && encoder && updates.stream) {
         const {
           maxFps,
           bitrate,
@@ -235,24 +245,29 @@ export function registerSettingsRoutes(
           vaapiLowPower,
           vaapiGpuColorConversion,
         } = stream;
+        const applyCompression =
+          vaapiCompressionLevel !== undefined || stream.performancePreset !== undefined;
+        const applyLowPower = vaapiLowPower !== undefined || stream.performancePreset !== undefined;
+        const applyGpuCsc =
+          vaapiGpuColorConversion !== undefined || stream.performancePreset !== undefined;
         if (
           maxFps !== undefined ||
           bitrate !== undefined ||
           audioBitrate !== undefined ||
-          vaapiCompressionLevel !== undefined ||
-          vaapiLowPower !== undefined ||
-          vaapiGpuColorConversion !== undefined
+          applyCompression ||
+          applyLowPower ||
+          applyGpuCsc
         ) {
           console.log(
-            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${vaapiCompressionLevel}, lowPower=${vaapiLowPower}, gpuCsc=${vaapiGpuColorConversion}`,
+            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${updates.stream.vaapiCompressionLevel}, lowPower=${updates.stream.vaapiLowPower}, gpuCsc=${updates.stream.vaapiGpuColorConversion}`,
           );
           await encoder.updateConfig({
             fps: maxFps,
             bitrate,
             audioBitrate,
-            compressionLevel: vaapiCompressionLevel,
-            lowPower: vaapiLowPower,
-            gpuColorConversion: vaapiGpuColorConversion,
+            compressionLevel: applyCompression ? updates.stream.vaapiCompressionLevel : undefined,
+            lowPower: applyLowPower ? updates.stream.vaapiLowPower : undefined,
+            gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
           });
         }
       }

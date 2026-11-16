@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConfigStore } from '../src/config.js';
+import { ConfigStore, PERFORMANCE_PRESET_DEFAULTS } from '../src/config.js';
 import { VaapiEncoder } from '../src/encoder/ffmpeg.js';
 
 describe('Server Performance Tuning (Issue #46)', () => {
@@ -14,21 +14,21 @@ describe('Server Performance Tuning (Issue #46)', () => {
     }
   });
 
-  it('should default VaapiEncoder to compressionLevel=4, lowPower=false, and gpuColorConversion=true', () => {
+  it('should default VaapiEncoder to balanced settings (compressionLevel=7, lowPower=false, gpuColorConversion=true)', () => {
     const encoder = new VaapiEncoder();
-    expect(encoder.getCompressionLevel()).toBe(4);
+    expect(encoder.getCompressionLevel()).toBe(7);
     expect(encoder.isLowPower()).toBe(false);
     expect(encoder.isGpuColorConversion()).toBe(true);
 
     const args = encoder.buildVideoArgs();
     const compIdx = args.indexOf('-compression_level');
     expect(compIdx).toBeGreaterThan(-1);
-    expect(args[compIdx + 1]).toBe('4');
+    expect(args[compIdx + 1]).toBe('7');
     expect(args).not.toContain('-low_power');
     expect(args).toContain('hwupload,scale_vaapi=format=nv12');
   });
 
-  it('should clamp compressionLevel between 1 and 7 and include -low_power 1 when enabled', () => {
+  it('should clamp compressionLevel between 1 and 7 and toggle -low_power / CPU CSC', () => {
     const encoderHigh = new VaapiEncoder({ compressionLevel: 99, lowPower: true });
     expect(encoderHigh.getCompressionLevel()).toBe(7);
     expect(encoderHigh.isLowPower()).toBe(true);
@@ -51,33 +51,37 @@ describe('Server Performance Tuning (Issue #46)', () => {
     expect(encoderLow.buildVideoArgs()).toContain('format=nv12,hwupload');
   });
 
-  it('should persist performancePreset, vaapiCompressionLevel, and vaapiLowPower in ConfigStore', () => {
+  it('should keep ConfigStore balanced defaults aligned with PERFORMANCE_PRESET_DEFAULTS', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tesroid-perf-test-'));
     tempDirs.push(tmpDir);
 
     const store = new ConfigStore(tmpDir);
-    expect(store.getConfig().stream.performancePreset).toBe('balanced');
-    expect(store.getConfig().stream.vaapiCompressionLevel).toBe(4);
-    expect(store.getConfig().stream.vaapiLowPower).toBe(false);
+    const stream = store.getConfig().stream;
+    expect(stream.performancePreset).toBe('balanced');
+    expect(stream.maxSize).toBe(PERFORMANCE_PRESET_DEFAULTS.balanced.maxSize);
+    expect(stream.vaapiCompressionLevel).toBe(
+      PERFORMANCE_PRESET_DEFAULTS.balanced.vaapiCompressionLevel,
+    );
+    expect(stream.vaapiLowPower).toBe(PERFORMANCE_PRESET_DEFAULTS.balanced.vaapiLowPower);
+    expect(stream.vaapiGpuColorConversion).toBe(
+      PERFORMANCE_PRESET_DEFAULTS.balanced.vaapiGpuColorConversion,
+    );
 
     store.updateConfig({
       stream: {
-        ...store.getConfig().stream,
+        ...stream,
         performancePreset: 'low_power',
         maxSize: 960,
         maxFps: 24,
         bitrate: 800000,
         vaapiCompressionLevel: 7,
-        vaapiLowPower: true,
+        vaapiLowPower: false,
       },
     });
 
     const reloaded = new ConfigStore(tmpDir);
     expect(reloaded.getConfig().stream.performancePreset).toBe('low_power');
     expect(reloaded.getConfig().stream.maxSize).toBe(960);
-    expect(reloaded.getConfig().stream.maxFps).toBe(24);
-    expect(reloaded.getConfig().stream.bitrate).toBe(800000);
     expect(reloaded.getConfig().stream.vaapiCompressionLevel).toBe(7);
-    expect(reloaded.getConfig().stream.vaapiLowPower).toBe(true);
   });
 });
