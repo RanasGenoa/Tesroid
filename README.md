@@ -91,6 +91,11 @@
 - **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)、またはクラウド VM
 - **GPU**: VAAPI 対応 GPU（Intel 第6世代 Skylake 以降の統合 GPU Quick Sync Video、または AMD Radeon VAAPI）
   - ホスト上に `/dev/dri/renderD128` が存在すること
+- **動作確認済み iGPU**:
+  | GPU / iGPU | アーキテクチャ (世代) | VAAPI ドライバ | 動作確認状況 | 備考 |
+  | :--- | :--- | :--- | :--- | :--- |
+  | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
+  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ⚠️ 調整・検証中 | 高負荷・動作が重い報告あり（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) にて軽量化対応予定） |
 - **メモリ**: 2 GB 以上推奨
 - **ソフトウェア**: Docker Engine 24.0+ および Docker Compose v2.0+
 - **ネットワーク**: テスラ車載ブラウザから接続する場合は **公的 CA による HTTPS (SSL/TLS) 環境** が必須です（詳細は [docs/NETWORK.md](docs/NETWORK.md) を参照）

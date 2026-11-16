@@ -774,8 +774,17 @@ export class WebSocketHandler {
       effH = Math.round(requestedH * scale);
     }
 
-    const width = Math.max(640, Math.min(1920, effW)) & ~7;
-    const height = Math.max(360, Math.min(1080, effH)) & ~1;
+    const configuredMaxSize = this.configStore.getConfig().stream?.maxSize ?? 1280;
+    const maxSize = Math.max(640, Math.min(1920, configuredMaxSize));
+    const maxDim = Math.max(effW, effH);
+    if (maxDim > maxSize) {
+      const scale = maxSize / maxDim;
+      effW = Math.round(effW * scale);
+      effH = Math.round(effH * scale);
+    }
+
+    const width = Math.max(640, Math.min(maxSize, effW)) & ~7;
+    const height = Math.max(360, Math.min(Math.min(1080, maxSize), effH)) & ~1;
 
     if (width === this.currentResWidth && height === this.currentResHeight) {
       return;

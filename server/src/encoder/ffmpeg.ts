@@ -24,6 +24,14 @@ export interface EncoderOptions {
   audioBitrate?: string | number; // e.g. '128k', 128000, '320k' (128k - 320k)
   vaapiDevice?: string; // '/dev/dri/renderD128'
   audioSink?: string; // 'virtual_sink.monitor'
+  compressionLevel?: number; // 1 (best quality) - 7 (fastest/lightest)
+  lowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
+  gpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
+}
+
+export interface EncoderFallbackEvent {
+  option: 'lowPower' | 'gpuColorConversion';
+  timestamp: number;
 }
 
 export class VaapiEncoder extends EventEmitter {
@@ -35,6 +43,12 @@ export class VaapiEncoder extends EventEmitter {
   private audioBitrate: string;
   private vaapiDevice: string;
   private audioSink: string;
+  private compressionLevel: number;
+  private lowPower: boolean;
+  private gpuColorConversion: boolean;
+  private videoStartTimeMs = 0;
+  private framesInCurrentProcess = 0;
+  private lastFallback: EncoderFallbackEvent | null = null;
 
   private videoProcess: ChildProcess | null = null;
   private audioProcess: ChildProcess | null = null;
@@ -86,6 +100,14 @@ export class VaapiEncoder extends EventEmitter {
     );
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
+    const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 7);
+    this.compressionLevel = Math.max(1, Math.min(7, Math.round(rawComp)));
+    this.lowPower =
+      options.lowPower ??
+      (process.env.VAAPI_LOW_POWER === 'true' || process.env.VAAPI_LOW_POWER === '1');
+    this.gpuColorConversion =
+      options.gpuColorConversion ??
+      (process.env.VAAPI_GPU_CSC !== 'false' && process.env.VAAPI_GPU_CSC !== '0');
 
     this.videoFrameDurationUs = BigInt(Math.round(1000000 / this.fps));
     this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
@@ -138,6 +160,92 @@ export class VaapiEncoder extends EventEmitter {
     return this.parseAudioBitrateBps(this.audioBitrate);
   }
 
+  public getCompressionLevel(): number {
+    return this.compressionLevel;
+  }
+
+  public isLowPower(): boolean {
+    return this.lowPower;
+  }
+
+  public isGpuColorConversion(): boolean {
+    return this.gpuColorConversion;
+  }
+
+  public getEncoderStatus(): {
+    running: boolean;
+    compressionLevel: number;
+    lowPower: boolean;
+    gpuColorConversion: boolean;
+    lastFallback: EncoderFallbackEvent | null;
+  } {
+    return {
+      running: this.isVideoRunning,
+      compressionLevel: this.compressionLevel,
+      lowPower: this.lowPower,
+      gpuColorConversion: this.gpuColorConversion,
+      lastFallback: this.lastFallback ? { ...this.lastFallback } : null,
+    };
+  }
+
+  public buildVideoArgs(): string[] {
+    const bps = this.parseBitrateBps(this.bitrate);
+    const gop = Math.max(1, Math.round(this.fps * 2.0)); // 2.0s GOP for high efficiency at 1Mbps
+    const vfFilter = this.gpuColorConversion
+      ? 'hwupload,scale_vaapi=format=nv12'
+      : 'format=nv12,hwupload';
+
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-thread_queue_size',
+      '64',
+      '-f',
+      'x11grab',
+      '-draw_mouse',
+      '0',
+      '-framerate',
+      `${this.fps}`,
+      '-video_size',
+      `${this.width}x${this.height}`,
+      '-i',
+      `${this.displayNum}.0`,
+      '-vaapi_device',
+      this.vaapiDevice,
+      '-vf',
+      vfFilter,
+      '-c:v',
+      'h264_vaapi',
+      '-compression_level',
+      `${this.compressionLevel}`,
+    ];
+
+    if (this.lowPower) {
+      args.push('-low_power', '1');
+    }
+
+    args.push(
+      '-b:v',
+      `${Math.round(bps / 1000)}k`,
+      '-maxrate',
+      `${Math.round((bps * 1.3) / 1000)}k`,
+      '-bufsize',
+      `${Math.round((bps * 0.6) / 1000)}k`,
+      '-g',
+      `${gop}`,
+      '-bf',
+      '0',
+      '-bsf:v',
+      'h264_metadata=aud=insert',
+      '-f',
+      'h264',
+      'pipe:1',
+    );
+
+    return args;
+  }
+
   public getCachedSpsPps(): Buffer | null {
     return this.cachedSpsPps;
   }
@@ -176,6 +284,8 @@ export class VaapiEncoder extends EventEmitter {
   public startVideo(): void {
     if (this.isVideoRunning) return;
     this.isVideoRunning = true;
+    this.isIntentionalVideoStop = false;
+    this.framesInCurrentProcess = 0;
     this.h264Remainder = Buffer.alloc(0);
     this.currentAuConfigNals = [];
     this.currentAuSlices = [];
@@ -187,50 +297,9 @@ export class VaapiEncoder extends EventEmitter {
     if (this.streamStartTimeUs === 0n) {
       this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
     }
+    this.videoStartTimeMs = performance.now();
 
-    const bps = this.parseBitrateBps(this.bitrate);
-    const gop = Math.max(1, Math.round(this.fps * 2.0)); // 2.0s GOP for high efficiency at 1Mbps
-
-    const videoArgs = [
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-thread_queue_size',
-      '64',
-      '-f',
-      'x11grab',
-      '-draw_mouse',
-      '0',
-      '-framerate',
-      `${this.fps}`,
-      '-video_size',
-      `${this.width}x${this.height}`,
-      '-i',
-      `${this.displayNum}.0`,
-      '-vaapi_device',
-      this.vaapiDevice,
-      '-vf',
-      'format=nv12,hwupload',
-      '-c:v',
-      'h264_vaapi',
-      '-compression_level',
-      '4',
-      '-b:v',
-      `${Math.round(bps / 1000)}k`,
-      '-maxrate',
-      `${Math.round((bps * 1.3) / 1000)}k`,
-      '-bufsize',
-      `${Math.round((bps * 0.6) / 1000)}k`,
-      '-g',
-      `${gop}`,
-      '-bf',
-      '0',
-      '-bsf:v',
-      'h264_metadata=aud=insert',
-      '-f',
-      'h264',
-      'pipe:1',
-    ];
+    const videoArgs = this.buildVideoArgs();
 
     console.log(
       `[VaapiEncoder] Spawning dedicated Video FFmpeg encoder: ffmpeg ${videoArgs.join(' ')}`,
@@ -263,6 +332,24 @@ export class VaapiEncoder extends EventEmitter {
       this.emit('stop');
 
       if (!intentional && code !== 0 && code !== null) {
+        const elapsedMs = performance.now() - this.videoStartTimeMs;
+        // Allow up to 5s for cold-boot driver/FFmpeg init on low-spec CPUs (e.g. Celeron N4000) before triggering fallback
+        const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 5000;
+        if (this.lowPower && failedImmediately) {
+          console.warn(
+            '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
+          );
+          this.lowPower = false;
+          this.lastFallback = { option: 'lowPower', timestamp: Date.now() };
+          this.emit('fallback', { ...this.lastFallback });
+        } else if (this.gpuColorConversion && failedImmediately) {
+          console.warn(
+            '[VaapiEncoder] Video FFmpeg exited immediately with GPU scale_vaapi color conversion; falling back to CPU format=nv12 (gpuColorConversion=false).',
+          );
+          this.gpuColorConversion = false;
+          this.lastFallback = { option: 'gpuColorConversion', timestamp: Date.now() };
+          this.emit('fallback', { ...this.lastFallback });
+        }
         console.log('[VaapiEncoder] Auto-recovering Video FFmpeg process in 1s...');
         setTimeout(() => {
           if (!this.isVideoRunning) {
@@ -284,6 +371,7 @@ export class VaapiEncoder extends EventEmitter {
   public startAudio(): void {
     if (this.isAudioRunning) return;
     this.isAudioRunning = true;
+    this.isIntentionalAudioStop = false;
     this.oggRemainder = Buffer.alloc(0);
     this.oggHeaderParsed = false;
     this.audioPts = 0n;
@@ -454,12 +542,19 @@ export class VaapiEncoder extends EventEmitter {
     fps?: number,
     bitrate?: string | number,
     audioBitrate?: string | number,
+    compressionLevel?: number,
+    lowPower?: boolean,
+    gpuColorConversion?: boolean,
   ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
         `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
         `fps=${fps || this.fps}, ` +
-        `bitrate=${bitrate || this.bitrate}${audioBitrate ? `, audioBitrate=${audioBitrate}` : ''})...`,
+        `bitrate=${bitrate || this.bitrate}, ` +
+        `compressionLevel=${compressionLevel ?? this.compressionLevel}, ` +
+        `lowPower=${lowPower ?? this.lowPower}, ` +
+        `gpuCsc=${gpuColorConversion ?? this.gpuColorConversion}` +
+        `${audioBitrate ? `, audioBitrate=${audioBitrate}` : ''})...`,
     );
     this.stopVideo();
 
@@ -474,6 +569,17 @@ export class VaapiEncoder extends EventEmitter {
     if (bitrate) {
       const bps = this.parseBitrateBps(bitrate);
       this.bitrate = `${Math.round(bps / 1000)}k`;
+    }
+    if (compressionLevel !== undefined && Number.isFinite(compressionLevel)) {
+      this.compressionLevel = Math.max(1, Math.min(7, Math.round(compressionLevel)));
+    }
+    if (lowPower !== undefined) {
+      this.lowPower = lowPower;
+      this.lastFallback = null;
+    }
+    if (gpuColorConversion !== undefined) {
+      this.gpuColorConversion = gpuColorConversion;
+      this.lastFallback = null;
     }
 
     // Reset caches and buffers so new resolution SPS/PPS and IDR keyframe are cleanly broadcast
@@ -556,21 +662,44 @@ export class VaapiEncoder extends EventEmitter {
     audioBitrate?: string | number;
     width?: number;
     height?: number;
+    compressionLevel?: number;
+    lowPower?: boolean;
+    gpuColorConversion?: boolean;
   }): Promise<void> {
     const videoNeedsRestart =
       config.width !== undefined ||
       config.height !== undefined ||
       config.fps !== undefined ||
-      config.bitrate !== undefined;
+      config.bitrate !== undefined ||
+      config.compressionLevel !== undefined ||
+      config.lowPower !== undefined ||
+      config.gpuColorConversion !== undefined;
 
     if (videoNeedsRestart) {
-      await this.restart(
-        config.width,
-        config.height,
-        config.fps,
-        config.bitrate,
-        config.audioBitrate,
-      );
+      const hasTuningUpdates =
+        config.compressionLevel !== undefined ||
+        config.lowPower !== undefined ||
+        config.gpuColorConversion !== undefined;
+      if (hasTuningUpdates) {
+        await this.restart(
+          config.width,
+          config.height,
+          config.fps,
+          config.bitrate,
+          config.audioBitrate,
+          config.compressionLevel,
+          config.lowPower,
+          config.gpuColorConversion,
+        );
+      } else {
+        await this.restart(
+          config.width,
+          config.height,
+          config.fps,
+          config.bitrate,
+          config.audioBitrate,
+        );
+      }
     } else if (config.audioBitrate !== undefined) {
       await this.restartAudio(config.audioBitrate);
     }
@@ -749,6 +878,7 @@ export class VaapiEncoder extends EventEmitter {
       }
 
       this.lastVideoEmitTime = performance.now();
+      this.framesInCurrentProcess++;
 
       this.emit('video', {
         flags,

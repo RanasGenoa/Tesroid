@@ -303,6 +303,13 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
 
   it('aligns dynamic RESIZE dimensions to 8-pixel swscaler boundaries (& ~7) after 400ms debounce', async () => {
     vi.useFakeTimers();
+    configStore.updateConfig({
+      stream: {
+        ...configStore.getConfig().stream,
+        performancePreset: 'high',
+        maxSize: 1920,
+      },
+    });
     const client = new MockSocket();
     wsHandler.handleConnection(client as any);
     await sendClientMsg(client, ClientProtocol.packAuth('1234'));
