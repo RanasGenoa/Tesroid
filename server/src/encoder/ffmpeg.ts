@@ -29,6 +29,11 @@ export interface EncoderOptions {
   gpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
 }
 
+export interface EncoderFallbackEvent {
+  option: 'lowPower' | 'gpuColorConversion';
+  timestamp: number;
+}
+
 export class VaapiEncoder extends EventEmitter {
   private displayNum: string;
   private width: number;
@@ -43,6 +48,7 @@ export class VaapiEncoder extends EventEmitter {
   private gpuColorConversion: boolean;
   private videoStartTimeMs = 0;
   private framesInCurrentProcess = 0;
+  private lastFallback: EncoderFallbackEvent | null = null;
 
   private videoProcess: ChildProcess | null = null;
   private audioProcess: ChildProcess | null = null;
@@ -164,6 +170,22 @@ export class VaapiEncoder extends EventEmitter {
 
   public isGpuColorConversion(): boolean {
     return this.gpuColorConversion;
+  }
+
+  public getEncoderStatus(): {
+    running: boolean;
+    compressionLevel: number;
+    lowPower: boolean;
+    gpuColorConversion: boolean;
+    lastFallback: EncoderFallbackEvent | null;
+  } {
+    return {
+      running: this.isVideoRunning,
+      compressionLevel: this.compressionLevel,
+      lowPower: this.lowPower,
+      gpuColorConversion: this.gpuColorConversion,
+      lastFallback: this.lastFallback ? { ...this.lastFallback } : null,
+    };
   }
 
   public buildVideoArgs(): string[] {
@@ -318,11 +340,15 @@ export class VaapiEncoder extends EventEmitter {
             '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
           );
           this.lowPower = false;
+          this.lastFallback = { option: 'lowPower', timestamp: Date.now() };
+          this.emit('fallback', { ...this.lastFallback });
         } else if (this.gpuColorConversion && failedImmediately) {
           console.warn(
             '[VaapiEncoder] Video FFmpeg exited immediately with GPU scale_vaapi color conversion; falling back to CPU format=nv12 (gpuColorConversion=false).',
           );
           this.gpuColorConversion = false;
+          this.lastFallback = { option: 'gpuColorConversion', timestamp: Date.now() };
+          this.emit('fallback', { ...this.lastFallback });
         }
         console.log('[VaapiEncoder] Auto-recovering Video FFmpeg process in 1s...');
         setTimeout(() => {
@@ -549,9 +575,11 @@ export class VaapiEncoder extends EventEmitter {
     }
     if (lowPower !== undefined) {
       this.lowPower = lowPower;
+      this.lastFallback = null;
     }
     if (gpuColorConversion !== undefined) {
       this.gpuColorConversion = gpuColorConversion;
+      this.lastFallback = null;
     }
 
     // Reset caches and buffers so new resolution SPS/PPS and IDR keyframe are cleanly broadcast
@@ -648,22 +676,30 @@ export class VaapiEncoder extends EventEmitter {
       config.gpuColorConversion !== undefined;
 
     if (videoNeedsRestart) {
-      if (config.compressionLevel !== undefined && Number.isFinite(config.compressionLevel)) {
-        this.compressionLevel = Math.max(1, Math.min(7, Math.round(config.compressionLevel)));
+      const hasTuningUpdates =
+        config.compressionLevel !== undefined ||
+        config.lowPower !== undefined ||
+        config.gpuColorConversion !== undefined;
+      if (hasTuningUpdates) {
+        await this.restart(
+          config.width,
+          config.height,
+          config.fps,
+          config.bitrate,
+          config.audioBitrate,
+          config.compressionLevel,
+          config.lowPower,
+          config.gpuColorConversion,
+        );
+      } else {
+        await this.restart(
+          config.width,
+          config.height,
+          config.fps,
+          config.bitrate,
+          config.audioBitrate,
+        );
       }
-      if (config.lowPower !== undefined) {
-        this.lowPower = config.lowPower;
-      }
-      if (config.gpuColorConversion !== undefined) {
-        this.gpuColorConversion = config.gpuColorConversion;
-      }
-      await this.restart(
-        config.width,
-        config.height,
-        config.fps,
-        config.bitrate,
-        config.audioBitrate,
-      );
     } else if (config.audioBitrate !== undefined) {
       await this.restartAudio(config.audioBitrate);
     }

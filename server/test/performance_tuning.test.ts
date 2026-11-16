@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfigStore, PERFORMANCE_PRESET_DEFAULTS } from '../src/config.js';
 import { VaapiEncoder } from '../src/encoder/ffmpeg.js';
 
@@ -83,5 +83,46 @@ describe('Server Performance Tuning (Issue #46)', () => {
     expect(reloaded.getConfig().stream.performancePreset).toBe('low_power');
     expect(reloaded.getConfig().stream.maxSize).toBe(960);
     expect(reloaded.getConfig().stream.vaapiCompressionLevel).toBe(7);
+  });
+
+  it('should expose getEncoderStatus() and forward tuning options through restart() via updateConfig()', async () => {
+    const encoder = new VaapiEncoder();
+    expect(encoder.getEncoderStatus()).toEqual({
+      running: false,
+      compressionLevel: 7,
+      lowPower: false,
+      gpuColorConversion: true,
+      lastFallback: null,
+    });
+
+    const restartSpy = vi
+      .spyOn(encoder, 'restart')
+      .mockImplementation(
+        async (_w, _h, _fps, _br, _ab, compressionLevel, lowPower, gpuColorConversion) => {
+          // Verify restart() applies tuning fields directly without double-assignment in updateConfig()
+          if (compressionLevel !== undefined) {
+            expect(encoder.getCompressionLevel()).toBe(7);
+          }
+          expect(lowPower).toBe(true);
+          expect(gpuColorConversion).toBe(false);
+        },
+      );
+
+    await encoder.updateConfig({
+      compressionLevel: 4,
+      lowPower: true,
+      gpuColorConversion: false,
+    });
+
+    expect(restartSpy).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      4,
+      true,
+      false,
+    );
   });
 });

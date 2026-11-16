@@ -88,6 +88,9 @@ export function registerSettingsRoutes(
       stream: config.stream,
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
+      ...(encoder && typeof encoder.getEncoderStatus === 'function'
+        ? { encoderStatus: encoder.getEncoderStatus() }
+        : {}),
     };
   });
 

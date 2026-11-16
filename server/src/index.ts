@@ -126,7 +126,7 @@ async function bootstrap() {
   registerSettingsRoutes(app, configStore, authService, browserManager, encoder);
   registerBrowserRoutes(app, browserManager, authService, encoder, wsHandler);
   registerSoundRoutes(app, authService);
-  registerHealthRoutes(app);
+  registerHealthRoutes(app, encoder);
   registerMetricsRoutes(app, authService);
   registerTelemetryRoutes(app, authService);
 
