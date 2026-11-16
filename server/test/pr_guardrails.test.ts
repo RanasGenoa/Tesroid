@@ -134,6 +134,22 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(xdotoolSrc).toContain('NotAllowedError');
   });
 
+  it('preserves Chrome password save and autofill Views Bubble suppression in BrowserManager (Issue #44)', () => {
+    const managerSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/manager.ts'),
+      'utf-8',
+    );
+    const codeOnly = managerSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    expect(codeOnly).toContain('credentials_enable_service');
+    expect(codeOnly).toContain('credentials_enable_autosignin');
+    expect(codeOnly).toContain('password_manager_enabled');
+    expect(codeOnly).toContain('password_manager_leak_detection');
+    expect(codeOnly).toContain('profile_enabled');
+    expect(codeOnly).toContain('credit_card_enabled');
+    expect(codeOnly).toContain('--password-store=basic');
+  });
+
   it('prevents accidental commits of private keys, local developer paths, or Chrome image registry pushes', () => {
     const files = walkWorkspaceFiles(REPO_ROOT);
     const selfPath = path.resolve(__filename);
