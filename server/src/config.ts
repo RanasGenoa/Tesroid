@@ -1,11 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export type PerformancePreset = 'high' | 'balanced' | 'low_power' | 'custom';
+
 export interface StreamConfig {
   bitrate: number; // in bps, e.g. 8000000 = 8Mbps
   maxFps: number; // e.g. 60
   maxSize: number; // maximum dimension, e.g. 1920
   audioBitrate?: number; // in bps, e.g. 128000 = 128kbps (128k - 320k)
+  performancePreset?: PerformancePreset;
+  vaapiCompressionLevel?: number; // 1 (best quality/heaviest) - 7 (fastest/lightest)
+  vaapiLowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
+  vaapiGpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
 }
 
 export interface AppConfig {
@@ -34,8 +40,13 @@ const DEFAULT_CONFIG: AppConfig = {
   stream: {
     bitrate: 1000000,
     maxFps: 30,
-    maxSize: 1280,
+    maxSize: Number(process.env.STREAM_MAX_SIZE) || 1920,
     audioBitrate: 128000,
+    performancePreset: 'balanced',
+    vaapiCompressionLevel: Number(process.env.VAAPI_COMPRESSION_LEVEL) || 4,
+    vaapiLowPower: process.env.VAAPI_LOW_POWER === 'true' || process.env.VAAPI_LOW_POWER === '1',
+    vaapiGpuColorConversion:
+      process.env.VAAPI_GPU_CSC !== 'false' && process.env.VAAPI_GPU_CSC !== '0',
   },
 };
 

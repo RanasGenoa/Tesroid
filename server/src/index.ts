@@ -59,6 +59,9 @@ async function bootstrap() {
     fps: initialFps,
     bitrate: initialBitrate,
     audioBitrate: initialAudioBitrate,
+    compressionLevel: initialStreamConfig?.vaapiCompressionLevel,
+    lowPower: initialStreamConfig?.vaapiLowPower,
+    gpuColorConversion: initialStreamConfig?.vaapiGpuColorConversion,
   });
 
   const inputManager = new X11InputManager(displayNum, displayWidth, displayHeight);

@@ -111,6 +111,47 @@ async function showSettingsModal(
         </select>
         <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; margin-bottom: 0;">※ 車内での音楽鑑賞等で音質を優先する場合は192k〜320kを選択してください。</p>
 
+        <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+          <label style="display: block; font-size: 14px; margin-bottom: 6px;">サーバー映像パフォーマンス (iGPU負荷調整)</label>
+          <select id="cfg-perf-preset">
+            <option value="high">最高 (最大 1920px / GPU変換・高画質)</option>
+            <option value="balanced" selected>標準 (最大 1280px / GPU変換・高効率)</option>
+            <option value="low_power">軽量・省電力 (最大 960px / GPU変換・最速エンコード)</option>
+            <option value="custom">カスタム (詳細設定を表示)</option>
+          </select>
+
+          <div id="cfg-perf-custom-panel" style="display: none; margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color);">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <div>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大横解像度</label>
+                <select id="cfg-max-size">
+                  <option value="960">960px (軽量・qHD)</option>
+                  <option value="1280" selected>1280px (標準・HD)</option>
+                  <option value="1920">1920px (高精細・FHD)</option>
+                </select>
+              </div>
+              <div>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">VAAPI負荷優先度 (1-7)</label>
+                <select id="cfg-vaapi-compression">
+                  <option value="1">1 (最高画質・重)</option>
+                  <option value="4" selected>4 (標準)</option>
+                  <option value="6">6 (高速・軽量)</option>
+                  <option value="7">7 (最速・最軽量)</option>
+                </select>
+              </div>
+            </div>
+
+            <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; cursor: pointer;">
+              <input type="checkbox" id="cfg-vaapi-gpu-csc" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary, #38bdf8);" />
+              <span>GPU 色空間変換 (<code>scale_vaapi</code>) で CPU 負荷を削減</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; cursor: pointer;">
+              <input type="checkbox" id="cfg-vaapi-low-power" style="width: 16px; height: 16px; accent-color: var(--accent-primary, #38bdf8);" />
+              <span>Intel VDEnc 低電力モード (<code>-low_power 1</code>) を使用</span>
+            </label>
+          </div>
+        </div>
+
         <button id="cfg-save-btn" class="btn btn-primary" style="width: 100%; margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 6px;">
           ${ICONS.check} 設定を保存
         </button>
@@ -447,8 +488,63 @@ async function showSettingsModal(
         );
         localStorage.setItem('tesroid_audio_bitrate', String(data.stream.audioBitrate));
       }
+      if (data.stream) {
+        const presetEl = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
+        const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
+        const maxSizeEl = overlay.querySelector('#cfg-max-size') as HTMLSelectElement | null;
+        const compEl = overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement | null;
+        const gpuCscEl = overlay.querySelector('#cfg-vaapi-gpu-csc') as HTMLInputElement | null;
+        const lowPowerEl = overlay.querySelector('#cfg-vaapi-low-power') as HTMLInputElement | null;
+        if (presetEl && data.stream.performancePreset) {
+          presetEl.value = data.stream.performancePreset;
+        }
+        if (customPanelEl) {
+          customPanelEl.style.display =
+            data.stream.performancePreset === 'custom' ? 'block' : 'none';
+        }
+        if (maxSizeEl && data.stream.maxSize) maxSizeEl.value = String(data.stream.maxSize);
+        if (compEl && data.stream.vaapiCompressionLevel) {
+          compEl.value = String(data.stream.vaapiCompressionLevel);
+        }
+        if (gpuCscEl && data.stream.vaapiGpuColorConversion !== undefined) {
+          gpuCscEl.checked = Boolean(data.stream.vaapiGpuColorConversion);
+        }
+        if (lowPowerEl && data.stream.vaapiLowPower !== undefined) {
+          lowPowerEl.checked = Boolean(data.stream.vaapiLowPower);
+        }
+      }
     }
   } catch {}
+
+  overlay.querySelector('#cfg-perf-preset')?.addEventListener('change', (e) => {
+    const preset = (e.target as HTMLSelectElement).value;
+    const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
+    const maxSizeEl = overlay.querySelector('#cfg-max-size') as HTMLSelectElement | null;
+    const compEl = overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement | null;
+    const gpuCscEl = overlay.querySelector('#cfg-vaapi-gpu-csc') as HTMLInputElement | null;
+    const lowPowerEl = overlay.querySelector('#cfg-vaapi-low-power') as HTMLInputElement | null;
+
+    if (customPanelEl) {
+      customPanelEl.style.display = preset === 'custom' ? 'block' : 'none';
+    }
+
+    if (preset === 'high') {
+      if (maxSizeEl) maxSizeEl.value = '1920';
+      if (compEl) compEl.value = '4';
+      if (gpuCscEl) gpuCscEl.checked = true;
+      if (lowPowerEl) lowPowerEl.checked = false;
+    } else if (preset === 'balanced') {
+      if (maxSizeEl) maxSizeEl.value = '1280';
+      if (compEl) compEl.value = '7';
+      if (gpuCscEl) gpuCscEl.checked = true;
+      if (lowPowerEl) lowPowerEl.checked = false;
+    } else if (preset === 'low_power') {
+      if (maxSizeEl) maxSizeEl.value = '960';
+      if (compEl) compEl.value = '7';
+      if (gpuCscEl) gpuCscEl.checked = true;
+      if (lowPowerEl) lowPowerEl.checked = false;
+    }
+  });
 
   // Save settings
   overlay.querySelector('#cfg-save-btn')?.addEventListener('click', async () => {
@@ -462,12 +558,31 @@ async function showSettingsModal(
     const audioBitrate = Number(
       (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement)?.value || 128000,
     );
+    const performancePreset =
+      (overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement)?.value || 'balanced';
+    const maxSize = Number(
+      (overlay.querySelector('#cfg-max-size') as HTMLSelectElement)?.value || 1280,
+    );
+    const vaapiCompressionLevel = Number(
+      (overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement)?.value || 4,
+    );
+    const vaapiGpuColorConversion = Boolean(
+      (overlay.querySelector('#cfg-vaapi-gpu-csc') as HTMLInputElement)?.checked,
+    );
+    const vaapiLowPower = Boolean(
+      (overlay.querySelector('#cfg-vaapi-low-power') as HTMLInputElement)?.checked,
+    );
     const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
     interface SettingsUpdatePayload {
       displayScale: number;
       stream: {
         audioBitrate: number;
+        performancePreset: string;
+        maxSize: number;
+        vaapiCompressionLevel: number;
+        vaapiLowPower: boolean;
+        vaapiGpuColorConversion: boolean;
       };
       pin?: string;
       locale?: string;
@@ -477,6 +592,11 @@ async function showSettingsModal(
       displayScale,
       stream: {
         audioBitrate,
+        performancePreset,
+        maxSize,
+        vaapiCompressionLevel,
+        vaapiLowPower,
+        vaapiGpuColorConversion,
       },
     };
     if (newPin) body.pin = newPin;
@@ -495,7 +615,7 @@ async function showSettingsModal(
       if (res.ok) {
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
-            detail: { displayScale, bufferDepth, audioBitrate },
+            detail: { displayScale, bufferDepth, audioBitrate, stream: body.stream },
           }),
         );
         if (initialLocale && locale && locale !== initialLocale) {
