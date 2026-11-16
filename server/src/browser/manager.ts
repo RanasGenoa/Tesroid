@@ -1124,9 +1124,11 @@ export class BrowserManager {
   }
 
   /**
-   * Pre-configures Chrome user profile preferences (Default/Preferences) to:
+   * Pre-configures Chrome user profile preferences (Default/Preferences and Preferences) to:
    * 1. Suppress translation popups/bubbles completely (translate.enabled: false).
    * 2. Set accept_languages to prefer the configured locale (e.g. ja-JP,ja,en-US,en).
+   * 3. Suppress Chrome native password manager save/autosignin/leak-detection and autofill bubbles
+   *    (Views Bubbles cannot be dismissed via DOM-scoped CdpTouchBridge injection).
    */
   public applyChromePreferences(): void {
     try {
@@ -1146,7 +1148,8 @@ export class BrowserManager {
         let prefs: Record<string, any> = {};
         if (fs.existsSync(prefPath)) {
           try {
-            prefs = JSON.parse(fs.readFileSync(prefPath, 'utf-8'));
+            const parsed = JSON.parse(fs.readFileSync(prefPath, 'utf-8'));
+            prefs = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
           } catch {
             prefs = {};
           }
@@ -1168,6 +1171,23 @@ export class BrowserManager {
         };
 
         prefs.translate_blocked_languages = prefs.translate_blocked_languages || [];
+
+        // Suppress Chrome native password manager save / autosignin / leak detection
+        // and autofill Views Bubbles (cannot be dismissed via DOM touch injection).
+        prefs.credentials_enable_service = false;
+        prefs.credentials_enable_autosignin = false;
+
+        prefs.profile = {
+          ...(prefs.profile || {}),
+          password_manager_enabled: false,
+          password_manager_leak_detection: false,
+        };
+
+        prefs.autofill = {
+          ...(prefs.autofill || {}),
+          profile_enabled: false,
+          credit_card_enabled: false,
+        };
 
         fs.writeFileSync(prefPath, JSON.stringify(prefs, null, 2), 'utf-8');
       }
@@ -1193,6 +1213,8 @@ export class BrowserManager {
       '--hide-crash-restore-bubble',
       '--disable-infobars',
       '--disable-notifications',
+      // Prevent OS keyring prompts and credential store bubbles in Linux/Xvfb
+      '--password-store=basic',
       '--autoplay-policy=no-user-gesture-required',
       '--disable-gpu-sandbox',
       '--ignore-gpu-blocklist',

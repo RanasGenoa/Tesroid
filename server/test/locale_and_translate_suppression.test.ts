@@ -10,7 +10,7 @@ import { LockoutManager } from '../src/lockout.js';
 import { registerSettingsRoutes } from '../src/routes/settings.js';
 import { registerSetupRoutes } from '../src/routes/setup.js';
 
-describe('Locale Setting & Chrome Translation Modal Suppression', () => {
+describe('Locale Setting & Chrome Translation / Password Bubble Suppression', () => {
   let tmpDir: string;
   let profileDir: string;
 
@@ -64,7 +64,80 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(updated.intl.selected_languages).toBe('ja-JP,ja,en-US,en');
   });
 
-  it('configures Chrome spawn arguments with Translate disabled, Japanese lang switches, and TZ env', () => {
+  it('suppresses Chrome password save and autofill Views Bubbles while preserving profile exit state', () => {
+    const bm = new BrowserManager({ profileDir, locale: 'ja-JP' });
+    const defaultPrefsPath = path.join(profileDir, 'Default', 'Preferences');
+    const rootPrefsPath = path.join(profileDir, 'Preferences');
+
+    // Pre-populate both Default/Preferences (already Normal) and root Preferences (Crashed -> cleaned)
+    fs.writeFileSync(
+      defaultPrefsPath,
+      JSON.stringify({
+        browser: { check_default_browser: false },
+        credentials_enable_service: true,
+        credentials_enable_autosignin: true,
+        profile: {
+          name: 'Person 1',
+          exit_type: 'Normal',
+          exited_cleanly: true,
+          password_manager_enabled: true,
+          password_manager_leak_detection: true,
+        },
+        autofill: {
+          profile_enabled: true,
+          credit_card_enabled: true,
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      rootPrefsPath,
+      JSON.stringify({
+        profile: {
+          exit_type: 'Crashed',
+          exited_cleanly: false,
+        },
+      }),
+      'utf-8',
+    );
+
+    (bm as any).cleanProfileLocks();
+    bm.applyChromePreferences();
+
+    for (const prefPath of [defaultPrefsPath, rootPrefsPath]) {
+      const updated = JSON.parse(fs.readFileSync(prefPath, 'utf-8'));
+      expect(updated.credentials_enable_service).toBe(false);
+      expect(updated.credentials_enable_autosignin).toBe(false);
+      expect(updated.profile.password_manager_enabled).toBe(false);
+      expect(updated.profile.password_manager_leak_detection).toBe(false);
+      expect(updated.autofill.profile_enabled).toBe(false);
+      expect(updated.autofill.credit_card_enabled).toBe(false);
+      expect(updated.profile.exit_type).toBe('Normal');
+      expect(updated.profile.exited_cleanly).toBe(true);
+    }
+
+    const updatedDefault = JSON.parse(fs.readFileSync(defaultPrefsPath, 'utf-8'));
+    expect(updatedDefault.browser.check_default_browser).toBe(false);
+    expect(updatedDefault.profile.name).toBe('Person 1');
+  });
+
+  it('creates Default/Preferences with password and autofill suppression on a fresh profile', () => {
+    const freshProfileDir = path.join(tmpDir, 'fresh-profile');
+    const bm = new BrowserManager({ profileDir: freshProfileDir, locale: 'ja-JP' });
+
+    bm.applyChromePreferences();
+
+    const defaultPrefsPath = path.join(freshProfileDir, 'Default', 'Preferences');
+    const created = JSON.parse(fs.readFileSync(defaultPrefsPath, 'utf-8'));
+    expect(created.credentials_enable_service).toBe(false);
+    expect(created.credentials_enable_autosignin).toBe(false);
+    expect(created.profile.password_manager_enabled).toBe(false);
+    expect(created.profile.password_manager_leak_detection).toBe(false);
+    expect(created.autofill.profile_enabled).toBe(false);
+    expect(created.autofill.credit_card_enabled).toBe(false);
+  });
+
+  it('configures Chrome spawn arguments with Translate disabled, basic password store, Japanese lang switches, and TZ env', () => {
     const bm = new BrowserManager({ profileDir, locale: 'ja-JP', timezone: 'Asia/Tokyo' });
 
     const args = bm.buildChromeArgs('https://www.youtube.com');
@@ -75,6 +148,7 @@ describe('Locale Setting & Chrome Translation Modal Suppression', () => {
     expect(args).toContain('--accept-lang=ja-JP,ja,en-US,en');
     expect(args).toContain('--disable-translate');
     expect(args).toContain('--disable-features=Av1Decoder,AudioServiceSandbox,Translate');
+    expect(args).toContain('--password-store=basic');
     expect(args).toContain('--app=https://www.youtube.com');
 
     // Verify Linux system locale env & TZ:

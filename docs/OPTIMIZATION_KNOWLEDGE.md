@@ -293,6 +293,25 @@ YouTube などの Google サービスでパスキー（Passkey / WebAuthn）が�
 2. `navigator.credentials.get()` および `navigator.credentials.create()` に `publicKey` オプションが含まれる場合、Chrome ネイティブ UI が起動する前に即座に `DOMException('Passkeys are not supported in this environment.', 'NotAllowedError')` を throw して拒絶。
 3. これにより、Google ログイン画面などの認証フローは「パスキー未対応端末またはユーザー拒絶」として安全にパスワード入力や「別の方法でログイン」のフォールバック画面へ自動遷移し、ネイティブダイアログの出現自体を完全に防止する。
 
+### 関連対策 (Issue #44): パスワード保存・自動サインイン・漏洩検知・自動入力 Views Bubble の抑止
+
+#### 現象・原因
+Google ログインや各種 Web フォームの送信時に、Chrome ネイティブの **パスワード保存確認バブル（「Save password?」）**、自動サインイン通知、パスワード漏洩警告、住所/クレジットカード自動入力バブルが表示されることがある。
+これらはいずれも WebAuthn ダイアログと同様に Chrome ブラウザ側のネイティブ UI（**Views Bubble**）として描画されるため、`CdpTouchBridge` による DOM 向け `Input.dispatchTouchEvent` が一切届かず、車載画面からタップして閉じることができない（画面上部に居座り続け、操作を阻害する）。さらに Linux / Xvfb コンテナ環境では OS キーリングが存在せず、認証ストア初期化時のプロンプト要因にもなる。
+
+#### 解決策: `applyChromePreferences()` と `--password-store=basic`
+`BrowserManager`（`server/src/browser/manager.ts`）の起動前プロファイル設定および起動引数で、これらネイティブバブルの出現経路を根本から抑止する：
+
+1. **`BrowserManager.applyChromePreferences()`** (`Default/Preferences` および存在時は `Preferences` の両方に適用、既存の `profile.exit_type` / `profile.exited_cleanly` 等はスプレッド構文で保持):
+   - `credentials_enable_service: false`: パスワード保存確認バブル・資格情報保存サービスを無効化。
+   - `credentials_enable_autosignin: false`: Credential Management API による自動サインインバブルを無効化。
+   - `profile.password_manager_enabled: false`: Chrome パスワードマネージャー自体を無効化。
+   - `profile.password_manager_leak_detection: false`: パスワード漏洩検知ダイアログを無効化。
+   - `autofill.profile_enabled: false` / `autofill.credit_card_enabled: false`: 住所・クレジットカード情報の保存/自動入力バブルを無効化。
+2. **`BrowserManager.buildChromeArgs()`**:
+   - `'--password-store=basic'` を付与し、Linux / Xvfb 環境での OS キーリングプロンプトや資格情報ストア由来のネイティブダイアログを抑止する。
+   - `--disable-features=Av1Decoder,AudioServiceSandbox,Translate` など既存の VAAPI / 音声 / 翻訳抑止フラグおよびハイブリッド描画方針はそのまま維持する。
+
 ---
 
 ## 7. 課題⑥: テスラ車載ブラウザでの OSK（ソフトウェアキーボード）呼び出し不可と仮想キーボードバーによる CDP 入力注入
@@ -384,6 +403,8 @@ Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄�
     - 車載ブラウザ（特に MCU2 Intel Atom）の V8 エンジンで頻繁な GC Pause が発生し、映像の定期的なカクつきやコマ落ちを招きます。H.264 パケットはサーバー側で AVCC 形式に事前パッキングし、クライアント側ではゼロコピーでデコードしてください。
 11. ❌ **`FramePacer` の空キュー時即時描画パスでリップシンク PLL シフトを破棄すること**
     - `AudioPlayer` は Web Audio API の音途切れ防止のため 160ms のジッターバッファを持っています。`FramePacer` でキューが空の際に到着時刻 `now` に即時描画して `lastScheduledTimeMs = now` で時刻をリセットすると、PLL 補正が一切蓄積されず、映像が音より恒常的に ~160ms 先行する固定音ズレが発生します。キューが空であっても音声再生 PTS との差分から PLL シフトを算出し、`lastScheduledTimeMs = scheduledRenderTime` を維持してスケジュールを累積収束させてください。
+12. ❌ **Chrome のパスワード保存・自動入力 Views Bubble 抑止設定 (`applyChromePreferences` / `--password-store=basic`) を削除すること (Issue #44)**
+    - パスワード保存確認（「Save password?」）、自動サインイン、漏洩検知、自動入力の各バブルはすべて Chrome ネイティブ UI（Views Bubble）であり、`CdpTouchBridge` による DOM タッチ入力ではタップして閉じられません。`applyChromePreferences()` での `credentials_enable_service` / `credentials_enable_autosignin` / `profile.password_manager_enabled` / `profile.password_manager_leak_detection` / `autofill.profile_enabled` / `autofill.credit_card_enabled` の無効化、および `--password-store=basic` を必ず維持してください（あわせて `cleanProfileLocks()` が設定する `profile.exit_type` / `exited_cleanly` を上書き破壊しないこと）。
 
 ---
 
