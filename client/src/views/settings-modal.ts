@@ -1,4 +1,15 @@
-import { ICONS, showToast } from './icons.js';
+import {
+  clearElementChildren,
+  DEFAULT_FAVORITES,
+  DEFAULT_HOME_FAVORITE_ID,
+  escapeHtml,
+  type FavoriteItem,
+  ICONS,
+  isSafeHttpUrl,
+  resolveHomeFavorite,
+  sanitizeFavorites,
+  showToast,
+} from './icons.js';
 
 export function openSettingsWithAuth(
   container: HTMLElement,
@@ -58,11 +69,35 @@ async function showSettingsModal(
           </button>
         </div>
 
-        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;">
-          <button class="btn btn-secondary quick-url-btn" data-url="https://www.youtube.com">YouTube</button>
-          <button class="btn btn-secondary quick-url-btn" data-url="https://tver.jp">TVer</button>
-          <button class="btn btn-secondary quick-url-btn" data-url="https://www.netflix.com">Netflix</button>
-          <button class="btn btn-secondary quick-url-btn" data-url="https://www.amazon.co.jp/primevideo">Prime Video</button>
+        <div class="fav-manage-section">
+          <div class="fav-manage-header">
+            <h3 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
+              ${ICONS.star} お気に入り管理 & ホーム設定
+            </h3>
+            <button id="fav-reset-btn" type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px; min-height: 36px; display: inline-flex; align-items: center; gap: 6px;">
+              ${ICONS.refresh} 初期プリセットに戻す
+            </button>
+          </div>
+
+          <div class="fav-form-card">
+            <div class="fav-form-inputs">
+              <input type="text" id="fav-title-input" placeholder="サイト名 (例: YouTube)" autocomplete="off" />
+              <input type="text" id="fav-url-input" placeholder="https://www.youtube.com" autocomplete="off" />
+            </div>
+            <div class="fav-form-actions">
+              <button id="fav-add-btn" type="button" class="btn btn-primary" style="padding: 8px 16px; min-height: 40px; font-size: 13px; gap: 6px;">
+                ${ICONS.plus} 追加
+              </button>
+              <button id="fav-cancel-edit-btn" type="button" class="btn btn-secondary" style="display: none; padding: 8px 14px; min-height: 40px; font-size: 13px;">
+                キャンセル
+              </button>
+              <button id="fav-add-current-modal-btn" type="button" class="btn btn-secondary" style="padding: 8px 14px; min-height: 40px; font-size: 13px; gap: 6px; margin-left: auto;">
+                ${ICONS.plus} 現在のページを追加
+              </button>
+            </div>
+          </div>
+
+          <div id="favorites-manage-list" class="fav-manage-list"></div>
         </div>
       </div>
 
@@ -199,6 +234,8 @@ async function showSettingsModal(
   // Metrics polling timer & clear confirmation timer
   let metricsTimer: any = null;
   let clearConfirmTimer: any = null;
+  let favResetConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+  const favoritesManageList = overlay.querySelector('#favorites-manage-list') as HTMLElement | null;
 
   const updateMetricsDisplay = async () => {
     const displayEl = overlay.querySelector('#metrics-display');
@@ -317,6 +354,13 @@ async function showSettingsModal(
       clearTimeout(clearConfirmTimer);
       clearConfirmTimer = null;
     }
+    if (favResetConfirmTimer) {
+      clearTimeout(favResetConfirmTimer);
+      favResetConfirmTimer = null;
+    }
+    if (favoritesManageList) {
+      clearElementChildren(favoritesManageList);
+    }
     overlay.remove();
     onClose();
   };
@@ -328,6 +372,10 @@ async function showSettingsModal(
   // Navigate URL
   const urlInput = overlay.querySelector('#browser-url-input') as HTMLInputElement;
   const navigateTo = async (url: string) => {
+    if (!isSafeHttpUrl(url)) {
+      showToast('有効な http:// または https:// のURLを入力してください', 'error');
+      return;
+    }
     try {
       const res = await fetch('/api/browser/navigate', {
         method: 'POST',
@@ -335,6 +383,7 @@ async function showSettingsModal(
         body: JSON.stringify({ url }),
       });
       if (res.ok) {
+        currentBrowserUrl = url;
         showToast(`URLを移動しました: ${url}`, 'success');
       } else {
         showToast(`移動失敗: HTTP ${res.status}`, 'error');
@@ -348,15 +397,397 @@ async function showSettingsModal(
     if (urlInput.value.trim()) navigateTo(urlInput.value.trim());
   });
 
-  overlay.querySelectorAll('.quick-url-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const url = btn.getAttribute('data-url');
-      if (url) {
-        urlInput.value = url;
-        navigateTo(url);
-      }
+  // Favorites Management State & Handlers
+  let favorites: FavoriteItem[] = DEFAULT_FAVORITES.map((f) => ({ ...f }));
+  let homeFavoriteId = DEFAULT_HOME_FAVORITE_ID;
+  let currentBrowserUrl = '';
+  let currentBrowserTitle = '';
+  let editingFavoriteId: string | null = null;
+  let isSavingFavorites = false;
+
+  const favTitleInput = overlay.querySelector('#fav-title-input') as HTMLInputElement | null;
+  const favUrlInput = overlay.querySelector('#fav-url-input') as HTMLInputElement | null;
+  const favAddBtn = overlay.querySelector('#fav-add-btn') as HTMLButtonElement | null;
+  const favCancelEditBtn = overlay.querySelector(
+    '#fav-cancel-edit-btn',
+  ) as HTMLButtonElement | null;
+  const favAddCurrentModalBtn = overlay.querySelector(
+    '#fav-add-current-modal-btn',
+  ) as HTMLButtonElement | null;
+  const favResetBtn = overlay.querySelector('#fav-reset-btn') as HTMLButtonElement | null;
+
+  const findModalElement = (rawId: string, escapedId: string): HTMLElement | null => {
+    return (
+      document.getElementById(rawId) ||
+      document.getElementById(escapedId) ||
+      (() => {
+        try {
+          return overlay.querySelector(`#${escapedId}`) as HTMLElement | null;
+        } catch {
+          return null;
+        }
+      })()
+    );
+  };
+
+  const resetEditMode = () => {
+    editingFavoriteId = null;
+    if (favTitleInput) favTitleInput.value = '';
+    if (favUrlInput) favUrlInput.value = '';
+    if (favAddBtn) favAddBtn.innerHTML = `${ICONS.plus} 追加`;
+    if (favCancelEditBtn) favCancelEditBtn.style.display = 'none';
+  };
+
+  const renderFavoritesManageList = () => {
+    if (!favoritesManageList) return;
+    clearElementChildren(favoritesManageList);
+
+    if (favorites.length === 0) {
+      favoritesManageList.innerHTML =
+        '<div class="hud-favorites-empty">お気に入りが登録されていません。上のフォームから追加するか「初期プリセットに戻す」を押してください。</div>';
+      return;
+    }
+
+    const resolvedHome = resolveHomeFavorite(favorites, homeFavoriteId);
+    favoritesManageList.innerHTML = favorites
+      .map((item, idx) => {
+        const isHome = item.id === resolvedHome.id;
+        const safeId = escapeHtml(item.id);
+        const safeTitle = escapeHtml(item.title);
+        const safeUrl = escapeHtml(item.url);
+        return `
+          <div class="fav-manage-row${isHome ? ' is-home' : ''}" data-favorite-id="${safeId}">
+            <button id="fav-launch-${safeId}" type="button" class="fav-manage-launch" title="このページを開く (${safeUrl})">
+              <span class="fav-manage-launch-title">${safeTitle}</span>
+              <span class="fav-manage-launch-url">${safeUrl}</span>
+            </button>
+            <div class="fav-manage-controls">
+              <button
+                id="fav-home-${safeId}"
+                type="button"
+                class="fav-icon-btn${isHome ? ' is-home' : ''}"
+                title="${isHome ? '現在のホーム設定' : 'ホームに設定'}"
+              >
+                ${ICONS.home}
+              </button>
+              <button
+                id="fav-up-${safeId}"
+                type="button"
+                class="fav-icon-btn"
+                title="上へ移動"
+                ${idx === 0 ? 'disabled' : ''}
+              >
+                ${ICONS.arrowUp}
+              </button>
+              <button
+                id="fav-down-${safeId}"
+                type="button"
+                class="fav-icon-btn"
+                title="下へ移動"
+                ${idx === favorites.length - 1 ? 'disabled' : ''}
+              >
+                ${ICONS.arrowDown}
+              </button>
+              <button
+                id="fav-edit-${safeId}"
+                type="button"
+                class="fav-icon-btn"
+                title="編集"
+              >
+                ${ICONS.edit}
+              </button>
+              <button
+                id="fav-delete-${safeId}"
+                type="button"
+                class="fav-icon-btn fav-delete-btn"
+                title="削除"
+              >
+                ${ICONS.trash}
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    favorites.forEach((item, idx) => {
+      const safeId = escapeHtml(item.id);
+
+      findModalElement(`fav-launch-${item.id}`, `fav-launch-${safeId}`)?.addEventListener(
+        'click',
+        () => {
+          if (urlInput) urlInput.value = item.url;
+          navigateTo(item.url);
+        },
+      );
+
+      findModalElement(`fav-home-${item.id}`, `fav-home-${safeId}`)?.addEventListener(
+        'click',
+        () => {
+          void persistFavoritesUpdate(
+            { homeFavoriteId: item.id },
+            `ホームを「${item.title}」に設定しました`,
+          );
+        },
+      );
+
+      findModalElement(`fav-up-${item.id}`, `fav-up-${safeId}`)?.addEventListener('click', () => {
+        if (idx <= 0) return;
+        const reordered = favorites.map((f) => ({ ...f }));
+        const prev = reordered[idx - 1];
+        reordered[idx - 1] = reordered[idx];
+        reordered[idx] = prev;
+        void persistFavoritesUpdate({ favorites: reordered }, '並び順を更新しました');
+      });
+
+      findModalElement(`fav-down-${item.id}`, `fav-down-${safeId}`)?.addEventListener(
+        'click',
+        () => {
+          if (idx >= favorites.length - 1) return;
+          const reordered = favorites.map((f) => ({ ...f }));
+          const next = reordered[idx + 1];
+          reordered[idx + 1] = reordered[idx];
+          reordered[idx] = next;
+          void persistFavoritesUpdate({ favorites: reordered }, '並び順を更新しました');
+        },
+      );
+
+      findModalElement(`fav-edit-${item.id}`, `fav-edit-${safeId}`)?.addEventListener(
+        'click',
+        () => {
+          editingFavoriteId = item.id;
+          if (favTitleInput) favTitleInput.value = item.title;
+          if (favUrlInput) favUrlInput.value = item.url;
+          if (favAddBtn) favAddBtn.innerHTML = `${ICONS.check} 保存`;
+          if (favCancelEditBtn) favCancelEditBtn.style.display = 'inline-flex';
+          favTitleInput?.focus?.();
+        },
+      );
+
+      findModalElement(`fav-delete-${item.id}`, `fav-delete-${safeId}`)?.addEventListener(
+        'click',
+        () => {
+          const remaining = favorites.filter((f) => f.id !== item.id);
+          const nextHomeId =
+            homeFavoriteId === item.id
+              ? remaining[0]?.id || DEFAULT_HOME_FAVORITE_ID
+              : homeFavoriteId;
+          if (editingFavoriteId === item.id) {
+            resetEditMode();
+          }
+          void persistFavoritesUpdate(
+            { favorites: remaining, homeFavoriteId: nextHomeId },
+            `「${item.title}」を削除しました`,
+          );
+        },
+      );
     });
+  };
+
+  const persistFavoritesUpdate = async (
+    payload: {
+      favorites?: FavoriteItem[];
+      homeFavoriteId?: string;
+      resetFavorites?: boolean;
+    },
+    successMessage: string,
+  ): Promise<boolean> => {
+    if (isSavingFavorites) return false;
+    isSavingFavorites = true;
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        showToast(errData?.error || `保存に失敗しました (HTTP ${res.status})`, 'error');
+        return false;
+      }
+      const data = await res.json().catch(() => null);
+      const returnedFavorites = sanitizeFavorites(data?.settings?.favorites);
+      if (returnedFavorites !== null) {
+        favorites = returnedFavorites;
+      } else if (payload.resetFavorites) {
+        favorites = DEFAULT_FAVORITES.map((f) => ({ ...f }));
+      } else if (payload.favorites !== undefined) {
+        favorites = payload.favorites.map((f) => ({ ...f }));
+      }
+
+      if (
+        typeof data?.settings?.homeFavoriteId === 'string' &&
+        data.settings.homeFavoriteId.trim()
+      ) {
+        homeFavoriteId = data.settings.homeFavoriteId.trim();
+      } else if (payload.resetFavorites) {
+        homeFavoriteId = DEFAULT_HOME_FAVORITE_ID;
+      } else if (payload.homeFavoriteId !== undefined) {
+        homeFavoriteId = payload.homeFavoriteId;
+      }
+
+      if (favorites.length > 0 && !favorites.some((f) => f.id === homeFavoriteId)) {
+        homeFavoriteId = favorites[0].id;
+      }
+
+      renderFavoritesManageList();
+      window.dispatchEvent(
+        new CustomEvent('tesroid:settings-updated', {
+          detail: { favorites: favorites.map((f) => ({ ...f })), homeFavoriteId },
+        }),
+      );
+      showToast(successMessage, 'success');
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '通信失敗';
+      showToast(`保存エラー: ${msg}`, 'error');
+      return false;
+    } finally {
+      isSavingFavorites = false;
+    }
+  };
+
+  favAddBtn?.addEventListener('click', async () => {
+    const title = favTitleInput?.value?.trim() || '';
+    const url = favUrlInput?.value?.trim() || '';
+    if (!title) {
+      showToast('表示タイトルを入力してください', 'error');
+      return;
+    }
+    if (!isSafeHttpUrl(url)) {
+      showToast('有効な http:// または https:// のURLを入力してください', 'error');
+      return;
+    }
+
+    if (editingFavoriteId) {
+      const nextFavorites = favorites.map((f) =>
+        f.id === editingFavoriteId ? { ...f, title, url } : f,
+      );
+      const saved = await persistFavoritesUpdate(
+        { favorites: nextFavorites },
+        `「${title}」を更新しました`,
+      );
+      if (saved) {
+        resetEditMode();
+      }
+      return;
+    }
+
+    if (favorites.length >= 100) {
+      showToast('お気に入りは最大100件まで登録できます', 'error');
+      return;
+    }
+
+    let newId = `fav-${Date.now()}`;
+    let suffix = 1;
+    while (favorites.some((f) => f.id === newId)) {
+      newId = `fav-${Date.now()}-${suffix++}`;
+    }
+    const nextFavorites = [...favorites, { id: newId, title, url }];
+    const saved = await persistFavoritesUpdate(
+      { favorites: nextFavorites },
+      `お気に入りに追加しました: ${title}`,
+    );
+    if (saved) {
+      resetEditMode();
+    }
   });
+
+  favCancelEditBtn?.addEventListener('click', () => {
+    resetEditMode();
+  });
+
+  favAddCurrentModalBtn?.addEventListener('click', async () => {
+    let targetUrl = currentBrowserUrl;
+    let targetTitle = currentBrowserTitle;
+    if (!isSafeHttpUrl(targetUrl)) {
+      try {
+        const statusRes = await fetch('/api/browser/status', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          if (typeof statusData?.url === 'string' && isSafeHttpUrl(statusData.url)) {
+            targetUrl = statusData.url;
+            currentBrowserUrl = targetUrl;
+          }
+          if (typeof statusData?.title === 'string') {
+            targetTitle = statusData.title;
+            currentBrowserTitle = targetTitle;
+          }
+        }
+      } catch {}
+    }
+
+    if (!isSafeHttpUrl(targetUrl)) {
+      showToast('現在のブラウザURLを取得できませんでした', 'error');
+      return;
+    }
+    if (favorites.some((f) => f.url === targetUrl)) {
+      showToast('このページは既にお気に入りに登録されています', 'info');
+      return;
+    }
+    if (favorites.length >= 100) {
+      showToast('お気に入りは最大100件まで登録できます', 'error');
+      return;
+    }
+
+    let host = targetUrl;
+    try {
+      host = new URL(targetUrl).hostname;
+    } catch {}
+    let newId = `fav-${Date.now()}`;
+    let suffix = 1;
+    while (favorites.some((f) => f.id === newId)) {
+      newId = `fav-${Date.now()}-${suffix++}`;
+    }
+    const newFav: FavoriteItem = {
+      id: newId,
+      title: targetTitle.trim() || host,
+      url: targetUrl,
+    };
+    await persistFavoritesUpdate(
+      { favorites: [...favorites, newFav] },
+      `お気に入りに追加しました: ${newFav.title}`,
+    );
+  });
+
+  let isFavResetConfirmPending = false;
+  const resetFavResetConfirm = () => {
+    isFavResetConfirmPending = false;
+    if (favResetConfirmTimer) {
+      clearTimeout(favResetConfirmTimer);
+      favResetConfirmTimer = null;
+    }
+    if (favResetBtn) {
+      favResetBtn.innerHTML = `${ICONS.refresh} 初期プリセットに戻す`;
+      favResetBtn.style.borderColor = '';
+      favResetBtn.style.background = '';
+    }
+  };
+
+  favResetBtn?.addEventListener('click', async () => {
+    if (!isFavResetConfirmPending) {
+      isFavResetConfirmPending = true;
+      favResetBtn.innerHTML = `${ICONS.refresh} もう一度タップで初期化を実行`;
+      favResetBtn.style.borderColor = '#f87171';
+      favResetBtn.style.background = 'rgba(248, 113, 113, 0.15)';
+      showToast('もう一度タップすると初期プリセットに戻ります（5秒後にキャンセル）', 'info');
+      favResetConfirmTimer = setTimeout(() => {
+        resetFavResetConfirm();
+      }, 5000);
+      return;
+    }
+
+    resetFavResetConfirm();
+    resetEditMode();
+    await persistFavoritesUpdate(
+      { resetFavorites: true },
+      'お気に入りを初期プリセットに戻しました',
+    );
+  });
+
+  renderFavoritesManageList();
 
   // Load current settings
   const savedLocalScale = localStorage.getItem('tesroid_display_scale');
@@ -475,7 +906,23 @@ async function showSettingsModal(
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.browserUrl) urlInput.value = data.browserUrl;
+      if (data.browserUrl) {
+        urlInput.value = data.browserUrl;
+        if (isSafeHttpUrl(data.browserUrl)) {
+          currentBrowserUrl = data.browserUrl;
+        }
+      }
+      if (typeof data.browserTitle === 'string') {
+        currentBrowserTitle = data.browserTitle;
+      }
+      const fetchedFavorites = sanitizeFavorites(data.favorites);
+      if (fetchedFavorites !== null) {
+        favorites = fetchedFavorites;
+      }
+      if (typeof data.homeFavoriteId === 'string' && data.homeFavoriteId.trim()) {
+        homeFavoriteId = data.homeFavoriteId.trim();
+      }
+      renderFavoritesManageList();
       if (data.displayScale) {
         (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(
           data.displayScale,

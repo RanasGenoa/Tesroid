@@ -5,7 +5,7 @@ import fastifyWebSocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import { AuthService } from './auth.js';
 import { BrowserManager } from './browser/manager.js';
-import { ConfigStore } from './config.js';
+import { ConfigStore, resolveHomeUrl } from './config.js';
 import { VaapiEncoder } from './encoder/ffmpeg.js';
 import { X11InputManager } from './input/xdotool.js';
 import { LockoutManager } from './lockout.js';
@@ -33,17 +33,18 @@ async function bootstrap() {
   const displayHeight = Number(process.env.DISPLAY_HEIGHT) || 720;
   const displayNum = process.env.DISPLAY_NUM || ':99';
 
+  const initialConfig = configStore.getConfig();
   const browserManager = new BrowserManager({
     displayNum,
     width: displayWidth,
     height: displayHeight,
-    defaultUrl: process.env.BROWSER_URL || 'https://www.youtube.com',
-    displayScale: configStore.getConfig().displayScale || 120,
-    locale: configStore.getConfig().locale || 'ja-JP',
-    timezone: configStore.getConfig().timezone || 'Asia/Tokyo',
+    defaultUrl: process.env.BROWSER_URL || resolveHomeUrl(initialConfig),
+    displayScale: initialConfig.displayScale || 120,
+    locale: initialConfig.locale || 'ja-JP',
+    timezone: initialConfig.timezone || 'Asia/Tokyo',
   });
 
-  const initialStreamConfig = configStore.getConfig().stream;
+  const initialStreamConfig = initialConfig.stream;
   const initialFps = initialStreamConfig?.maxFps || Number(process.env.FPS) || 30;
   const initialBitrate = initialStreamConfig?.bitrate
     ? `${Math.round(initialStreamConfig.bitrate / 1000)}k`

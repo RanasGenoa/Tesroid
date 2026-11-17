@@ -50,7 +50,129 @@ export const ICONS = {
   volume2: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
   download: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>`,
   trash: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+  star: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+  plus: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>`,
+  edit: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  arrowUp: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>`,
+  arrowDown: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>`,
 };
+
+export interface FavoriteItem {
+  id: string;
+  title: string;
+  url: string;
+}
+
+export const DEFAULT_HOME_FAVORITE_ID = 'youtube';
+
+export const DEFAULT_FAVORITES: FavoriteItem[] = [
+  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+  { id: 'netflix', title: 'Netflix', url: 'https://www.netflix.com' },
+  { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+  { id: 'disneyplus', title: 'Disney+', url: 'https://www.disneyplus.com' },
+  { id: 'unext', title: 'U-NEXT', url: 'https://video.unext.jp' },
+  { id: 'dazn', title: 'DAZN', url: 'https://www.dazn.com' },
+  { id: 'nicovideo', title: 'ニコニコ動画', url: 'https://www.nicovideo.jp' },
+  { id: 'twitch', title: 'Twitch', url: 'https://www.twitch.tv' },
+  { id: 'google', title: 'Google 検索', url: 'https://www.google.com' },
+  { id: 'tver', title: 'TVer (動作不可)', url: 'https://tver.jp' },
+  { id: 'primevideo', title: 'Prime Video (動作不可)', url: 'https://www.amazon.co.jp/primevideo' },
+];
+
+/**
+ * Escapes HTML special characters to prevent XSS when building HTML templates.
+ */
+export function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Checks whether a URL uses an allowed http: or https: scheme.
+ */
+export function isSafeHttpUrl(rawUrl: string | null | undefined): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates and normalizes an untrusted favorites array from API/events.
+ */
+export function sanitizeFavorites(raw: unknown): FavoriteItem[] | null {
+  if (!Array.isArray(raw)) return null;
+  const result: FavoriteItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Record<string, unknown>;
+    const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+    const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
+    const url = typeof candidate.url === 'string' ? candidate.url.trim() : '';
+    if (!id || !title || !isSafeHttpUrl(url)) continue;
+    result.push({ id, title, url });
+  }
+  return result;
+}
+
+/**
+ * Resolves the active home favorite item with safe fallback to the first favorite or YouTube.
+ */
+export function resolveHomeFavorite(
+  favorites: FavoriteItem[],
+  homeFavoriteId: string,
+): FavoriteItem {
+  const matched = favorites.find((f) => f.id === homeFavoriteId);
+  if (matched && isSafeHttpUrl(matched.url)) return matched;
+  const firstValid = favorites.find((f) => isSafeHttpUrl(f.url));
+  if (firstValid) return firstValid;
+  return { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' };
+}
+
+function removeElementTree(node: unknown): void {
+  if (!node || typeof node !== 'object') return;
+  const candidate = node as {
+    children?: unknown[];
+    remove?: () => void;
+  };
+  if (Array.isArray(candidate.children)) {
+    for (const child of [...candidate.children]) {
+      removeElementTree(child);
+    }
+    const desc = Object.getOwnPropertyDescriptor(candidate, 'children');
+    if (desc?.writable) {
+      candidate.children = [];
+    }
+  }
+  candidate.remove?.();
+}
+
+/**
+ * Detaches child nodes cleanly before re-rendering dynamic HTML lists in both real DOM and test mocks.
+ */
+export function clearElementChildren(el: HTMLElement): void {
+  while (el.firstChild) {
+    el.removeChild(el.firstChild);
+  }
+  const mockEl = el as unknown as { children?: unknown[] };
+  if (Array.isArray(mockEl.children)) {
+    for (const child of [...mockEl.children]) {
+      removeElementTree(child);
+    }
+    const desc = Object.getOwnPropertyDescriptor(el, 'children');
+    if (desc?.writable) {
+      mockEl.children = [];
+    }
+  }
+  el.innerHTML = '';
+}
 
 /**
  * Non-blocking In-Car Toast Notification system.
@@ -112,7 +234,7 @@ export function showToast(
     max-width: 90vw;
   `;
 
-  toast.innerHTML = `<span>${icon}</span><span>${message}</span>`;
+  toast.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
 
   // Trigger animation

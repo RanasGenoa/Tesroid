@@ -4,8 +4,12 @@ import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import {
   type AppConfig,
   type ConfigStore,
+  DEFAULT_FAVORITES,
+  DEFAULT_HOME_FAVORITE_ID,
+  type FavoriteItem,
   PERFORMANCE_PRESET_DEFAULTS,
   type PerformancePreset,
+  resolveHomeUrl,
 } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
 import { isValidTimezone } from './setup.js';
@@ -22,6 +26,9 @@ interface UpdateSettingsBody {
   displayScale?: number;
   locale?: string;
   timezone?: string;
+  favorites?: FavoriteItem[];
+  homeFavoriteId?: string;
+  resetFavorites?: boolean;
   stream?: {
     bitrate?: number;
     maxFps?: number;
@@ -85,9 +92,16 @@ export function registerSettingsRoutes(
       displayScale: config.displayScale,
       locale: config.locale || 'ja-JP',
       timezone: config.timezone || 'Asia/Tokyo',
+      favorites: config.favorites,
+      homeFavoriteId: config.homeFavoriteId,
+      homeUrl: resolveHomeUrl(config),
       stream: config.stream,
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
+      browserTitle:
+        typeof browserManager.getCurrentTitle === 'function'
+          ? browserManager.getCurrentTitle()
+          : '',
       ...(encoder && typeof encoder.getEncoderStatus === 'function'
         ? { encoderStatus: encoder.getEncoderStatus() }
         : {}),
@@ -108,19 +122,15 @@ export function registerSettingsRoutes(
         displayScale,
         locale,
         timezone,
+        favorites,
+        homeFavoriteId,
+        resetFavorites,
       } = req.body || {};
 
       if (browserUrl !== undefined && browserUrl !== '' && !isSafeHttpUrl(browserUrl)) {
         return reply
           .status(400)
           .send({ error: 'Invalid browserUrl: Only http:// and https:// URLs are permitted.' });
-      }
-
-      if (pin) {
-        if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
-          return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
-        }
-        await authService.setPin(pin);
       }
 
       const updates: Partial<AppConfig> = {};
@@ -146,6 +156,79 @@ export function registerSettingsRoutes(
           });
         }
         updates.timezone = timezone.trim();
+      }
+
+      if (resetFavorites === true) {
+        updates.favorites = DEFAULT_FAVORITES.map((f) => ({ ...f }));
+        updates.homeFavoriteId = DEFAULT_HOME_FAVORITE_ID;
+      } else {
+        if (favorites !== undefined) {
+          if (!Array.isArray(favorites)) {
+            return reply.status(400).send({ error: 'Invalid favorites: Must be an array.' });
+          }
+          if (favorites.length > 100) {
+            return reply
+              .status(400)
+              .send({ error: 'Invalid favorites: Maximum 100 favorite items are permitted.' });
+          }
+          const normalizedFavorites: FavoriteItem[] = [];
+          const seenIds = new Set<string>();
+          for (const item of favorites) {
+            if (!item || typeof item !== 'object') {
+              return reply.status(400).send({ error: 'Invalid favorite item: Must be an object.' });
+            }
+            const id = typeof item.id === 'string' ? item.id.trim() : '';
+            const title = typeof item.title === 'string' ? item.title.trim() : '';
+            const url = typeof item.url === 'string' ? item.url.trim() : '';
+            if (!id || !title) {
+              return reply
+                .status(400)
+                .send({ error: 'Invalid favorite item: id and title must be non-empty strings.' });
+            }
+            if (!isSafeHttpUrl(url)) {
+              return reply.status(400).send({
+                error: 'Invalid favorite URL: Only http:// and https:// URLs are permitted.',
+              });
+            }
+            if (seenIds.has(id)) {
+              return reply.status(400).send({ error: `Duplicate favorite id: "${id}".` });
+            }
+            seenIds.add(id);
+            normalizedFavorites.push({ id, title, url });
+          }
+          updates.favorites = normalizedFavorites;
+        }
+
+        if (homeFavoriteId !== undefined) {
+          if (typeof homeFavoriteId !== 'string' || homeFavoriteId.trim().length === 0) {
+            return reply
+              .status(400)
+              .send({ error: 'Invalid homeFavoriteId: Must be a non-empty string.' });
+          }
+          const normalizedHomeId = homeFavoriteId.trim();
+          const effectiveFavorites = updates.favorites ?? configStore.getConfig().favorites;
+          if (
+            effectiveFavorites.length > 0 &&
+            !effectiveFavorites.some((f) => f.id === normalizedHomeId)
+          ) {
+            return reply
+              .status(400)
+              .send({ error: 'Invalid homeFavoriteId: Must match an existing favorite item.' });
+          }
+          updates.homeFavoriteId = normalizedHomeId;
+        } else if (updates.favorites !== undefined) {
+          const currentHomeId = configStore.getConfig().homeFavoriteId;
+          if (!updates.favorites.some((f) => f.id === currentHomeId)) {
+            updates.homeFavoriteId = updates.favorites[0]?.id || DEFAULT_HOME_FAVORITE_ID;
+          }
+        }
+      }
+
+      if (pin) {
+        if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
+          return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
+        }
+        await authService.setPin(pin);
       }
       if (stream) {
         if (stream.audioBitrate !== undefined) {

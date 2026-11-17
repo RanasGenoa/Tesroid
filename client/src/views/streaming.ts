@@ -10,14 +10,44 @@ import { TelemetryCollector } from '../core/telemetry.js';
 import { TouchMapper } from '../input/touch-mapper.js';
 import { ClientProtocol } from '../transport/protocol.js';
 import type { WsClient } from '../transport/ws-client.js';
-import { ICONS, showToast } from './icons.js';
+import {
+  clearElementChildren,
+  DEFAULT_FAVORITES,
+  DEFAULT_HOME_FAVORITE_ID,
+  escapeHtml,
+  type FavoriteItem,
+  ICONS,
+  isSafeHttpUrl,
+  resolveHomeFavorite,
+  sanitizeFavorites,
+  showToast,
+} from './icons.js';
 import { browserRestart, encoderRestart } from './power-actions.js';
+
+export type { FavoriteItem } from './icons.js';
 
 const PACKET_STALL_WARN_THRESHOLD_MS = 400;
 const PACKET_LOSS_TIMEOUT_MS = 1200;
 const RTT_WARN_THRESHOLD_MS = 90;
 const ENCODER_RESTART_COOLDOWN_MS = 1000;
 const RTT_HISTORY_WINDOW_SIZE = 8;
+
+/**
+ * Checks whether a URL belongs to YouTube (youtube.com, subdomains, or youtu.be).
+ */
+export function isYouTubeUrl(rawUrl: string | null | undefined): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    return host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be';
+  } catch {
+    return false;
+  }
+}
 
 export function renderStreamingView(
   container: HTMLElement,
@@ -73,32 +103,37 @@ export function renderStreamingView(
 
         <!-- Right Group: Navigation, Search, Settings -->
         <div class="hud-right-group">
-          <!-- Virtual Keyboard Drawer Toggle -->
-          <button id="hud-keyboard-btn" class="hud-btn" title="文字入力バーを展開 (車載キーボード入力)">
-            ${ICONS.keyboard}
-          </button>
+          <div class="hud-nav-group">
+            <!-- Virtual Keyboard Drawer Toggle -->
+            <button id="hud-keyboard-btn" class="hud-btn" title="文字入力バーを展開 (車載キーボード入力)">
+              ${ICONS.keyboard}
+            </button>
 
-          <!-- Browser Navigation Controls -->
-          <button id="hud-back-btn" class="hud-btn" title="戻る (Back)">${ICONS.back}</button>
-          <button id="hud-home-btn" class="hud-btn" title="YouTube ホーム (Home)">${ICONS.home}</button>
+            <!-- Browser Navigation Controls -->
+            <button id="hud-back-btn" class="hud-btn" title="戻る (Back)">${ICONS.back}</button>
+            <button id="hud-home-btn" class="hud-btn" title="ホームへ移動 (YouTube)">${ICONS.home}</button>
+            <button id="hud-favorites-btn" class="hud-btn" title="お気に入り一覧">${ICONS.star}</button>
+          </div>
 
-          <div class="hud-divider"></div>
+          <div class="hud-utility-group">
+            <div id="hud-search-divider" class="hud-divider"></div>
 
-          <!-- YouTube Search Box (Direct Search Page Navigation) -->
-          <form id="hud-search-form" class="hud-search-form" style="display: flex; align-items: center; gap: 4px; margin: 0;">
-            <input
-              id="hud-search-input"
-              type="text"
-              placeholder="YouTube検索..."
-              autocomplete="off"
-            />
-            <button id="hud-search-btn" class="hud-btn hud-search-submit-btn" type="submit" title="YouTube検索を実行">${ICONS.search}</button>
-          </form>
+            <!-- YouTube Search Box (Direct Search Page Navigation) -->
+            <form id="hud-search-form" class="hud-search-form" style="display: flex; align-items: center; gap: 4px; margin: 0;">
+              <input
+                id="hud-search-input"
+                type="text"
+                placeholder="YouTube検索..."
+                autocomplete="off"
+              />
+              <button id="hud-search-btn" class="hud-btn hud-search-submit-btn" type="submit" title="YouTube検索を実行">${ICONS.search}</button>
+            </form>
 
-          <div class="hud-divider"></div>
+            <div class="hud-divider"></div>
 
-          <!-- Settings Console Trigger -->
-          <button id="hud-settings-btn" class="hud-btn" title="設定コンソール">${ICONS.settings}</button>
+            <!-- Settings Console Trigger -->
+            <button id="hud-settings-btn" class="hud-btn" title="設定コンソール">${ICONS.settings}</button>
+          </div>
         </div>
       </div>
 
@@ -127,6 +162,28 @@ export function renderStreamingView(
             ${ICONS.close}
           </button>
         </form>
+      </div>
+
+      <!-- Favorites Drawer (Expands below Top HUD) -->
+      <div id="hud-favorites-drawer" class="hud-favorites-drawer" style="display: none;">
+        <div class="hud-favorites-header">
+          <div class="hud-favorites-title">
+            ${ICONS.star}
+            <span>お気に入り</span>
+          </div>
+          <div class="hud-favorites-actions">
+            <button id="hud-fav-add-current-btn" type="button" class="hud-kbd-btn hud-fav-action-btn" title="現在開いているページをお気に入りに追加">
+              ${ICONS.plus} 現在のページを追加
+            </button>
+            <button id="hud-fav-edit-btn" type="button" class="hud-kbd-btn hud-fav-action-btn" title="お気に入りの編集・並び替え・ホーム設定">
+              ${ICONS.edit} 編集 / 管理
+            </button>
+            <button id="hud-fav-close-btn" type="button" class="hud-kbd-close-btn" title="閉じる">
+              ${ICONS.close}
+            </button>
+          </div>
+        </div>
+        <div id="hud-favorites-list" class="hud-favorites-list"></div>
       </div>
 
       <!-- Dedicated Stream Viewport below the Top HUD Dock -->
@@ -275,6 +332,165 @@ export function renderStreamingView(
     },
   });
 
+  // Favorites, Home, and Current Browser URL State
+  let favorites: FavoriteItem[] = DEFAULT_FAVORITES.map((f) => ({ ...f }));
+  let homeFavoriteId = DEFAULT_HOME_FAVORITE_ID;
+  let currentBrowserUrl = 'https://www.youtube.com';
+  let currentBrowserTitle = '';
+  let hasLiveBrowserStatus = false;
+
+  const hudHomeBtn = document.getElementById('hud-home-btn') as HTMLButtonElement | null;
+  const searchForm = document.getElementById('hud-search-form') as HTMLFormElement | null;
+  const searchDivider = document.getElementById('hud-search-divider') as HTMLElement | null;
+  const searchInput = document.getElementById('hud-search-input') as HTMLInputElement | null;
+  const favBtn = document.getElementById('hud-favorites-btn') as HTMLButtonElement | null;
+  const favDrawer = document.getElementById('hud-favorites-drawer') as HTMLElement | null;
+  const favList = document.getElementById('hud-favorites-list') as HTMLElement | null;
+  const favAddCurrentBtn = document.getElementById(
+    'hud-fav-add-current-btn',
+  ) as HTMLButtonElement | null;
+  const favEditBtn = document.getElementById('hud-fav-edit-btn') as HTMLButtonElement | null;
+  const favCloseBtn = document.getElementById('hud-fav-close-btn') as HTMLButtonElement | null;
+  const kbdBtn = document.getElementById('hud-keyboard-btn') as HTMLButtonElement | null;
+  const kbdDrawer = document.getElementById('hud-keyboard-drawer') as HTMLElement | null;
+  const kbdForm = document.getElementById('hud-keyboard-form') as HTMLFormElement | null;
+  const kbdInput = document.getElementById('hud-keyboard-input') as HTMLInputElement | null;
+  const kbdEnterBtn = document.getElementById('hud-keyboard-enter-btn') as HTMLButtonElement | null;
+  const kbdBackspaceBtn = document.getElementById(
+    'hud-keyboard-backspace-btn',
+  ) as HTMLButtonElement | null;
+  const kbdTabBtn = document.getElementById('hud-keyboard-tab-btn') as HTMLButtonElement | null;
+  const kbdCloseBtn = document.getElementById('hud-keyboard-close-btn') as HTMLButtonElement | null;
+
+  const updateSearchBarVisibility = () => {
+    const showSearch = isYouTubeUrl(currentBrowserUrl);
+    if (searchForm) {
+      searchForm.style.display = showSearch ? 'flex' : 'none';
+    }
+    if (searchDivider) {
+      searchDivider.style.display = showSearch ? '' : 'none';
+    }
+  };
+
+  const updateHomeButtonTitle = () => {
+    if (!hudHomeBtn) return;
+    const homeFav = resolveHomeFavorite(favorites, homeFavoriteId);
+    const nextTitle = `ホームへ移動 (${homeFav.title})`;
+    if (hudHomeBtn.title !== nextTitle) {
+      hudHomeBtn.title = nextTitle;
+    }
+  };
+
+  const closeKeyboardDrawerOnly = () => {
+    if (!kbdDrawer || !kbdBtn) return;
+    kbdDrawer.style.display = 'none';
+    kbdBtn.classList.remove('is-active');
+    kbdInput?.blur?.();
+  };
+
+  const closeFavoritesDrawerOnly = () => {
+    if (!favDrawer || !favBtn) return;
+    favDrawer.style.display = 'none';
+    favBtn.classList.remove('is-active');
+  };
+
+  const navigateFromHud = (url: string) => {
+    if (!isSafeHttpUrl(url)) return;
+    wsClient.send(ClientProtocol.packCommand({ type: 'NAVIGATE', url }));
+    currentBrowserUrl = url;
+    updateSearchBarVisibility();
+    closeFavoritesDrawerOnly();
+    closeKeyboardDrawerOnly();
+  };
+
+  const renderFavoritesList = () => {
+    if (!favList) return;
+    clearElementChildren(favList);
+    if (favorites.length === 0) {
+      favList.innerHTML =
+        '<div class="hud-favorites-empty">お気に入りが登録されていません。「編集 / 管理」または「現在のページを追加」から追加できます。</div>';
+      return;
+    }
+    const resolvedHome = resolveHomeFavorite(favorites, homeFavoriteId);
+    favList.innerHTML = favorites
+      .map((item) => {
+        const isHome = item.id === resolvedHome.id;
+        const safeId = escapeHtml(item.id);
+        const safeTitle = escapeHtml(item.title);
+        const safeUrl = escapeHtml(item.url);
+        let host = item.url;
+        try {
+          host = new URL(item.url).hostname;
+        } catch {}
+        const safeHost = escapeHtml(host);
+        return `
+          <button
+            id="hud-fav-item-${safeId}"
+            type="button"
+            class="hud-favorite-item${isHome ? ' is-home' : ''}"
+            data-favorite-id="${safeId}"
+            data-url="${safeUrl}"
+            title="${safeTitle} (${safeUrl})"
+          >
+            <span class="hud-favorite-item-main">
+              ${isHome ? `<span class="hud-favorite-home-badge" title="ホームに設定中">${ICONS.home}</span>` : ''}
+              <span class="hud-favorite-title">${safeTitle}</span>
+            </span>
+            <span class="hud-favorite-host">${safeHost}</span>
+          </button>
+        `;
+      })
+      .join('');
+
+    for (const item of favorites) {
+      const safeId = escapeHtml(item.id);
+      const itemBtn =
+        document.getElementById(`hud-fav-item-${item.id}`) ||
+        document.getElementById(`hud-fav-item-${safeId}`);
+      itemBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetHudDimTimer();
+        navigateFromHud(item.url);
+        showToast(`${item.title} を開いています`, 'info', 1800);
+      });
+    }
+  };
+
+  const toggleFavoritesDrawer = (show?: boolean) => {
+    if (!favDrawer || !favBtn) return;
+    const isCurrentlyOpen = favDrawer.style.display !== 'none';
+    const nextState = show !== undefined ? show : !isCurrentlyOpen;
+
+    if (nextState) {
+      closeKeyboardDrawerOnly();
+      renderFavoritesList();
+      favDrawer.style.display = 'flex';
+      favBtn.classList.add('is-active');
+    } else {
+      closeFavoritesDrawerOnly();
+    }
+  };
+
+  const toggleKeyboardDrawer = (show?: boolean) => {
+    if (!kbdDrawer || !kbdBtn) return;
+    const isCurrentlyOpen = kbdDrawer.style.display !== 'none';
+    const nextState = show !== undefined ? show : !isCurrentlyOpen;
+
+    if (nextState) {
+      closeFavoritesDrawerOnly();
+      kbdDrawer.style.display = 'flex';
+      kbdBtn.classList.add('is-active');
+      // Synchronous focus preserves user gesture context for Tesla OSK popup
+      kbdInput?.focus?.();
+    } else {
+      closeKeyboardDrawerOnly();
+    }
+  };
+
+  updateHomeButtonTitle();
+  updateSearchBarVisibility();
+  renderFavoritesList();
+
   // Sync settings on startup
   const effectiveToken =
     authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
@@ -284,6 +500,7 @@ export function renderStreamingView(
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
+        if (!data) return;
         if (data?.stream?.maxFps) {
           currentFps = Number(data.stream.maxFps);
           targetFps = currentFps;
@@ -293,6 +510,27 @@ export function renderStreamingView(
           currentBitrate = Number(data.stream.bitrate);
         }
         updateToggleButtons();
+
+        const fetchedFavorites = sanitizeFavorites(data.favorites);
+        if (fetchedFavorites !== null) {
+          favorites = fetchedFavorites;
+        }
+        if (typeof data.homeFavoriteId === 'string' && data.homeFavoriteId.trim()) {
+          homeFavoriteId = data.homeFavoriteId.trim();
+        }
+        if (!hasLiveBrowserStatus) {
+          if (typeof data.browserUrl === 'string' && isSafeHttpUrl(data.browserUrl)) {
+            currentBrowserUrl = data.browserUrl;
+          } else if (typeof data.homeUrl === 'string' && isSafeHttpUrl(data.homeUrl)) {
+            currentBrowserUrl = data.homeUrl;
+          }
+          if (typeof data.browserTitle === 'string') {
+            currentBrowserTitle = data.browserTitle;
+          }
+        }
+        updateHomeButtonTitle();
+        updateSearchBarVisibility();
+        renderFavoritesList();
       })
       .catch(() => {});
   }
@@ -359,6 +597,7 @@ export function renderStreamingView(
 
   const onSettingsUpdated = (e: any) => {
     let changed = false;
+    let favoritesChanged = false;
     if (e.detail?.stream?.maxFps) {
       currentFps = Number(e.detail.stream.maxFps);
       targetFps = currentFps;
@@ -381,8 +620,21 @@ export function renderStreamingView(
       telemetryCollector.setEnabled(enabled);
       syncTelemetryAttachment(enabled);
     }
+    const updatedFavorites = sanitizeFavorites(e.detail?.favorites);
+    if (updatedFavorites !== null) {
+      favorites = updatedFavorites;
+      favoritesChanged = true;
+    }
+    if (typeof e.detail?.homeFavoriteId === 'string' && e.detail.homeFavoriteId.trim()) {
+      homeFavoriteId = e.detail.homeFavoriteId.trim();
+      favoritesChanged = true;
+    }
     if (changed) {
       updateToggleButtons();
+    }
+    if (favoritesChanged) {
+      updateHomeButtonTitle();
+      renderFavoritesList();
     }
   };
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
@@ -957,8 +1209,16 @@ export function renderStreamingView(
           healthBrowser.innerHTML = `<span class="status-dot status-online"></span> Browser: 稼働中`;
           browserPowerState = 'active';
         } else {
-          healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> Browser: ${msg.state}`;
+          healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> Browser: ${escapeHtml(String(msg.state ?? ''))}`;
         }
+      }
+      if (typeof msg.url === 'string' && isSafeHttpUrl(msg.url)) {
+        hasLiveBrowserStatus = true;
+        currentBrowserUrl = msg.url;
+        updateSearchBarVisibility();
+      }
+      if (typeof msg.title === 'string') {
+        currentBrowserTitle = msg.title;
       }
     } else if (msg.type === 'SERVER_METRICS') {
       if (msg.browserState === 'paused') {
@@ -1167,33 +1427,125 @@ export function renderStreamingView(
   // 8. Navigation & Controls
   document.getElementById('hud-back-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    resetHudDimTimer();
     wsClient.send(ClientProtocol.packCommand({ type: 'NAVIGATE_BACK' }));
   });
 
-  document.getElementById('hud-home-btn')?.addEventListener('click', (e) => {
+  hudHomeBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    wsClient.send(ClientProtocol.packCommand({ type: 'NAVIGATE', url: 'https://www.youtube.com' }));
+    resetHudDimTimer();
+    const homeFav = resolveHomeFavorite(favorites, homeFavoriteId);
+    navigateFromHud(homeFav.url);
+  });
+
+  favBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetHudDimTimer();
+    toggleFavoritesDrawer();
+  });
+
+  favCloseBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFavoritesDrawer(false);
+  });
+
+  favEditBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFavoritesDrawer(false);
+    onOpenSettings();
+  });
+
+  let isAddingCurrentFavorite = false;
+  favAddCurrentBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    resetHudDimTimer();
+    if (isAddingCurrentFavorite) return;
+    if (!isSafeHttpUrl(currentBrowserUrl)) {
+      showToast('現在のページURLはお気に入りに追加できません', 'error');
+      return;
+    }
+    if (favorites.some((f) => f.url === currentBrowserUrl)) {
+      showToast('このページは既にお気に入りに登録されています', 'info');
+      return;
+    }
+    if (favorites.length >= 100) {
+      showToast('お気に入りは最大100件まで登録できます', 'error');
+      return;
+    }
+    const token =
+      authToken || localStorage.getItem('tesroid_token') || sessionStorage.getItem('tesroid_token');
+    if (!token) {
+      showToast('認証トークンがないため保存できません', 'error');
+      return;
+    }
+
+    let hostname = currentBrowserUrl;
+    try {
+      hostname = new URL(currentBrowserUrl).hostname;
+    } catch {}
+    let newId = `fav-${Date.now()}`;
+    let suffix = 1;
+    while (favorites.some((f) => f.id === newId)) {
+      newId = `fav-${Date.now()}-${suffix++}`;
+    }
+    const newFav: FavoriteItem = {
+      id: newId,
+      title: currentBrowserTitle.trim() || hostname,
+      url: currentBrowserUrl,
+    };
+    const nextFavorites = [...favorites, newFav];
+
+    isAddingCurrentFavorite = true;
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ favorites: nextFavorites }),
+      });
+      if (!res.ok) {
+        showToast(`お気に入りの追加に失敗しました (HTTP ${res.status})`, 'error');
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      const savedFavorites = sanitizeFavorites(data?.settings?.favorites);
+      favorites = savedFavorites ?? nextFavorites;
+      if (
+        typeof data?.settings?.homeFavoriteId === 'string' &&
+        data.settings.homeFavoriteId.trim()
+      ) {
+        homeFavoriteId = data.settings.homeFavoriteId.trim();
+      }
+      updateHomeButtonTitle();
+      renderFavoritesList();
+      window.dispatchEvent(
+        new CustomEvent('tesroid:settings-updated', {
+          detail: { favorites: favorites.map((f) => ({ ...f })), homeFavoriteId },
+        }),
+      );
+      showToast(`お気に入りに追加しました: ${newFav.title}`, 'success');
+    } catch {
+      showToast('お気に入りの追加に失敗しました', 'error');
+    } finally {
+      isAddingCurrentFavorite = false;
+    }
   });
 
   // Search / Text Input Bar Handlers (Direct YouTube Search Navigation)
-  const searchForm = document.getElementById('hud-search-form') as HTMLFormElement;
-  const searchInput = document.getElementById('hud-search-input') as HTMLInputElement;
-
   searchForm?.addEventListener('submit', (e) => {
     e.preventDefault();
-    const text = searchInput.value.trim();
+    const text = searchInput?.value?.trim() || '';
     if (text) {
       const searchUrl = /^https?:\/\//i.test(text)
         ? text
         : `https://www.youtube.com/results?search_query=${encodeURIComponent(text)}`;
-      wsClient.send(
-        ClientProtocol.packCommand({
-          type: 'NAVIGATE',
-          url: searchUrl,
-        }),
-      );
-      searchInput.value = '';
-      searchInput.blur();
+      navigateFromHud(searchUrl);
+      if (searchInput) {
+        searchInput.value = '';
+        searchInput.blur?.();
+      }
       showToast(`YouTube検索へ移動中: "${text}"`, 'info');
     }
   });
@@ -1208,36 +1560,9 @@ export function renderStreamingView(
   });
 
   // Virtual Keyboard Drawer Handlers (In-Car Tesla On-Screen Keyboard)
-  const kbdBtn = document.getElementById('hud-keyboard-btn') as HTMLButtonElement | null;
-  const kbdDrawer = document.getElementById('hud-keyboard-drawer') as HTMLElement | null;
-  const kbdForm = document.getElementById('hud-keyboard-form') as HTMLFormElement | null;
-  const kbdInput = document.getElementById('hud-keyboard-input') as HTMLInputElement | null;
-  const kbdEnterBtn = document.getElementById('hud-keyboard-enter-btn') as HTMLButtonElement | null;
-  const kbdBackspaceBtn = document.getElementById(
-    'hud-keyboard-backspace-btn',
-  ) as HTMLButtonElement | null;
-  const kbdTabBtn = document.getElementById('hud-keyboard-tab-btn') as HTMLButtonElement | null;
-  const kbdCloseBtn = document.getElementById('hud-keyboard-close-btn') as HTMLButtonElement | null;
-
-  const toggleKeyboardDrawer = (show?: boolean) => {
-    if (!kbdDrawer || !kbdBtn) return;
-    const isCurrentlyOpen = kbdDrawer.style.display !== 'none';
-    const nextState = show !== undefined ? show : !isCurrentlyOpen;
-
-    if (nextState) {
-      kbdDrawer.style.display = 'flex';
-      kbdBtn.classList.add('is-active');
-      // Synchronous focus preserves user gesture context for Tesla OSK popup
-      kbdInput?.focus();
-    } else {
-      kbdDrawer.style.display = 'none';
-      kbdBtn.classList.remove('is-active');
-      kbdInput?.blur();
-    }
-  };
-
   kbdBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
+    resetHudDimTimer();
     toggleKeyboardDrawer();
   });
 
@@ -1341,6 +1666,7 @@ export function renderStreamingView(
   return () => {
     if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
     if (encoderRestartTimer) clearTimeout(encoderRestartTimer);
+    if (resizeTimer) clearTimeout(resizeTimer);
     isRestartingEncoder = false;
     document.getElementById('power-menu-modal')?.remove();
     if (hudDimTimer) clearTimeout(hudDimTimer);
