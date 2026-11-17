@@ -19,7 +19,7 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   | GPU / iGPU | アーキテクチャ (世代) | VAAPI ドライバ | ステータス | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
   | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
-  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ⚠️ 調整・検証中 | 負荷が高い報告あり（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) にてパフォーマンス調整対応予定） |
+  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
 - **メモリ**: 2GB 以上推奨（コンテナ内 Google Chrome + FFmpeg + PulseAudio + Node.js が稼働）
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 
