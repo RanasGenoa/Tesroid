@@ -95,7 +95,7 @@
   | GPU / iGPU | アーキテクチャ (世代) | VAAPI ドライバ | 動作確認状況 | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
   | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
-  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ⚠️ 調整・検証中 | 高負荷・動作が重い報告あり（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) にて軽量化対応予定） |
+  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
 - **メモリ**: 2 GB 以上推奨
 - **ソフトウェア**: Docker Engine 24.0+ および Docker Compose v2.0+
 - **ネットワーク**: テスラ車載ブラウザから接続する場合は **公的 CA による HTTPS (SSL/TLS) 環境** が必須です（詳細は [docs/NETWORK.md](docs/NETWORK.md) を参照）
