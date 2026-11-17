@@ -52,6 +52,18 @@ export class BrowserManager {
 
   private state: BrowserState = 'stopped';
   private currentUrl: string;
+  private currentTitle = '';
+  private pageInfoListeners = new Set<(info: { url: string; title: string }) => void>();
+
+  private pageMonitorWs: WebSocket | null = null;
+  private pageMonitorTargetWsUrl: string | null = null;
+  private pageMonitorConnectTimer: NodeJS.Timeout | null = null;
+  private pageMonitorPollTimer: NodeJS.Timeout | null = null;
+  private pageMonitorTitleTimer: NodeJS.Timeout | null = null;
+  private pageMonitorMsgId = 1;
+  private pendingPageInfoEvalIds = new Set<number>();
+  private isPageMonitorStopped = true;
+  private isConnectingPageMonitor = false;
 
   private isStartingChrome = false;
   private isIntentionalChromeStop = false;
@@ -176,6 +188,53 @@ export class BrowserManager {
     return this.currentUrl;
   }
 
+  public getCurrentTitle(): string {
+    return this.currentTitle;
+  }
+
+  public onPageInfoChanged(listener: (info: { url: string; title: string }) => void): () => void {
+    this.pageInfoListeners.add(listener);
+    return () => {
+      this.pageInfoListeners.delete(listener);
+    };
+  }
+
+  public updatePageInfo(url?: string, title?: string): boolean {
+    let changed = false;
+
+    if (url !== undefined) {
+      const trimmedUrl = typeof url === 'string' ? url.trim() : '';
+      if (!isSafeHttpUrl(trimmedUrl)) {
+        return false;
+      }
+      if (trimmedUrl !== this.currentUrl) {
+        this.currentUrl = trimmedUrl;
+        changed = true;
+      }
+    }
+
+    if (typeof title === 'string') {
+      const nextTitle = title.trim();
+      if (nextTitle !== this.currentTitle) {
+        this.currentTitle = nextTitle;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      const info = { url: this.currentUrl, title: this.currentTitle };
+      for (const listener of this.pageInfoListeners) {
+        try {
+          listener(info);
+        } catch (err) {
+          console.warn('[BrowserManager] pageInfo listener error:', err);
+        }
+      }
+    }
+
+    return changed;
+  }
+
   public getDisplay(): string {
     return this.displayNum;
   }
@@ -266,6 +325,9 @@ export class BrowserManager {
       }
       this.state = 'running';
       console.log('[BrowserManager] Chrome resumed.');
+      if (!this.isPageMonitorStopped) {
+        this.schedulePageMonitorConnect(300);
+      }
     } catch (err) {
       console.warn('[BrowserManager] Error resuming Chrome:', err);
     }
@@ -278,14 +340,16 @@ export class BrowserManager {
     if (!isSafeHttpUrl(url)) {
       throw new Error('Invalid URL: Only http:// and https:// URLs are permitted.');
     }
-    this.currentUrl = url;
+    const normalizedUrl = url.trim();
+    const urlChanged = normalizedUrl !== this.currentUrl;
+    this.updatePageInfo(normalizedUrl, urlChanged ? '' : undefined);
     if (this.state === 'paused') {
       this.resume();
     }
-    console.log(`[BrowserManager] Navigating to: ${url}`);
-    const navigated = await this.navigateViaCdp(url);
+    console.log(`[BrowserManager] Navigating to: ${normalizedUrl}`);
+    const navigated = await this.navigateViaCdp(normalizedUrl);
     if (!navigated) {
-      await this.restartChrome(url);
+      await this.restartChrome(normalizedUrl);
     }
   }
 
@@ -341,6 +405,11 @@ export class BrowserManager {
    * Restart Chrome instance (e.g. for recovery or URL reload)
    */
   public async restartChrome(url?: string): Promise<void> {
+    if (url && isSafeHttpUrl(url)) {
+      const normalizedUrl = url.trim();
+      const urlChanged = normalizedUrl !== this.currentUrl;
+      this.updatePageInfo(normalizedUrl, urlChanged ? '' : undefined);
+    }
     const targetUrl = url || this.currentUrl;
     console.log(`[BrowserManager] Restarting Chrome with URL: ${targetUrl}`);
     this.stopChrome();
@@ -1302,8 +1371,9 @@ export class BrowserManager {
     this.chromeProcess = proc;
     this.isStartingChrome = false;
 
-    // Apply CDP car layout optimizations asynchronously
+    // Apply CDP car layout optimizations and start real-time page URL/title monitor asynchronously
     this.applyCdpCarOptimizations().catch(() => {});
+    this.startPageInfoMonitor();
 
     proc.on('exit', (code, signal) => {
       console.warn(`[BrowserManager] Chrome exited (code=${code}, signal=${signal})`);
@@ -1312,6 +1382,7 @@ export class BrowserManager {
         return;
       }
       this.chromeProcess = null;
+      this.stopPageInfoMonitor();
       const intentional = this.isIntentionalChromeStop;
       this.isIntentionalChromeStop = false;
 
@@ -1345,6 +1416,7 @@ export class BrowserManager {
   }
 
   private stopChrome(): void {
+    this.stopPageInfoMonitor();
     if (this.chromeRestartTimer) {
       clearTimeout(this.chromeRestartTimer);
       this.chromeRestartTimer = null;
@@ -1419,6 +1491,287 @@ export class BrowserManager {
       } catch {}
     }
     return 'google-chrome-stable';
+  }
+
+  private schedulePageMonitorConnect(delayMs: number): void {
+    if (this.isPageMonitorStopped) return;
+    if (this.pageMonitorConnectTimer) {
+      clearTimeout(this.pageMonitorConnectTimer);
+    }
+    this.pageMonitorConnectTimer = setTimeout(() => {
+      this.pageMonitorConnectTimer = null;
+      void this.connectPageInfoMonitor();
+    }, delayMs);
+    this.pageMonitorConnectTimer.unref();
+  }
+
+  private startPageInfoMonitor(): void {
+    this.stopPageInfoMonitor();
+    this.isPageMonitorStopped = false;
+    this.schedulePageMonitorConnect(800);
+    this.pageMonitorPollTimer = setInterval(() => {
+      void this.pollPageInfoFromJsonList();
+    }, 3000);
+    this.pageMonitorPollTimer.unref();
+  }
+
+  private stopPageInfoMonitor(): void {
+    this.isPageMonitorStopped = true;
+    this.isConnectingPageMonitor = false;
+    if (this.pageMonitorConnectTimer) {
+      clearTimeout(this.pageMonitorConnectTimer);
+      this.pageMonitorConnectTimer = null;
+    }
+    if (this.pageMonitorPollTimer) {
+      clearInterval(this.pageMonitorPollTimer);
+      this.pageMonitorPollTimer = null;
+    }
+    if (this.pageMonitorTitleTimer) {
+      clearTimeout(this.pageMonitorTitleTimer);
+      this.pageMonitorTitleTimer = null;
+    }
+    this.pendingPageInfoEvalIds.clear();
+    if (this.pageMonitorWs) {
+      const ws = this.pageMonitorWs;
+      this.pageMonitorWs = null;
+      this.pageMonitorTargetWsUrl = null;
+      try {
+        ws.removeAllListeners();
+        ws.close();
+      } catch {}
+    }
+  }
+
+  private async connectPageInfoMonitor(): Promise<void> {
+    if (this.isPageMonitorStopped || this.isConnectingPageMonitor || !this.isChromeAlive()) {
+      return;
+    }
+    if (this.state === 'paused') {
+      return;
+    }
+    if (this.pageMonitorWs && this.pageMonitorWs.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    this.isConnectingPageMonitor = true;
+    try {
+      const res = await fetch('http://127.0.0.1:9222/json/list', {
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const targets = (await res.json()) as Array<{
+        type?: string;
+        url?: string;
+        title?: string;
+        webSocketDebuggerUrl?: string;
+      }>;
+      const page = Array.isArray(targets)
+        ? targets.find((t) => t?.type === 'page' && t?.webSocketDebuggerUrl)
+        : undefined;
+
+      if (!page || !page.webSocketDebuggerUrl) {
+        this.isConnectingPageMonitor = false;
+        this.schedulePageMonitorConnect(1500);
+        return;
+      }
+
+      if (this.isPageMonitorStopped) {
+        this.isConnectingPageMonitor = false;
+        return;
+      }
+
+      this.updatePageInfo(
+        typeof page.url === 'string' ? page.url : undefined,
+        typeof page.title === 'string' ? page.title : undefined,
+      );
+
+      const ws = new WebSocket(page.webSocketDebuggerUrl);
+      await new Promise<void>((resolve, reject) => {
+        const to = setTimeout(() => {
+          try {
+            ws.close();
+          } catch {}
+          reject(new Error('CDP page monitor connect timeout'));
+        }, 2500);
+        to.unref();
+
+        ws.once('open', () => {
+          clearTimeout(to);
+          resolve();
+        });
+        ws.once('error', (err) => {
+          clearTimeout(to);
+          reject(err);
+        });
+      });
+
+      if (this.isPageMonitorStopped) {
+        try {
+          ws.close();
+        } catch {}
+        this.isConnectingPageMonitor = false;
+        return;
+      }
+
+      if (this.pageMonitorWs && this.pageMonitorWs !== ws) {
+        try {
+          this.pageMonitorWs.removeAllListeners();
+          this.pageMonitorWs.close();
+        } catch {}
+      }
+
+      this.pageMonitorWs = ws;
+      this.pageMonitorTargetWsUrl = page.webSocketDebuggerUrl;
+      this.pendingPageInfoEvalIds.clear();
+      this.isConnectingPageMonitor = false;
+
+      ws.on('message', (data) => {
+        this.handlePageMonitorMessage(ws, data.toString());
+      });
+
+      ws.on('close', () => {
+        if (this.pageMonitorWs === ws) {
+          this.pageMonitorWs = null;
+          this.pageMonitorTargetWsUrl = null;
+          this.pendingPageInfoEvalIds.clear();
+          this.schedulePageMonitorConnect(1500);
+        }
+      });
+
+      ws.on('error', () => {
+        if (this.pageMonitorWs === ws) {
+          this.pageMonitorWs = null;
+          this.pageMonitorTargetWsUrl = null;
+          this.pendingPageInfoEvalIds.clear();
+          try {
+            ws.close();
+          } catch {}
+          this.schedulePageMonitorConnect(1500);
+        }
+      });
+
+      ws.send(JSON.stringify({ id: this.pageMonitorMsgId++, method: 'Page.enable', params: {} }));
+      this.requestCdpPageInfo(ws);
+    } catch {
+      this.isConnectingPageMonitor = false;
+      this.schedulePageMonitorConnect(1500);
+    }
+  }
+
+  private requestCdpPageInfo(ws: WebSocket): void {
+    if (this.isPageMonitorStopped || ws.readyState !== WebSocket.OPEN) return;
+    const id = this.pageMonitorMsgId++;
+    this.pendingPageInfoEvalIds.add(id);
+    if (this.pendingPageInfoEvalIds.size > 50) {
+      const oldest = this.pendingPageInfoEvalIds.values().next().value;
+      if (oldest !== undefined) this.pendingPageInfoEvalIds.delete(oldest);
+    }
+    try {
+      ws.send(
+        JSON.stringify({
+          id,
+          method: 'Runtime.evaluate',
+          params: {
+            expression: '({ url: location.href, title: document.title })',
+            returnByValue: true,
+          },
+        }),
+      );
+    } catch {}
+  }
+
+  private handlePageMonitorMessage(ws: WebSocket, raw: string): void {
+    if (this.isPageMonitorStopped) return;
+    try {
+      const msg = JSON.parse(raw) as {
+        id?: number;
+        method?: string;
+        params?: {
+          url?: string;
+          frame?: { parentId?: string; url?: string };
+        };
+        result?: {
+          result?: {
+            value?: { url?: unknown; title?: unknown };
+          };
+        };
+      };
+
+      if (typeof msg.id === 'number' && this.pendingPageInfoEvalIds.has(msg.id)) {
+        this.pendingPageInfoEvalIds.delete(msg.id);
+        const val = msg.result?.result?.value;
+        if (val && typeof val === 'object') {
+          this.updatePageInfo(
+            typeof val.url === 'string' ? val.url : undefined,
+            typeof val.title === 'string' ? val.title : undefined,
+          );
+        }
+        return;
+      }
+
+      if (msg.method === 'Page.frameNavigated') {
+        if (!msg.params?.frame?.parentId) {
+          if (typeof msg.params?.frame?.url === 'string') {
+            this.updatePageInfo(msg.params.frame.url);
+          }
+          this.requestCdpPageInfo(ws);
+        }
+      } else if (msg.method === 'Page.navigatedWithinDocument') {
+        if (typeof msg.params?.url === 'string') {
+          this.updatePageInfo(msg.params.url);
+        }
+        this.requestCdpPageInfo(ws);
+        if (this.pageMonitorTitleTimer) {
+          clearTimeout(this.pageMonitorTitleTimer);
+        }
+        this.pageMonitorTitleTimer = setTimeout(() => {
+          this.pageMonitorTitleTimer = null;
+          if (!this.isPageMonitorStopped && this.pageMonitorWs === ws) {
+            this.requestCdpPageInfo(ws);
+          }
+        }, 400);
+        this.pageMonitorTitleTimer.unref();
+      } else if (
+        msg.method === 'Page.loadEventFired' ||
+        msg.method === 'Page.domContentEventFired'
+      ) {
+        this.requestCdpPageInfo(ws);
+      }
+    } catch {}
+  }
+
+  private async pollPageInfoFromJsonList(): Promise<void> {
+    if (this.isPageMonitorStopped || this.state === 'paused' || !this.isChromeAlive()) {
+      return;
+    }
+    try {
+      const res = await fetch('http://127.0.0.1:9222/json/list', {
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!res.ok) return;
+      const targets = (await res.json()) as Array<{
+        type?: string;
+        url?: string;
+        title?: string;
+        webSocketDebuggerUrl?: string;
+      }>;
+      if (!Array.isArray(targets)) return;
+      const page = targets.find((t) => t?.type === 'page');
+      if (!page) return;
+
+      this.updatePageInfo(
+        typeof page.url === 'string' ? page.url : undefined,
+        typeof page.title === 'string' ? page.title : undefined,
+      );
+
+      if (
+        !this.pageMonitorWs ||
+        this.pageMonitorWs.readyState !== WebSocket.OPEN ||
+        (page.webSocketDebuggerUrl && page.webSocketDebuggerUrl !== this.pageMonitorTargetWsUrl)
+      ) {
+        void this.connectPageInfoMonitor();
+      }
+    } catch {}
   }
 
   private async waitForSocket(socketPath: string, timeoutMs: number): Promise<void> {

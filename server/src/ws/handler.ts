@@ -1,6 +1,6 @@
 import type { WebSocket } from 'ws';
 import type { AuthService } from '../auth.js';
-import type { BrowserManager } from '../browser/manager.js';
+import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import type { ConfigStore } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
 import { type BufferedFrame, PlaybackBuffer } from '../encoder/playback-buffer.js';
@@ -47,6 +47,7 @@ export class WebSocketHandler {
   private autoSleepTimer: NodeJS.Timeout | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
   private resizeTimer: NodeJS.Timeout | null = null;
+  private unsubscribePageInfo: (() => void) | null = null;
   private currentResWidth = 1280;
   private currentResHeight = 720;
 
@@ -74,6 +75,18 @@ export class WebSocketHandler {
     const dims = this.browserManager.getDimensions();
     this.currentResWidth = dims.width;
     this.currentResHeight = dims.height;
+
+    if (typeof this.browserManager.onPageInfoChanged === 'function') {
+      this.unsubscribePageInfo = this.browserManager.onPageInfoChanged(({ url, title }) => {
+        this.broadcastControl({
+          type: 'BROWSER_STATUS',
+          state: this.browserManager.getState(),
+          url,
+          title,
+          dimensions: this.browserManager.getDimensions(),
+        });
+      });
+    }
 
     this.bindEncoderEvents();
     this.startStatsBroadcast();
@@ -427,6 +440,10 @@ export class WebSocketHandler {
       type: 'BROWSER_STATUS',
       state: this.browserManager.getState(),
       url: this.browserManager.getCurrentUrl(),
+      title:
+        typeof this.browserManager.getCurrentTitle === 'function'
+          ? this.browserManager.getCurrentTitle()
+          : '',
       dimensions: this.browserManager.getDimensions(),
     });
   }
@@ -1007,9 +1024,10 @@ export class WebSocketHandler {
           }
           break;
 
-        case 'NAVIGATE':
+        case 'NAVIGATE': {
           this.recordInputActivity(socket);
-          if (!cmd.url || typeof cmd.url !== 'string' || !/^https?:\/\//i.test(cmd.url.trim())) {
+          const rawUrl = typeof cmd.url === 'string' ? cmd.url.trim() : '';
+          if (!rawUrl || !isSafeHttpUrl(rawUrl)) {
             this.sendControl(socket, {
               type: 'ERROR',
               message: 'Invalid URL: Only http:// and https:// URLs are permitted.',
@@ -1023,13 +1041,19 @@ export class WebSocketHandler {
               this.abortCatchupAndSwitchToLive(s);
             }
           }
-          await this.browserManager.navigate(cmd.url);
+          await this.browserManager.navigate(rawUrl);
           this.broadcastControl({
             type: 'BROWSER_STATUS',
-            url: cmd.url,
+            url: rawUrl,
+            title:
+              typeof this.browserManager.getCurrentTitle === 'function'
+                ? this.browserManager.getCurrentTitle()
+                : '',
             state: this.browserManager.getState(),
+            dimensions: this.browserManager.getDimensions(),
           });
           break;
+        }
 
         case 'NAVIGATE_BACK':
           this.recordInputActivity(socket);
@@ -1310,6 +1334,10 @@ export class WebSocketHandler {
   }
 
   public close(): void {
+    if (this.unsubscribePageInfo) {
+      this.unsubscribePageInfo();
+      this.unsubscribePageInfo = null;
+    }
     if (this.autoSleepTimer) clearTimeout(this.autoSleepTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.resizeTimer) clearTimeout(this.resizeTimer);

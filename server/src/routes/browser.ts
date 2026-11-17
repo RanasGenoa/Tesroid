@@ -31,6 +31,10 @@ export function registerBrowserRoutes(
     return {
       state: browserManager.getState(),
       url: browserManager.getCurrentUrl(),
+      title:
+        typeof browserManager.getCurrentTitle === 'function'
+          ? browserManager.getCurrentTitle()
+          : '',
       display: browserManager.getDisplay(),
       dimensions: browserManager.getDimensions(),
     };
