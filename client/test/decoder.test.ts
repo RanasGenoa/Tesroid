@@ -443,4 +443,40 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     // Must NOT call decode when state is not 'configured'
     expect(mockDecoderInstance.decode).not.toHaveBeenCalled();
   });
+
+  it('clamps setBufferDepth to [0, 30000], honors 0, and scales maxPendingBytes up to 48MB for 30s', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+
+    // 0 must be honored (previously ignored due to > 0 check)
+    decoder.setBufferDepth({ targetDurationMs: 0 });
+    expect(decoder.getTargetPendingDurationMs()).toBe(0);
+    expect(decoder.getMaxPendingDurationMs()).toBe(1500);
+
+    // Negative values clamp to 0
+    decoder.setBufferDepth({ targetDurationMs: -500 });
+    expect(decoder.getTargetPendingDurationMs()).toBe(0);
+    expect(decoder.getMaxPendingDurationMs()).toBe(1500);
+
+    // 30000ms scales maxPendingDurationMs to 43000ms and maxPendingBytes to 48MB cap
+    decoder.setBufferDepth({ targetDurationMs: 30000 });
+    expect(decoder.getTargetPendingDurationMs()).toBe(30000);
+    expect(decoder.getMaxPendingDurationMs()).toBe(43000);
+    expect(decoder.getMaxPendingBytes()).toBe(48 * 1024 * 1024);
+
+    // Values > 30000ms clamp to 30000ms
+    decoder.setBufferDepth({ targetDurationMs: 90000 });
+    expect(decoder.getTargetPendingDurationMs()).toBe(30000);
+    expect(decoder.getMaxPendingDurationMs()).toBe(43000);
+    expect(decoder.getMaxPendingBytes()).toBe(48 * 1024 * 1024);
+
+    // Verify 30s of compressed packets (~8KB/frame @ 30fps = ~7.2MB) are retained without trimming when downstream is full
+    decoder.setDownstreamQueueLengthProvider(() => 14); // Saturate maxActiveFrames so packets queue in pendingPackets
+    const framePayload = new Uint8Array(8000);
+    for (let i = 0; i <= 30; i++) {
+      const flags = i % 2 === 0 ? VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC : VIDEO_FLAGS.AVCC;
+      await decoder.handlePacket(flags, BigInt(i * 1_000_000), framePayload);
+    }
+    expect(decoder.getPendingBufferedMs()).toBe(30000);
+    expect(decoder.getPendingPacketsCount()).toBe(31);
+  });
 });

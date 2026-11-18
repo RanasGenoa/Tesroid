@@ -39,11 +39,16 @@ export class WebSocketHandler {
   private allClients: Set<WebSocket> = new Set();
   private lastSessionToken: string | null = null;
 
+  private static readonly DEFAULT_TARGET_BUFFER_MS = 10000;
+  private static readonly MAX_TARGET_BUFFER_MS = 30000;
+  // 60fps video + 50pps (20ms) Opus audio = 110 frames/s -> 30s = 3,300 frames, 60s = 6,600 frames
+  private static readonly MAX_CATCHUP_QUEUE_FRAMES = 6600;
+
   // Playback ring buffer & CATCHUP state machine
   private playbackBuffer: PlaybackBuffer;
   private lastInputAt: number = Date.now();
   private lastKnownAckPts: bigint | null = null;
-  private lastKnownTargetBufferMs: number = 10000;
+  private lastKnownTargetBufferMs: number = WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
   private clientSessions: Map<WebSocket, ClientSession> = new Map();
 
   private autoSleepTimer: NodeJS.Timeout | null = null;
@@ -994,10 +999,20 @@ export class WebSocketHandler {
         case 'BUFFER_FEEDBACK': {
           const session = this.clientSessions.get(socket);
           if (session) {
-            session.bufferedMs = typeof cmd.bufferedMs === 'number' ? cmd.bufferedMs : 0;
-            session.targetBufferMs =
-              typeof cmd.targetBufferMs === 'number' ? cmd.targetBufferMs : 10000;
-            this.lastKnownTargetBufferMs = session.targetBufferMs || 10000;
+            session.bufferedMs =
+              typeof cmd.bufferedMs === 'number' && Number.isFinite(cmd.bufferedMs)
+                ? Math.max(0, cmd.bufferedMs)
+                : 0;
+            const rawTargetMs =
+              typeof cmd.targetBufferMs === 'number' && Number.isFinite(cmd.targetBufferMs)
+                ? Math.round(cmd.targetBufferMs)
+                : WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
+            session.targetBufferMs = Math.max(
+              0,
+              Math.min(WebSocketHandler.MAX_TARGET_BUFFER_MS, rawTargetMs),
+            );
+            this.lastKnownTargetBufferMs =
+              session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
             session.isInteractive = Boolean(cmd.isInteractive);
             session.lastBufferFeedbackAt = Date.now();
             if (cmd.lastRenderedPts !== undefined && cmd.lastRenderedPts !== null) {
@@ -1277,7 +1292,7 @@ export class WebSocketHandler {
             // 1. CATCHUP クライアント: キュー末尾へ追記（追いつくまでバッファ優先）
             if (session.mode === 'CATCHUP') {
               session.playbackQueue.push({ type: 'video', flags, pts, data });
-              if (session.playbackQueue.length > 3000) {
+              if (session.playbackQueue.length > WebSocketHandler.MAX_CATCHUP_QUEUE_FRAMES) {
                 this.pruneSessionQueue(session);
               }
               this.checkAndResumeCatchup(session);
@@ -1370,10 +1385,12 @@ export class WebSocketHandler {
     this.autoSleepTimer = setTimeout(() => {
       if (this.authenticatedClients.size === 0) {
         console.log(
-          '[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder and pausing browser (True CPU 0%).',
+          '[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder, pausing browser (True CPU 0%), and clearing playback buffer.',
         );
         this.encoder.stop();
         this.browserManager.pause();
+        this.playbackBuffer.clear();
+        this.lastKnownAckPts = null;
       }
     }, delayMs);
   }

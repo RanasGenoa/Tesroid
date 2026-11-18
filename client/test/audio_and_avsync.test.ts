@@ -402,4 +402,107 @@ describe('AvSyncController & AudioPlayer (Opus WebCodecs, Planar/Interleaved & L
 
     player.close();
   });
+
+  it('AudioPlayer holds 35s-40s catchup audio in overflowQueue without early scheduling or premature 30s trimming', async () => {
+    const ctxTime = 1.0;
+    const scheduledSources: any[] = [];
+
+    class MockAudioContext {
+      public state = 'running';
+      public sampleRate = 48000;
+      public destination = {};
+      public get currentTime() {
+        return ctxTime;
+      }
+      public resume = vi.fn(async () => {});
+      public close = vi.fn(async () => {});
+      public createBuffer(channels: number, frames: number, rate: number) {
+        const chArrays = Array.from({ length: channels }, () => new Float32Array(frames));
+        return {
+          numberOfChannels: channels,
+          length: frames,
+          sampleRate: rate,
+          duration: frames / rate,
+          getChannelData: (c: number) => chArrays[c],
+        };
+      }
+      public createGain() {
+        return {
+          gain: { value: 0.88, setValueAtTime: vi.fn() },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      public createBufferSource() {
+        const src: any = {
+          buffer: null,
+          playbackRate: { value: 1.0 },
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(),
+          stop: vi.fn(),
+          onended: null,
+        };
+        scheduledSources.push(src);
+        return src;
+      }
+    }
+
+    let onOutput: ((data: any) => void) | null = null;
+    class MockAudioDecoder {
+      public state = 'configured';
+      constructor(cbs: any) {
+        onOutput = cbs.output;
+      }
+      public configure = vi.fn();
+      public decode = vi.fn((chunk: any) => {
+        onOutput?.({
+          numberOfChannels: 2,
+          numberOfFrames: 48000, // 1.0s buffer per chunk for fast test simulation
+          sampleRate: 48000,
+          timestamp: chunk.timestamp,
+          format: 'f32-planar',
+          copyTo: vi.fn(),
+          close: vi.fn(),
+        });
+      });
+      public close = vi.fn();
+    }
+
+    (globalThis as any).window = {
+      AudioContext: MockAudioContext,
+      AudioDecoder: MockAudioDecoder,
+      EncodedAudioChunk: class {
+        constructor(public init: any) {}
+        get timestamp() {
+          return this.init.timestamp;
+        }
+      },
+    };
+
+    const avSync = new AvSyncController();
+    const player = new AudioPlayer(avSync);
+    await player.unlock();
+    player.handleAudioPacket(AUDIO_FLAGS.CONFIG, 0n, new Uint8Array(19));
+
+    // Anchor video at PTS = 1.0s
+    avSync.updateVideoPts(1_000_000);
+
+    // Start initial playback at PTS = 1.0s
+    player.handleAudioPacket(0, 1_000_000n, new Uint8Array(100));
+    const initialSourcesCount = scheduledSources.length;
+    expect(initialSourcesCount).toBe(1);
+
+    // Push 38 seconds of catchup audio (PTS 2s .. 39s, up to 38s ahead of lastVideoPts=1s)
+    // Must be held in overflowQueue (NOT scheduled early due to < 60s window, and NOT trimmed at 30s)
+    for (let sec = 2; sec <= 39; sec++) {
+      player.handleAudioPacket(0, BigInt(sec * 1_000_000), new Uint8Array(100));
+    }
+
+    expect(scheduledSources.length).toBe(initialSourcesCount);
+    // 1s scheduled + 38s held in overflowQueue = ~39000ms
+    expect(player.getBufferedAudioMs()).toBeGreaterThanOrEqual(38500);
+
+    player.close();
+  });
 });
