@@ -1226,6 +1226,11 @@ export function renderStreamingView(
       }
     } else if (msg.type === 'RESOLUTION_CHANGED') {
       console.log(`[StreamingView] Server resolution updated to ${msg.width}x${msg.height}`);
+      // Reset A/V sync baseline and buffers so encoder restart does not leave persistent drift
+      avSync.reset();
+      framePacer.reset();
+      audioPlayer.resetJitterBuffer();
+      decoder.clearPendingPackets();
     }
   };
 

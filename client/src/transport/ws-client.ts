@@ -46,6 +46,7 @@ export class WsClient {
   private url: string;
   private listeners: { [K in keyof WsEventMap]?: Function[] } = {};
   private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private maxReconnectDelay = 30000;
   private isExplicitlyClosed = false;
 
@@ -62,29 +63,35 @@ export class WsClient {
     this.isExplicitlyClosed = false;
     try {
       console.log(`[WsClient] Connecting to ${this.url}...`);
-      this.ws = new WebSocket(this.url);
-      this.ws.binaryType = 'arraybuffer';
+      const ws = new WebSocket(this.url);
+      this.ws = ws;
+      ws.binaryType = 'arraybuffer';
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
+        if (this.ws !== ws) return;
         console.log('[WsClient] Connected.');
         this.reconnectAttempts = 0;
         this.emit('open');
       };
 
-      this.ws.onclose = (ev) => {
+      ws.onclose = (ev) => {
+        if (this.ws !== ws) return;
         console.log(`[WsClient] Disconnected (code: ${ev.code}, reason: ${ev.reason})`);
         this.emit('close', ev);
-        if (!this.isExplicitlyClosed) {
+        const isTerminalClose = ev.code === 1008 || ev.code === 4000 || ev.code === 4009;
+        if (!this.isExplicitlyClosed && !isTerminalClose) {
           this.scheduleReconnect();
         }
       };
 
-      this.ws.onerror = (ev) => {
+      ws.onerror = (ev) => {
+        if (this.ws !== ws) return;
         console.warn('[WsClient] WebSocket error:', ev);
         this.emit('error', ev);
       };
 
-      this.ws.onmessage = (ev) => {
+      ws.onmessage = (ev) => {
+        if (this.ws !== ws) return;
         this.handleMessage(ev.data as ArrayBuffer);
       };
     } catch (err) {
@@ -105,6 +112,10 @@ export class WsClient {
 
   public close(): void {
     this.isExplicitlyClosed = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -167,12 +178,16 @@ export class WsClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+    }
     const delay = Math.min(1000 * 2 ** this.reconnectAttempts, this.maxReconnectDelay);
     this.reconnectAttempts++;
     console.log(
       `[WsClient] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})...`,
     );
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       if (!this.isExplicitlyClosed) {
         this.connect();
       }

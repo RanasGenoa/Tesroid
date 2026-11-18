@@ -194,6 +194,8 @@ class AppRouter {
           );
           this.showPinEntry();
         }
+      } else if (msg.type === 'SESSION_CONFLICT') {
+        this.handleSessionConflict(msg.error);
       }
     });
 
@@ -205,8 +207,28 @@ class AppRouter {
         } catch {}
         this.authToken = null;
         this.showLockout();
+      } else if (ev.code === 4009 || ev.code === 4000) {
+        this.handleSessionConflict();
       }
     });
+  }
+
+  private handleSessionConflict(message?: string): void {
+    const hadSession = Boolean(this.authToken || this.currentPin || this.isStreaming);
+    try {
+      sessionStorage.removeItem('tesroid_token');
+    } catch {}
+    this.authToken = null;
+    this.currentPin = null;
+    this.wsClient.close();
+    if (hadSession || message) {
+      showToast(
+        message || '他の端末が接続中のため切断されました。PINを再入力してください。',
+        'error',
+        4000,
+      );
+    }
+    this.showPinEntry();
   }
 
   private clearView(): void {
