@@ -20,6 +20,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       getDimensions: () => ({ width: 1280, height: 720 }),
       getState: () => 'running',
       getCurrentUrl: () => 'https://www.youtube.com',
+      pause: vi.fn(),
       resume: vi.fn(),
       navigate: vi.fn().mockResolvedValue(undefined),
       isChromeAlive: () => true,
@@ -696,6 +697,129 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
 
     // キューにはまだ約240フレーム残っていること
     expect(session.playbackQueue.length).toBeGreaterThanOrEqual(230);
+
+    handler.close();
+    vi.useRealTimers();
+  });
+
+  it('should clamp targetBufferMs to [0, 30000] and preserve 0 across reconnects in BUFFER_FEEDBACK', async () => {
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+
+    const socket1: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket1);
+    const msgListener1 = socket1.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+    const closeListener1 = socket1.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+
+    await msgListener1(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    const session1 = handler.getClientSession(socket1)!;
+
+    // 1. Upper clamp: 45000 -> 30000
+    await msgListener1(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(
+          JSON.stringify({ type: 'BUFFER_FEEDBACK', bufferedMs: 0, targetBufferMs: 45000 }),
+        ),
+      ]),
+    );
+    expect(session1.targetBufferMs).toBe(30000);
+
+    // 2. Lower clamp: -500 -> 0
+    await msgListener1(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(
+          JSON.stringify({ type: 'BUFFER_FEEDBACK', bufferedMs: -10, targetBufferMs: -500 }),
+        ),
+      ]),
+    );
+    expect(session1.bufferedMs).toBe(0);
+    expect(session1.targetBufferMs).toBe(0);
+
+    // 3. Reconnect preserves 0 instead of falling back to 10000
+    closeListener1();
+    const socket2: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket2);
+    const session2 = handler.getClientSession(socket2)!;
+    expect(session2.targetBufferMs).toBe(0);
+
+    handler.close();
+  });
+
+  it('should retain >3300 frames in CATCHUP playbackQueue for 30s at 60fps + 50pps audio without truncating at 3000', async () => {
+    vi.useFakeTimers();
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(100));
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer,
+    );
+    handler.setLastInputAt(Date.now() - 10000);
+
+    const socket: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket);
+    const msgListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+    const session = handler.getClientSession(socket)!;
+    session.lastAckPts = 1_000_000n;
+
+    await msgListener(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+
+    // Force flow-paused CATCHUP with 30s target so incoming frames accumulate in playbackQueue
+    session.mode = 'CATCHUP';
+    session.targetBufferMs = 30000;
+    session.bufferedMs = 30000;
+    session.isFlowPaused = true;
+
+    const videoCb = mockEncoder.on.mock.calls.find((c: any[]) => c[0] === 'video')?.[1];
+    const audioCb = mockEncoder.on.mock.calls.find((c: any[]) => c[0] === 'audio')?.[1];
+
+    // Push 30s of 60fps video (1800) + 50pps audio (1500) = 3300 frames (+ initial 1 = 3301)
+    for (let i = 1; i <= 1800; i++) {
+      const flags = i % 120 === 0 ? VIDEO_FLAGS.KEYFRAME : 0;
+      videoCb({ flags, pts: 1_000_000n + BigInt(i) * 16667n, data: Buffer.alloc(64) });
+    }
+    for (let i = 1; i <= 1500; i++) {
+      audioCb({
+        flags: AUDIO_FLAGS.KEYFRAME,
+        pts: 1_000_000n + BigInt(i) * 20000n,
+        data: Buffer.alloc(32),
+      });
+    }
+
+    expect(session.playbackQueue.length).toBeGreaterThanOrEqual(3300);
+
+    handler.close();
+    vi.useRealTimers();
+  });
+
+  it('should clear PlaybackBuffer when auto-sleep triggers', () => {
+    vi.useFakeTimers();
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(100));
+    playbackBuffer.addAudio(AUDIO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(50));
+    expect(playbackBuffer.getVideoCount()).toBe(1);
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer,
+    );
+
+    // Default autoSleepMinutes in mockConfig (check: 3 mins = 180s)
+    vi.advanceTimersByTime(4 * 60 * 1000);
+
+    expect(mockEncoder.stop).toHaveBeenCalled();
+    expect(mockBrowser.pause).toHaveBeenCalled();
+    expect(playbackBuffer.getVideoCount()).toBe(0);
+    expect(playbackBuffer.getAudioCount()).toBe(0);
 
     handler.close();
     vi.useRealTimers();

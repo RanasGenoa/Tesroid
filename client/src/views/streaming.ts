@@ -612,7 +612,7 @@ export function renderStreamingView(
       changed = true;
     }
     if (e.detail?.bufferDepth !== undefined) {
-      targetBufferMs = Number(e.detail.bufferDepth);
+      targetBufferMs = clampBufferDepthMs(Number(e.detail.bufferDepth));
       if (typeof decoder.setBufferDepth === 'function') {
         decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
       }
@@ -643,19 +643,25 @@ export function renderStreamingView(
   };
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
 
-  // Initialize configurable buffer depth (e.g. ?buffer=2s for Intel MCU2, ?buffer=10s for Ryzen MCU3)
+  const MAX_BUFFER_DEPTH_MS = 30000;
+  const clampBufferDepthMs = (ms: number): number =>
+    Number.isFinite(ms) ? Math.max(0, Math.min(MAX_BUFFER_DEPTH_MS, Math.round(ms))) : 10000;
+
+  // Initialize configurable buffer depth (e.g. ?buffer=2s for Intel MCU2, ?buffer=10s default, up to 30s for Ryzen MCU3)
   const getInitialBufferDepthMs = (): number => {
     try {
       const params = new URLSearchParams(window.location.search);
       const bufParam = params.get('buffer');
       if (bufParam) {
-        if (bufParam.endsWith('s')) return parseFloat(bufParam) * 1000;
-        return parseInt(bufParam, 10);
+        const parsed = bufParam.endsWith('s')
+          ? parseFloat(bufParam) * 1000
+          : parseInt(bufParam, 10);
+        if (!isNaN(parsed)) return clampBufferDepthMs(parsed);
       }
       const saved = localStorage.getItem('tesroid_prefetch_buffer_ms');
       if (saved !== null) {
         const val = parseInt(saved, 10);
-        if (!isNaN(val)) return val;
+        if (!isNaN(val)) return clampBufferDepthMs(val);
       }
     } catch {}
     return 10000; // Default 10s prefetch cushion
@@ -1266,7 +1272,7 @@ export function renderStreamingView(
     wsClient.send(
       ClientProtocol.packBufferFeedback({
         bufferedMs: totalBufferedMs,
-        targetBufferMs,
+        targetBufferMs: clampBufferDepthMs(targetBufferMs),
         lastRenderedPts: reportedPts,
         isInteractive,
       }),

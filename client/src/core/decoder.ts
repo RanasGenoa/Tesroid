@@ -25,15 +25,19 @@ export class VideoStreamDecoder {
   private activeSps: Uint8Array | null = null;
   private activePps: Uint8Array | null = null;
 
+  public static readonly MIN_BUFFER_DEPTH_MS = 0;
+  public static readonly MAX_BUFFER_DEPTH_MS = 30000;
+  public static readonly MAX_PENDING_BYTES_CAP = 48 * 1024 * 1024;
+
   // Pre-decode compressed packet buffer to prevent hardware VideoFrame pool exhaustion during burst arrivals
   private pendingPackets: PendingVideoPacket[] = [];
   private pendingBytes = 0;
   private isPumping = false;
   private maxActiveFrames = 14;
-  private targetPendingDurationMs = 10000; // Target prefetch buffer depth
-  private maxPendingPackets = 780; // Hard fallback limit (+35% + margin)
+  private targetPendingDurationMs = 10000; // Default 10s prefetch buffer depth
+  private maxPendingPackets = 1020; // Hard fallback limit (+35% + 2.5s margin @ up to 60fps)
   private maxPendingDurationMs = 16000; // Hard trimming limit with safety margin (10s * 1.35 + 2.5s)
-  private maxPendingBytes = 16 * 1024 * 1024; // Memory guard (16MB allows 10s of high-bitrate video)
+  private maxPendingBytes = 24 * 1024 * 1024; // Memory guard (default 24MB for 10s, scales up to 48MB for 30s)
 
   private onFrameDecoded?: (pts: number) => void;
   public onDecoderError?: () => void;
@@ -68,24 +72,30 @@ export class VideoStreamDecoder {
   }
 
   /**
-   * Configure prefetch buffer depth (e.g. 2000ms for Intel MCU2, 10000ms for Ryzen MCU3)
+   * Configure prefetch buffer depth (0..30000ms; e.g. 2000ms for Intel MCU2, 10000ms default, up to 30000ms for Ryzen MCU3)
    */
   public setBufferDepth(options: { targetDurationMs?: number; maxBytes?: number }): void {
-    if (options.targetDurationMs !== undefined && options.targetDurationMs > 0) {
-      this.targetPendingDurationMs = options.targetDurationMs;
-      // Hard limit for trimming is target + 35% margin (at least +2.5s for GOP alignment)
-      this.maxPendingDurationMs = Math.max(
-        1500,
-        Math.round(options.targetDurationMs * 1.35) + 2500,
+    if (options.targetDurationMs !== undefined && Number.isFinite(options.targetDurationMs)) {
+      const clampedTargetMs = Math.max(
+        VideoStreamDecoder.MIN_BUFFER_DEPTH_MS,
+        Math.min(VideoStreamDecoder.MAX_BUFFER_DEPTH_MS, Math.round(options.targetDurationMs)),
       );
-      // Packet count limit based on max 45fps + margin
+      this.targetPendingDurationMs = clampedTargetMs;
+      // Hard limit for trimming is target + 35% margin (+2.5s for GOP alignment when buffering > 0; 1.5s floor for 0ms)
+      this.maxPendingDurationMs =
+        clampedTargetMs === 0 ? 1500 : Math.max(1500, Math.round(clampedTargetMs * 1.35) + 2500);
+      // Packet count limit based on max 60fps + margin
       this.maxPendingPackets = Math.max(
         90,
-        Math.ceil((this.maxPendingDurationMs / 1000) * 45) + 60,
+        Math.ceil((this.maxPendingDurationMs / 1000) * 60) + 60,
       );
-      // Dynamic memory guard: ~1.5MB per second of buffer depth (min 4MB, max 24MB)
+      // Dynamic memory guard: ~1.5MB per second of max buffer window (min 4MB, max 48MB for 30s @ up to ~9Mbps)
+      // Note: 60fps 2Mbps baseline uses ~7.5MB for 30s (~10.75MB at 43s max margin); 48MB leaves headroom for bursts/higher bitrates.
       const dynamicBytes = Math.round((this.maxPendingDurationMs / 1000) * 1.5 * 1024 * 1024);
-      this.maxPendingBytes = Math.max(4 * 1024 * 1024, Math.min(24 * 1024 * 1024, dynamicBytes));
+      this.maxPendingBytes = Math.max(
+        4 * 1024 * 1024,
+        Math.min(VideoStreamDecoder.MAX_PENDING_BYTES_CAP, dynamicBytes),
+      );
     }
     if (options.maxBytes !== undefined && options.maxBytes > 0) {
       this.maxPendingBytes = options.maxBytes;

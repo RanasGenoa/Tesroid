@@ -15,12 +15,14 @@ export interface PlaybackBufferOptions {
 /**
  * プレイバックリングバッファ (PlaybackBuffer)
  *
- * 【メモリガード計算 (500kbps〜1000kbps 映像 + 128kbps 音声)】:
- * - 映像 1000kbps: 1,000,000 bits/s * 60s / 8 = 7,500,000 bytes (約7.15 MB)
- * - 映像 500kbps: 500,000 bits/s * 60s / 8 = 3,750,000 bytes (約3.58 MB)
- * - 音声 128kbps: 128,000 bits/s * 60s / 8 = 960,000 bytes (約0.92 MB)
- * -> 60秒間で合計約 4.5MB 〜 8.5MB。
- * -> メモリ上限ガード (maxBytes) は安全係数を含め 12MB (12 * 1024 * 1024 bytes) を既定値とする。
+ * 【メモリガード計算】:
+ * - UI最高画質プリセット基準 (映像 2Mbps / 60fps + 音声 128kbps):
+ *   - 30秒間: (2,000,000 + 128,000) / 8 * 30 = 約 7.98 MB (約 7.61 MiB)
+ *   - 60秒間: (2,000,000 + 128,000) / 8 * 60 = 約 15.96 MB (約 15.22 MiB)
+ * - 高ビットレート設定 (API/環境変数で最大 10Mbps + 音声 320kbps):
+ *   - 30秒間: (10,000,000 + 320,000) / 8 * 30 = 約 38.70 MB (約 36.91 MiB)
+ * -> 30秒〜60秒の弱電波・瞬断リカバリとバースト時の安全係数を含め、
+ *    メモリ上限ガード (maxBytes) は 48MB (48 * 1024 * 1024 bytes) を既定値とする。
  * 保持時間上限 (bufferSeconds, 既定60秒) または maxBytes を超過した場合は、
  * GOP(2秒)境界を維持しながら最古のGOP単位でフレームを破棄する。
  */
@@ -40,8 +42,8 @@ export class PlaybackBuffer {
     this.bufferSeconds = options.bufferSeconds || (envSec > 0 ? envSec : 60);
 
     const envBytes = Number(process.env.PLAYBACK_BUFFER_MAX_BYTES);
-    // 既定 12MB (12 * 1024 * 1024)
-    this.maxBytes = options.maxBytes || (envBytes > 0 ? envBytes : 12 * 1024 * 1024);
+    // 既定 48MB (48 * 1024 * 1024)
+    this.maxBytes = options.maxBytes || (envBytes > 0 ? envBytes : 48 * 1024 * 1024);
   }
 
   public getBufferSeconds(): number {

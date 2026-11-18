@@ -136,7 +136,9 @@ async function showSettingsModal(
           <option value="0">オフ (0.1秒 / 超低遅延優先)</option>
           <option value="2000">軽量 2秒 (Intel / MCU2車両向け・省メモリ約280KB)</option>
           <option value="5000">標準 5秒 (市街地走行向け・メモリ約700KB)</option>
-          <option value="10000" selected>最大 10秒 (長大トンネル・耐障害最優先 / Ryzen推奨)</option>
+          <option value="10000" selected>推奨 10秒 (トンネル・郊外向け / Ryzen推奨)</option>
+          <option value="20000">拡張 20秒 (山間部・長大トンネル向け / メモリ約13MB)</option>
+          <option value="30000">最大 30秒 (弱電波・極限耐障害 / メモリ約19MB・Ryzen推奨)</option>
         </select>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">音声ビットレート (音質調整 / 128k〜320k)</label>
@@ -807,8 +809,12 @@ async function showSettingsModal(
   }
 
   const savedBufferDepth = localStorage.getItem('tesroid_prefetch_buffer_ms') || '10000';
-  if (overlay.querySelector('#cfg-buffer-depth')) {
-    (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement).value = savedBufferDepth;
+  const bufferDepthSelect = overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement | null;
+  if (bufferDepthSelect) {
+    bufferDepthSelect.value = savedBufferDepth;
+    if (bufferDepthSelect.value !== savedBufferDepth) {
+      bufferDepthSelect.value = '10000';
+    }
   }
 
   const savedAudioBitrate = localStorage.getItem('tesroid_audio_bitrate') || '128000';
@@ -1015,9 +1021,12 @@ async function showSettingsModal(
     const displayScale = Number(
       (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120,
     );
-    const bufferDepth = Number(
+    const rawBufferDepth = Number(
       (overlay.querySelector('#cfg-buffer-depth') as HTMLSelectElement)?.value ?? 10000,
     );
+    const bufferDepth = Number.isFinite(rawBufferDepth)
+      ? Math.max(0, Math.min(30000, Math.round(rawBufferDepth)))
+      : 10000;
     const audioBitrate = Number(
       (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement)?.value || 128000,
     );

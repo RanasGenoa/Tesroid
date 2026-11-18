@@ -42,8 +42,8 @@ export class AudioPlayer {
   private static readonly REBUFFER_CUSHION_SEC = 0.08;
   // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
   private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.5;
-  // Maximum catchup buffer before trimming oldest audio (30s)
-  private static readonly MAX_CATCHUP_BUFFER_SEC = 30.0;
+  // Maximum catchup buffer before trimming oldest audio (45s, aligned with 30s video target + 43s max margin)
+  private static readonly MAX_CATCHUP_BUFFER_SEC = 45.0;
   // Hardware lookahead when starting playback from currentTime (25ms)
   private static readonly HARDWARE_LOOKAHEAD_SEC = 0.025;
   // Tolerance before declaring an underrun in PLAYING state (40ms = 2 Opus packets).
@@ -455,9 +455,9 @@ export class AudioPlayer {
     const lastVideoPts = this.avSync.getLastVideoPts();
     if (lastVideoPts <= 0 || ptsUs <= 0) return false;
     const audioLeadMs = (ptsUs - lastVideoPts) / 1000;
-    // Allow audio to schedule comfortably ahead (up to 8000ms / 8s prefetch buffer window) without stalling,
-    // while preventing audio from running wildly ahead (> 35s) during genuine video stalls.
-    return audioLeadMs > 8000 && audioLeadMs < 35000;
+    // Hold audio in overflowQueue when ahead of rendered video (8s-60s) so 30s+ catchup buffers
+    // stay synchronized without scheduling future audio early, while still recovering on >60s jumps.
+    return audioLeadMs > 8000 && audioLeadMs < 60000;
   }
 
   private applyDeclickFadeIn(buffer: AudioBuffer): void {

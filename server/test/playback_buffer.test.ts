@@ -111,4 +111,26 @@ describe('PlaybackBuffer Ring Buffer Tests', () => {
     expect(buffer.getCachedOpusHead()).toBeNull();
     expect(buffer.getFramesToCatchup(0n)).toBeNull();
   });
+
+  it('should default maxBytes to 48MB and retain 30s of 60fps video + 50pps audio without premature pruning', () => {
+    const buffer = new PlaybackBuffer();
+    expect(buffer.getBufferSeconds()).toBe(60);
+    expect(buffer.getMaxBytes()).toBe(48 * 1024 * 1024);
+
+    // Simulate 30s at 60fps (1800 video frames, 2s GOP) + 50pps audio (1500 audio packets)
+    // ~8KB/video frame (~3.8Mbps) + 320B/audio packet (~128kbps) -> ~14.88 MB total (< 48 MB)
+    for (let i = 0; i < 1800; i++) {
+      const pts = BigInt(i) * 16667n;
+      const flags = i % 120 === 0 ? VIDEO_FLAGS.KEYFRAME | VIDEO_FLAGS.AVCC : VIDEO_FLAGS.AVCC;
+      buffer.addVideo(flags, pts, Buffer.alloc(8192));
+    }
+    for (let i = 0; i < 1500; i++) {
+      const pts = BigInt(i) * 20000n;
+      buffer.addAudio(AUDIO_FLAGS.KEYFRAME, pts, Buffer.alloc(320));
+    }
+
+    expect(buffer.getVideoCount()).toBe(1800);
+    expect(buffer.getAudioCount()).toBe(1500);
+    expect(buffer.getBufferedDurationMs()).toBeGreaterThanOrEqual(29900);
+  });
 });
