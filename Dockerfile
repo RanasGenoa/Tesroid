@@ -86,12 +86,20 @@ RUN mkdir -p /etc/apt/keyrings && \
     apt-get install -qq -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# 3. Install Google Chrome Stable
-RUN curl -sSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb && \
-    apt-get update -qq && \
-    apt-get install -qq -y --no-install-recommends /tmp/chrome.deb && \
-    rm -f /tmp/chrome.deb && \
-    rm -rf /var/lib/apt/lists/*
+# 3. Optionally install Google Chrome Stable (INSTALL_CHROME=false skips Chrome for redistributable images)
+ARG INSTALL_CHROME=true
+RUN if [ "$INSTALL_CHROME" = "true" ]; then \
+        curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb && \
+        apt-get update -qq && \
+        apt-get install -qq -y --no-install-recommends /tmp/chrome.deb && \
+        rm -f /tmp/chrome.deb && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# 3b. Install cloudflared binary (Linux amd64)
+RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
+    chmod +x /usr/local/bin/cloudflared && \
+    cloudflared --version
 
 # 4. Configure PulseAudio for container execution
 RUN echo "default-server = unix:/tmp/pulse-socket" > /etc/pulse/client.conf && \
@@ -117,6 +125,11 @@ COPY --from=client-builder /app/client/dist ./public
 # 7. Create persistent data and profile directory
 RUN mkdir -p /data/browser-profile
 
+# 8. Copy container entrypoint script
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 EXPOSE 8080
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["node", "dist/index.js"]

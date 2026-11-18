@@ -50,23 +50,51 @@
 自宅の光回線（NURO光、マンション一括回線、IPv6 IPoE / MAP-E 等）では、グローバル IPv4 アドレスが割り当てられずポート開放ができない（CGNAT）場合があります。
 **Cloudflare Tunnel** を利用すると、自宅ルーターのポート開放を一切行うことなく、安全に `https://tesroid.your-domain.com` を外部公開できます。
 
-```
-[ Tesla Browser ] ──HTTPS/WSS──> [ Cloudflare Edge ] ══暗号化トンネル══> [ cloudflared コンテナ ] ──HTTP/WS──> [ Tesroid ]
+`ghcr.io/ranasgenoa/tesroid:latest` には `cloudflared` が同梱されているため、**`TUNNEL_TOKEN` を設定するだけで単一コンテナのまま自動接続**できます。
+
+```text
+[ Tesla Browser ] ──HTTPS/WSS──> [ Cloudflare Edge ] ══暗号化トンネル══> [ Tesroid コンテナ (内蔵 cloudflared ➔ localhost:8080) ]
 ```
 
-#### セットアップ手順
+#### ステップバイステップ手順（初心者向け・単一コンテナ同梱構成）
 
 1. **ドメインの Cloudflare 登録**:
-   お持ちの独自ドメイン（お名前.com, Cloudflare Registrar 等で取得）のネームサーバーを Cloudflare に設定します。
-2. **Cloudflare Zero Trust トンネルの作成**:
-   - Cloudflare Zero Trust ダッシュボード (`https://one.dash.cloudflare.com/`) にアクセス。
-   - **Networks** ➔ **Tunnels** ➔ **Create a tunnel** を選択（Cloudflared を選択）。
-   - トンネル名（例: `tesroid-tunnel`）を入力。
-3. **トンネルトークンの取得と Docker 実行**:
-   Docker Compose 内で `cloudflared` を同時に起動します。
+   お持ちの独自ドメイン（お名前.com, Cloudflare Registrar 等で取得）を Cloudflare に登録し、ネームサーバーを Cloudflare に切り替えます。
+2. **Cloudflare Zero Trust でトンネルを作成して `TUNNEL_TOKEN` を取得**:
+   - Cloudflare Zero Trust ダッシュボード (`https://one.dash.cloudflare.com/`) にログインします。
+   - 左メニューから **Networks** ➔ **Tunnels** ➔ **Create a tunnel** をクリックします。
+   - コネクタの種類で **Cloudflared** を選択し、任意のトンネル名（例: `tesroid-tunnel`）を入力して保存します。
+   - 画面に表示されるインストールコマンド内の `--token` に続く長い文字列（`eyJh...` で始まるトークン）をコピーします。これが **`TUNNEL_TOKEN`** です。
+3. **`docker-compose.prebuilt.yml` / `.env` に `TUNNEL_TOKEN` を貼り付けて起動**:
+   - `scripts/install.sh` を使う場合は、対話プロンプトで `TUNNEL_TOKEN` の入力を求められた際にそのまま貼り付けます。
+   - `docker-compose.prebuilt.yml` を手動で使う場合は、同じディレクトリの `.env`（または YAML 内の `environment:`）に以下を設定して起動します：
+     ```env
+     TUNNEL_TOKEN=eyJh...ここにコピーしたトークンを貼り付け
+     ```
+     ```bash
+     docker compose -f docker-compose.prebuilt.yml up -d
+     ```
+   - `TUNNEL_TOKEN` が空でない場合、コンテナ起動時に内蔵の `cloudflared` が自動的に起動します。Zero Trust 画面上のトンネルステータスが **HEALTHY** になれば接続成功です。
+4. **Public Hostname（公開 URL）の転送先を設定**:
+   トンネル設定画面の **Public Hostname** タブ（または **Published application routes**）で「Add a public hostname」を開き、以下のように設定します：
+   - **Subdomain**: `tesroid`（任意のサブドメイン）
+   - **Domain**: ご自身のドメイン（例: `your-domain.com`）
+   - **Service Type**: `HTTP`
+   - **URL**: **`http://localhost:8080`**
+     > [!IMPORTANT]
+     > `docker-compose.prebuilt.yml` や `scripts/install.sh` による単一コンテナ構成では、`cloudflared` と Tesroid 本体が同じコンテナ内で動作するため、転送先には **`http://localhost:8080`** を指定してください。
+   - **Additional application settings** ➔ **HTTP Settings**:
+     - `No TLS Verify`: 有効（内部通信が HTTP のため）
+   - Cloudflare ダッシュボード側の **Network** 設定で **WebSockets** が有効（デフォルト ON）になっていることを確認します。
+5. **アクセス確認**:
+   ブラウザで `https://tesroid.your-domain.com` を開き、初期 PIN 設定画面が表示されれば完了です。
+
+<details>
+<summary>（参考）別コンテナで cloudflared を起動する構成（ローカルビルド版等で分離したい場合）</summary>
+
+`cloudflared` を Tesroid コンテナと分離してサイドカー起動する場合は、`docker-compose.yml` に以下を追加し、Public Hostname の **URL** には `http://tesroid:8080`（同一 Docker ネットワークの場合）または `http://host.docker.internal:9001` を指定してください。
 
 ```yaml
-# docker-compose.yml への追加例
 services:
   tesroid:
     # (既存の tesroid サービス定義)
@@ -82,16 +110,7 @@ services:
       - TUNNEL_TOKEN=eyJh... # Cloudflareダッシュボードで取得したトークン
 ```
 
-4. **Public Hostname (公開URL) のルーティング設定**:
-   Cloudflare ダッシュボード上で以下のように設定します：
-   - **Subdomain**: `tesroid`
-   - **Domain**: `your-domain.com`
-   - **Service Type**: `HTTP`
-   - **URL**: `tesroid:8080` (同一Dockerネットワークの場合) または `host.docker.internal:9001`
-   - **Additional application settings**:
-     - **HTTP Settings**:
-       - `No TLS Verify`: 有効（内部通信がHTTPのため）
-     - **WebSockets**: Cloudflare Network 設定で **WebSockets を有効化** (デフォルトでON)
+</details>
 
 ---
 
