@@ -207,7 +207,7 @@ class AppRouter {
         } catch {}
         this.authToken = null;
         this.showLockout();
-      } else if (ev.code === 4009) {
+      } else if (ev.code === 4009 || ev.code === 4000) {
         this.handleSessionConflict();
       }
     });

@@ -63,30 +63,35 @@ export class WsClient {
     this.isExplicitlyClosed = false;
     try {
       console.log(`[WsClient] Connecting to ${this.url}...`);
-      this.ws = new WebSocket(this.url);
-      this.ws.binaryType = 'arraybuffer';
+      const ws = new WebSocket(this.url);
+      this.ws = ws;
+      ws.binaryType = 'arraybuffer';
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
+        if (this.ws !== ws) return;
         console.log('[WsClient] Connected.');
         this.reconnectAttempts = 0;
         this.emit('open');
       };
 
-      this.ws.onclose = (ev) => {
+      ws.onclose = (ev) => {
+        if (this.ws !== ws) return;
         console.log(`[WsClient] Disconnected (code: ${ev.code}, reason: ${ev.reason})`);
         this.emit('close', ev);
-        const isTerminalClose = ev.code === 1008 || ev.code === 4009;
+        const isTerminalClose = ev.code === 1008 || ev.code === 4000 || ev.code === 4009;
         if (!this.isExplicitlyClosed && !isTerminalClose) {
           this.scheduleReconnect();
         }
       };
 
-      this.ws.onerror = (ev) => {
+      ws.onerror = (ev) => {
+        if (this.ws !== ws) return;
         console.warn('[WsClient] WebSocket error:', ev);
         this.emit('error', ev);
       };
 
-      this.ws.onmessage = (ev) => {
+      ws.onmessage = (ev) => {
+        if (this.ws !== ws) return;
         this.handleMessage(ev.data as ArrayBuffer);
       };
     } catch (err) {
