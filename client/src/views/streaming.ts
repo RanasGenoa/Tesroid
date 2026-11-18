@@ -17,7 +17,9 @@ import {
   escapeHtml,
   type FavoriteItem,
   ICONS,
+  insertFavoriteAfterHome,
   isSafeHttpUrl,
+  pinHomeFavoriteFirst,
   resolveHomeFavorite,
   sanitizeFavorites,
   showToast,
@@ -518,6 +520,7 @@ export function renderStreamingView(
         if (typeof data.homeFavoriteId === 'string' && data.homeFavoriteId.trim()) {
           homeFavoriteId = data.homeFavoriteId.trim();
         }
+        favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
         if (!hasLiveBrowserStatus) {
           if (typeof data.browserUrl === 'string' && isSafeHttpUrl(data.browserUrl)) {
             currentBrowserUrl = data.browserUrl;
@@ -633,6 +636,7 @@ export function renderStreamingView(
       updateToggleButtons();
     }
     if (favoritesChanged) {
+      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
       updateHomeButtonTitle();
       renderFavoritesList();
     }
@@ -1498,7 +1502,7 @@ export function renderStreamingView(
       title: currentBrowserTitle.trim() || hostname,
       url: currentBrowserUrl,
     };
-    const nextFavorites = [...favorites, newFav];
+    const nextFavorites = insertFavoriteAfterHome(favorites, newFav, homeFavoriteId);
 
     isAddingCurrentFavorite = true;
     try {
@@ -1523,6 +1527,7 @@ export function renderStreamingView(
       ) {
         homeFavoriteId = data.settings.homeFavoriteId.trim();
       }
+      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
       updateHomeButtonTitle();
       renderFavoritesList();
       window.dispatchEvent(

@@ -55,6 +55,8 @@ export const DEFAULT_HOME_FAVORITE_ID = 'youtube';
 
 export const DEFAULT_FAVORITES: FavoriteItem[] = [
   { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+  { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+  { id: 'primevideo', title: 'Prime Video', url: 'https://www.amazon.co.jp/primevideo' },
   { id: 'netflix', title: 'Netflix', url: 'https://www.netflix.com' },
   { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
   { id: 'disneyplus', title: 'Disney+', url: 'https://www.disneyplus.com' },
@@ -63,8 +65,6 @@ export const DEFAULT_FAVORITES: FavoriteItem[] = [
   { id: 'nicovideo', title: 'ニコニコ動画', url: 'https://www.nicovideo.jp' },
   { id: 'twitch', title: 'Twitch', url: 'https://www.twitch.tv' },
   { id: 'google', title: 'Google 検索', url: 'https://www.google.com' },
-  { id: 'tver', title: 'TVer (動作不可)', url: 'https://tver.jp' },
-  { id: 'primevideo', title: 'Prime Video (動作不可)', url: 'https://www.amazon.co.jp/primevideo' },
 ];
 
 function isValidHttpUrl(rawUrl: unknown): rawUrl is string {
@@ -90,6 +90,21 @@ export interface AppConfig {
   favorites: FavoriteItem[];
   homeFavoriteId: string;
   stream: StreamConfig;
+}
+
+/**
+ * Move the favorite matching `homeFavoriteId` to index 0 while preserving
+ * the relative order of all other items.
+ */
+export function pinHomeFavoriteFirst(
+  favorites: FavoriteItem[],
+  homeFavoriteId: string,
+): FavoriteItem[] {
+  const idx = favorites.findIndex((f) => f.id === homeFavoriteId);
+  if (idx <= 0) {
+    return [...favorites];
+  }
+  return [favorites[idx], ...favorites.slice(0, idx), ...favorites.slice(idx + 1)];
 }
 
 export function resolveHomeUrl(config: Pick<AppConfig, 'favorites' | 'homeFavoriteId'>): string {
@@ -159,6 +174,16 @@ export class ConfigStore {
     if (partial.displayScale !== undefined) {
       partial.displayScaleUserSet = true;
     }
+    const nextHomeFavoriteId = partial.homeFavoriteId ?? this.currentConfig.homeFavoriteId;
+    const rawNextFavorites =
+      partial.favorites !== undefined
+        ? partial.favorites.map((f) => ({ ...f }))
+        : this.currentConfig.favorites.map((f) => ({ ...f }));
+    const nextFavorites =
+      partial.favorites !== undefined || partial.homeFavoriteId !== undefined
+        ? pinHomeFavoriteFirst(rawNextFavorites, nextHomeFavoriteId)
+        : rawNextFavorites;
+
     this.currentConfig = {
       ...this.currentConfig,
       ...partial,
@@ -166,10 +191,7 @@ export class ConfigStore {
         partial.allowedDomains !== undefined
           ? [...partial.allowedDomains]
           : [...this.currentConfig.allowedDomains],
-      favorites:
-        partial.favorites !== undefined
-          ? partial.favorites.map((f) => ({ ...f }))
-          : this.currentConfig.favorites.map((f) => ({ ...f })),
+      favorites: nextFavorites,
       stream: {
         ...this.currentConfig.stream,
         ...(partial.stream || {}),
@@ -214,9 +236,14 @@ export class ConfigStore {
 
         const rawHomeId =
           typeof parsed.homeFavoriteId === 'string' ? parsed.homeFavoriteId.trim() : '';
+        const fallbackHomeId =
+          !rawHomeId && favorites.some((f) => f.id === DEFAULT_HOME_FAVORITE_ID)
+            ? DEFAULT_HOME_FAVORITE_ID
+            : favorites[0]?.id || DEFAULT_HOME_FAVORITE_ID;
         const homeFavoriteId = favorites.some((f) => f.id === rawHomeId)
           ? rawHomeId
-          : favorites[0]?.id || DEFAULT_HOME_FAVORITE_ID;
+          : fallbackHomeId;
+        favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
 
         return {
           ...DEFAULT_CONFIG,
