@@ -66,6 +66,8 @@ export interface FavoriteItem {
 export const DEFAULT_HOME_FAVORITE_ID = 'youtube';
 
 export const DEFAULT_FAVORITES: FavoriteItem[] = [
+  { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+  { id: 'primevideo', title: 'Prime Video', url: 'https://www.amazon.co.jp/primevideo' },
   { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
   { id: 'netflix', title: 'Netflix', url: 'https://www.netflix.com' },
   { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
@@ -75,8 +77,6 @@ export const DEFAULT_FAVORITES: FavoriteItem[] = [
   { id: 'nicovideo', title: 'ニコニコ動画', url: 'https://www.nicovideo.jp' },
   { id: 'twitch', title: 'Twitch', url: 'https://www.twitch.tv' },
   { id: 'google', title: 'Google 検索', url: 'https://www.google.com' },
-  { id: 'tver', title: 'TVer (動作不可)', url: 'https://tver.jp' },
-  { id: 'primevideo', title: 'Prime Video (動作不可)', url: 'https://www.amazon.co.jp/primevideo' },
 ];
 
 /**

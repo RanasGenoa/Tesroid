@@ -459,7 +459,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
 
     it('dynamically resolves custom home favorite from GET /api/settings and updates #hud-home-btn', async () => {
       const customFavorites: FavoriteItem[] = [
-        ...DEFAULT_FAVORITES.slice(0, 3),
+        ...DEFAULT_FAVORITES.slice(0, 4),
         { id: 'custom-news', title: 'Tesla News', url: 'https://www.tesla.com' },
       ];
       (globalThis as any).fetch = vi.fn().mockResolvedValue({
@@ -849,6 +849,20 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
           .currentFavs.slice(1)
           .map((f) => f.id),
       ).toEqual(['youtube', 'tver']);
+    });
+
+    it('places TVer and Prime Video at the front of client DEFAULT_FAVORITES without unavailable labels', () => {
+      expect(DEFAULT_FAVORITES[0]).toEqual({
+        id: 'tver',
+        title: 'TVer',
+        url: 'https://tver.jp',
+      });
+      expect(DEFAULT_FAVORITES[1]).toEqual({
+        id: 'primevideo',
+        title: 'Prime Video',
+        url: 'https://www.amazon.co.jp/primevideo',
+      });
+      expect(DEFAULT_FAVORITES.some((f) => f.title.includes('動作不可'))).toBe(false);
     });
   });
 });
