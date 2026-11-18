@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_FAVORITES, escapeHtml, type FavoriteItem } from '../src/views/icons.js';
+import {
+  DEFAULT_FAVORITES,
+  DEFAULT_HOME_FAVORITE_ID,
+  escapeHtml,
+  type FavoriteItem,
+  insertFavoriteAfterHome,
+  pinHomeFavoriteFirst,
+} from '../src/views/icons.js';
 import { openSettingsWithAuth } from '../src/views/settings-modal.js';
 import { isYouTubeUrl, renderStreamingView } from '../src/views/streaming.js';
 
@@ -588,12 +595,13 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 15));
 
       expect(putPayload).toBeTruthy();
-      expect(putPayload.favorites[0]).toMatchObject({
+      expect(putPayload.favorites[0].id).toBe('youtube');
+      expect(putPayload.favorites[1]).toMatchObject({
         url: 'https://abema.tv/now-on-air/abema-news',
         title: 'ABEMA News',
       });
-      expect(putPayload.favorites.slice(1).map((f: FavoriteItem) => f.id)).toEqual(
-        DEFAULT_FAVORITES.map((f) => f.id),
+      expect(putPayload.favorites.slice(2).map((f: FavoriteItem) => f.id)).toEqual(
+        DEFAULT_FAVORITES.slice(1).map((f) => f.id),
       );
       expect(globalThis.window.dispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'tesroid:settings-updated' }),
@@ -739,13 +747,13 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 10));
       expect(putPayloads.length).toBe(0);
 
-      // 2. Add valid favorite (inserted at head / index 0)
+      // 2. Add valid favorite (inserted at index 1, right after pinned Home at index 0)
       titleInput.value = 'Netflix';
       urlInput.value = 'https://www.netflix.com';
       addBtn.click();
       await new Promise((r) => setTimeout(r, 15));
       expect(putPayloads.length).toBe(1);
-      expect(getState().currentFavs.map((f) => f.title)).toEqual(['Netflix', 'YouTube', 'TVer']);
+      expect(getState().currentFavs.map((f) => f.title)).toEqual(['YouTube', 'Netflix', 'TVer']);
       expect(globalThis.window.dispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'tesroid:settings-updated' }),
       );
@@ -762,27 +770,41 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       expect(getState().currentFavs.find((f) => f.id === 'tver')?.title).toBe('TVer 公式');
       expect(elementRegistry.get('fav-cancel-edit-btn').style.display).toBe('none');
 
-      // 4. Reorder: move TVer up before YouTube
-      const netflixId = getState().currentFavs[0].id;
+      // 4. Home at index 0 is locked (up/down disabled) and index 1 has up disabled
+      const netflixId = getState().currentFavs[1].id;
+      const manageListHtml = elementRegistry.get('favorites-manage-list').innerHTML;
+      expect(manageListHtml).toMatch(/id="fav-up-youtube"[\s\S]*?disabled/);
+      expect(manageListHtml).toMatch(/id="fav-down-youtube"[\s\S]*?disabled/);
+      expect(manageListHtml).toMatch(new RegExp(`id="fav-up-${netflixId}"[\\s\\S]*?disabled`));
+
+      const payloadsBeforeLockedClicks = putPayloads.length;
+      elementRegistry.get('fav-up-youtube').click();
+      elementRegistry.get('fav-down-youtube').click();
+      elementRegistry.get(`fav-up-${netflixId}`).click();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(putPayloads.length).toBe(payloadsBeforeLockedClicks);
+      expect(getState().currentFavs.map((f) => f.id)).toEqual(['youtube', netflixId, 'tver']);
+
+      // 5. Reorder non-home items: move TVer (index 2) up to index 1, then down back to index 2
       elementRegistry.get('fav-up-tver').click();
       await new Promise((r) => setTimeout(r, 15));
-      expect(getState().currentFavs.map((f) => f.id)).toEqual([netflixId, 'tver', 'youtube']);
+      expect(getState().currentFavs.map((f) => f.id)).toEqual(['youtube', 'tver', netflixId]);
 
-      // 5. Move Netflix down
-      elementRegistry.get(`fav-down-${netflixId}`).click();
+      elementRegistry.get('fav-down-tver').click();
       await new Promise((r) => setTimeout(r, 15));
-      expect(getState().currentFavs.map((f) => f.id)).toEqual(['tver', netflixId, 'youtube']);
+      expect(getState().currentFavs.map((f) => f.id)).toEqual(['youtube', netflixId, 'tver']);
 
-      // 6. Set TVer as home
+      // 6. Set TVer (at index 2) as home -> immediately moves TVer to index 0
       elementRegistry.get('fav-home-tver').click();
       await new Promise((r) => setTimeout(r, 15));
       expect(getState().currentHomeId).toBe('tver');
+      expect(getState().currentFavs.map((f) => f.id)).toEqual(['tver', 'youtube', netflixId]);
 
       // 7. Delete active home favorite (TVer) -> home auto-falls back to first remaining item
       elementRegistry.get('fav-delete-tver').click();
       await new Promise((r) => setTimeout(r, 15));
       expect(getState().currentFavs.some((f) => f.id === 'tver')).toBe(false);
-      expect(getState().currentHomeId).toBe(netflixId);
+      expect(getState().currentHomeId).toBe('youtube');
 
       // 8. Reset to presets requires 2-tap confirmation
       const resetBtn = elementRegistry.get('fav-reset-btn');
@@ -826,7 +848,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       expect(elementRegistry.get('hud-home-btn').title).toBe('ホームへ移動 (DAZN)');
     });
 
-    it('inserts current page at index 0 when added via #fav-add-current-modal-btn', async () => {
+    it('inserts current page at index 1 right after Home when added via #fav-add-current-modal-btn', async () => {
       const initial: FavoriteItem[] = [
         { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
         { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
@@ -840,29 +862,48 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 15));
 
       expect(putPayloads.length).toBe(1);
-      expect(getState().currentFavs[0]).toMatchObject({
+      expect(getState().currentFavs[0].id).toBe('youtube');
+      expect(getState().currentFavs[1]).toMatchObject({
         title: 'Twitch Browse',
         url: 'https://www.twitch.tv/directory',
       });
-      expect(
-        getState()
-          .currentFavs.slice(1)
-          .map((f) => f.id),
-      ).toEqual(['youtube', 'tver']);
+      expect(getState().currentFavs[2].id).toBe('tver');
     });
 
-    it('places TVer and Prime Video at the front of client DEFAULT_FAVORITES without unavailable labels', () => {
+    it('places YouTube (Home) at index 0, followed by TVer and Prime Video in client DEFAULT_FAVORITES without unavailable labels', () => {
       expect(DEFAULT_FAVORITES[0]).toEqual({
+        id: DEFAULT_HOME_FAVORITE_ID,
+        title: 'YouTube',
+        url: 'https://www.youtube.com',
+      });
+      expect(DEFAULT_FAVORITES[1]).toEqual({
         id: 'tver',
         title: 'TVer',
         url: 'https://tver.jp',
       });
-      expect(DEFAULT_FAVORITES[1]).toEqual({
+      expect(DEFAULT_FAVORITES[2]).toEqual({
         id: 'primevideo',
         title: 'Prime Video',
         url: 'https://www.amazon.co.jp/primevideo',
       });
       expect(DEFAULT_FAVORITES.some((f) => f.title.includes('動作不可'))).toBe(false);
+    });
+
+    it('pins Home first and inserts new favorites after Home via shared helpers', () => {
+      const items: FavoriteItem[] = [
+        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+        { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+        { id: 'netflix', title: 'Netflix', url: 'https://www.netflix.com' },
+      ];
+      const pinned = pinHomeFavoriteFirst(items, 'netflix');
+      expect(pinned.map((f) => f.id)).toEqual(['netflix', 'tver', 'youtube']);
+
+      const newFav: FavoriteItem = { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' };
+      const inserted = insertFavoriteAfterHome(items, newFav, 'youtube');
+      expect(inserted.map((f) => f.id)).toEqual(['youtube', 'abema', 'tver', 'netflix']);
+
+      const insertedEmpty = insertFavoriteAfterHome([], newFav, 'youtube');
+      expect(insertedEmpty.map((f) => f.id)).toEqual(['abema']);
     });
   });
 });

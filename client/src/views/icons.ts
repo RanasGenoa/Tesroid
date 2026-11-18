@@ -66,9 +66,9 @@ export interface FavoriteItem {
 export const DEFAULT_HOME_FAVORITE_ID = 'youtube';
 
 export const DEFAULT_FAVORITES: FavoriteItem[] = [
+  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
   { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
   { id: 'primevideo', title: 'Prime Video', url: 'https://www.amazon.co.jp/primevideo' },
-  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
   { id: 'netflix', title: 'Netflix', url: 'https://www.netflix.com' },
   { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
   { id: 'disneyplus', title: 'Disney+', url: 'https://www.disneyplus.com' },
@@ -134,6 +134,38 @@ export function resolveHomeFavorite(
   const firstValid = favorites.find((f) => isSafeHttpUrl(f.url));
   if (firstValid) return firstValid;
   return { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' };
+}
+
+/**
+ * Pins the active home favorite to index 0 while preserving the relative order of all other items.
+ */
+export function pinHomeFavoriteFirst(
+  favorites: FavoriteItem[],
+  homeFavoriteId: string,
+): FavoriteItem[] {
+  const homeIdx = favorites.findIndex((f) => f.id === homeFavoriteId);
+  if (homeIdx <= 0) {
+    return favorites.map((f) => ({ ...f }));
+  }
+  return [favorites[homeIdx], ...favorites.slice(0, homeIdx), ...favorites.slice(homeIdx + 1)].map(
+    (f) => ({ ...f }),
+  );
+}
+
+/**
+ * Inserts a new favorite right after the pinned home favorite (index 1 when home is at index 0, else index 0).
+ */
+export function insertFavoriteAfterHome(
+  favorites: FavoriteItem[],
+  newItem: FavoriteItem,
+  homeFavoriteId: string,
+): FavoriteItem[] {
+  const pinned = pinHomeFavoriteFirst(favorites, homeFavoriteId);
+  const resolvedHome = pinned.length > 0 ? resolveHomeFavorite(pinned, homeFavoriteId) : null;
+  if (resolvedHome && pinned[0]?.id === resolvedHome.id) {
+    return [pinned[0], { ...newItem }, ...pinned.slice(1)];
+  }
+  return [{ ...newItem }, ...pinned];
 }
 
 function removeElementTree(node: unknown): void {
