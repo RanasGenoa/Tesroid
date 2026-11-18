@@ -458,6 +458,8 @@ export class VaapiEncoder extends EventEmitter {
 
   public stopVideo(): void {
     this.stopVideoWatchdog();
+    this.cachedSpsPps = null;
+    this.cachedKeyframe = null;
     if (!this.isVideoRunning && !this.videoProcess) return;
     this.isIntentionalVideoStop = true;
     this.isVideoRunning = false;

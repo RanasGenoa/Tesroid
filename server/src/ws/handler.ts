@@ -37,6 +37,7 @@ export class WebSocketHandler {
 
   private authenticatedClients: Set<WebSocket> = new Set();
   private allClients: Set<WebSocket> = new Set();
+  private lastSessionToken: string | null = null;
 
   // Playback ring buffer & CATCHUP state machine
   private playbackBuffer: PlaybackBuffer;
@@ -423,10 +424,29 @@ export class WebSocketHandler {
       }
     }
 
+    const isSwitchedSession = this.lastSessionToken !== null && this.lastSessionToken !== token;
+    this.lastSessionToken = token;
+
     const session = this.clientSessions.get(socket);
     if (session) {
       session.authToken = token;
+      if (isSwitchedSession) {
+        session.lastAckPts = null;
+      }
     }
+
+    if (isSwitchedSession) {
+      console.log(
+        '[WebSocketHandler] New client session started; resetting playback buffer and restarting encoders...',
+      );
+      this.playbackBuffer.clear();
+      this.lastKnownAckPts = null;
+      if (this.encoder.isRunning()) {
+        this.encoder.stop();
+        this.encoder.start();
+      }
+    }
+
     this.authenticatedClients.add(socket);
     this.sendControl(socket, { type: 'AUTH_SUCCESS', token });
     this.onClientAuthenticated(socket);

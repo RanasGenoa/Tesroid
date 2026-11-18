@@ -140,4 +140,61 @@ describe('WebSocketHandler Single-Client Session Exclusivity (Issue #58)', () =>
 
     handler.close();
   });
+
+  it('restarts encoders and clears playback buffer when switching to a new client session', async () => {
+    const mockAuth: any = {
+      verifyPin: vi
+        .fn()
+        .mockResolvedValueOnce({ success: true, token: 'token-mac' })
+        .mockResolvedValueOnce({ success: true, token: 'token-tesla' }),
+      validateSession: vi.fn(() => true),
+    };
+    const mockBrowser: any = {
+      getDimensions: () => ({ width: 1280, height: 720 }),
+      getState: () => 'running',
+      getCurrentUrl: () => 'https://www.youtube.com',
+      resume: vi.fn(),
+      pause: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      isChromeAlive: () => true,
+    };
+    const mockEncoder: any = {
+      isRunning: vi.fn(() => true),
+      start: vi.fn(),
+      stop: vi.fn(),
+      restart: vi.fn().mockResolvedValue(undefined),
+      getCachedKeyframe: () => null,
+      isKeyframeStale: () => false,
+      getCachedSpsPps: () => null,
+      getCachedOpusHead: () => null,
+      on: vi.fn(),
+    };
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      {} as any,
+      { getConfig: () => ({ isSetupCompleted: true }) } as any,
+    );
+
+    const clientMac = createMockSocket();
+    handler.handleConnection(clientMac.socket);
+    await clientMac.listeners.get('message')!(
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+    expect(mockEncoder.stop).not.toHaveBeenCalled();
+
+    // Disconnect Mac, then connect Tesla as a new PIN session
+    clientMac.listeners.get('close')?.();
+    const clientTesla = createMockSocket();
+    handler.handleConnection(clientTesla.socket);
+    await clientTesla.listeners.get('message')!(
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+
+    expect(mockEncoder.stop).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.start).toHaveBeenCalledTimes(1);
+
+    handler.close();
+  });
 });
