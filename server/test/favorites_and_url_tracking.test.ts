@@ -46,6 +46,8 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       expect(DEFAULT_HOME_FAVORITE_ID).toBe('youtube');
       expect(DEFAULT_FAVORITES).toHaveLength(11);
       expect(DEFAULT_FAVORITES.map((f) => f.id)).toEqual([
+        'tver',
+        'primevideo',
         'youtube',
         'netflix',
         'abema',
@@ -55,25 +57,23 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
         'nicovideo',
         'twitch',
         'google',
-        'tver',
-        'primevideo',
       ]);
-      expect(DEFAULT_FAVORITES[9]).toEqual({
+      expect(DEFAULT_FAVORITES[0]).toEqual({
         id: 'tver',
-        title: 'TVer (動作不可)',
+        title: 'TVer',
         url: 'https://tver.jp',
       });
-      expect(DEFAULT_FAVORITES[10]).toEqual({
+      expect(DEFAULT_FAVORITES[1]).toEqual({
         id: 'primevideo',
-        title: 'Prime Video (動作不可)',
+        title: 'Prime Video',
         url: 'https://www.amazon.co.jp/primevideo',
       });
-      expect(DEFAULT_FAVORITES[6]).toEqual({
+      expect(DEFAULT_FAVORITES[8]).toEqual({
         id: 'nicovideo',
         title: 'ニコニコ動画',
         url: 'https://www.nicovideo.jp',
       });
-      expect(DEFAULT_FAVORITES[8]).toEqual({
+      expect(DEFAULT_FAVORITES[10]).toEqual({
         id: 'google',
         title: 'Google 検索',
         url: 'https://www.google.com',
@@ -87,7 +87,7 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
 
       // getConfig() returns deep-cloned favorites array
       cfg.favorites[0].title = 'Mutated';
-      expect(store.getConfig().favorites[0].title).toBe('YouTube');
+      expect(store.getConfig().favorites[0].title).toBe('TVer');
     });
 
     it('persists custom favorites & homeFavoriteId and clones updates', () => {
