@@ -1498,7 +1498,7 @@ export function renderStreamingView(
       title: currentBrowserTitle.trim() || hostname,
       url: currentBrowserUrl,
     };
-    const nextFavorites = [...favorites, newFav];
+    const nextFavorites = [newFav, ...favorites];
 
     isAddingCurrentFavorite = true;
     try {

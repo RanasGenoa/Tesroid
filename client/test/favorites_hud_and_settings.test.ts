@@ -588,12 +588,13 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 15));
 
       expect(putPayload).toBeTruthy();
-      expect(
-        putPayload.favorites.some(
-          (f: FavoriteItem) =>
-            f.url === 'https://abema.tv/now-on-air/abema-news' && f.title === 'ABEMA News',
-        ),
-      ).toBe(true);
+      expect(putPayload.favorites[0]).toMatchObject({
+        url: 'https://abema.tv/now-on-air/abema-news',
+        title: 'ABEMA News',
+      });
+      expect(putPayload.favorites.slice(1).map((f: FavoriteItem) => f.id)).toEqual(
+        DEFAULT_FAVORITES.map((f) => f.id),
+      );
       expect(globalThis.window.dispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'tesroid:settings-updated' }),
       );
@@ -738,13 +739,13 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 10));
       expect(putPayloads.length).toBe(0);
 
-      // 2. Add valid favorite
+      // 2. Add valid favorite (inserted at head / index 0)
       titleInput.value = 'Netflix';
       urlInput.value = 'https://www.netflix.com';
       addBtn.click();
       await new Promise((r) => setTimeout(r, 15));
       expect(putPayloads.length).toBe(1);
-      expect(getState().currentFavs.map((f) => f.title)).toEqual(['YouTube', 'TVer', 'Netflix']);
+      expect(getState().currentFavs.map((f) => f.title)).toEqual(['Netflix', 'YouTube', 'TVer']);
       expect(globalThis.window.dispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'tesroid:settings-updated' }),
       );
@@ -762,17 +763,13 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       expect(elementRegistry.get('fav-cancel-edit-btn').style.display).toBe('none');
 
       // 4. Reorder: move TVer up before YouTube
+      const netflixId = getState().currentFavs[0].id;
       elementRegistry.get('fav-up-tver').click();
       await new Promise((r) => setTimeout(r, 15));
-      expect(
-        getState()
-          .currentFavs.map((f) => f.id)
-          .slice(0, 2),
-      ).toEqual(['tver', 'youtube']);
+      expect(getState().currentFavs.map((f) => f.id)).toEqual([netflixId, 'tver', 'youtube']);
 
-      // 5. Move YouTube down
-      const netflixId = getState().currentFavs[2].id;
-      elementRegistry.get(`fav-up-${netflixId}`).click();
+      // 5. Move Netflix down
+      elementRegistry.get(`fav-down-${netflixId}`).click();
       await new Promise((r) => setTimeout(r, 15));
       expect(getState().currentFavs.map((f) => f.id)).toEqual(['tver', netflixId, 'youtube']);
 
@@ -827,6 +824,31 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       await new Promise((r) => setTimeout(r, 15));
 
       expect(elementRegistry.get('hud-home-btn').title).toBe('ホームへ移動 (DAZN)');
+    });
+
+    it('inserts current page at index 0 when added via #fav-add-current-modal-btn', async () => {
+      const initial: FavoriteItem[] = [
+        { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+      ];
+      const { putPayloads, getState } = setupSettingsApiMock(initial, 'youtube');
+
+      openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
+      await new Promise((r) => setTimeout(r, 15));
+
+      elementRegistry.get('fav-add-current-modal-btn').click();
+      await new Promise((r) => setTimeout(r, 15));
+
+      expect(putPayloads.length).toBe(1);
+      expect(getState().currentFavs[0]).toMatchObject({
+        title: 'Twitch Browse',
+        url: 'https://www.twitch.tv/directory',
+      });
+      expect(
+        getState()
+          .currentFavs.slice(1)
+          .map((f) => f.id),
+      ).toEqual(['youtube', 'tver']);
     });
   });
 });

@@ -683,7 +683,7 @@ async function showSettingsModal(
     while (favorites.some((f) => f.id === newId)) {
       newId = `fav-${Date.now()}-${suffix++}`;
     }
-    const nextFavorites = [...favorites, { id: newId, title, url }];
+    const nextFavorites = [{ id: newId, title, url }, ...favorites];
     const saved = await persistFavoritesUpdate(
       { favorites: nextFavorites },
       `お気に入りに追加しました: ${title}`,
@@ -747,7 +747,7 @@ async function showSettingsModal(
       url: targetUrl,
     };
     await persistFavoritesUpdate(
-      { favorites: [...favorites, newFav] },
+      { favorites: [newFav, ...favorites] },
       `お気に入りに追加しました: ${newFav.title}`,
     );
   });
