@@ -12,6 +12,7 @@ import { AUDIO_FLAGS, VIDEO_FLAGS, WSS_CHANNEL } from './protocol.js';
 
 export interface ClientSession {
   socket: WebSocket;
+  authToken?: string;
   telemetrySessionId?: string;
   lastAckPts: bigint | null;
   lastSentVideoPts?: bigint | null;
@@ -337,12 +338,7 @@ export class WebSocketHandler {
     // Check if client is authenticating with an existing session token (e.g. on WebSocket auto-reconnect)
     if (authPayload.startsWith('TOKEN:')) {
       const token = authPayload.slice(6).trim();
-      if (this.authService.validateSession(token)) {
-        this.authenticatedClients.add(socket);
-        this.sendControl(socket, { type: 'AUTH_SUCCESS', token });
-        this.onClientAuthenticated(socket);
-        return;
-      } else {
+      if (!this.authService.validateSession(token)) {
         this.sendControl(socket, {
           type: 'AUTH_FAILED',
           error: 'Session expired or invalid',
@@ -350,6 +346,31 @@ export class WebSocketHandler {
         });
         return;
       }
+
+      // Single-client guard: allow reconnect with the same session token,
+      // but reject background auto-reconnect from a different session while another client is active.
+      const otherActiveSockets = [...this.authenticatedClients].filter((s) => s !== socket);
+      const hasDifferentActiveSession = otherActiveSockets.some(
+        (existing) => this.clientSessions.get(existing)?.authToken !== token,
+      );
+      if (hasDifferentActiveSession) {
+        console.log(
+          '[WebSocketHandler] Rejecting auto-reconnect from secondary session while another client is active.',
+        );
+        this.sendControl(socket, {
+          type: 'SESSION_CONFLICT',
+          error: '他の端末が接続中のため自動再接続を中止しました。PINを再入力してください。',
+        });
+        this.evictClientSocket(socket, 4009, 'Another session is active');
+        return;
+      }
+
+      for (const existing of otherActiveSockets) {
+        this.evictClientSocket(existing, 4000, 'Replaced by reconnect');
+      }
+
+      this.activateAuthenticatedSession(socket, token);
+      return;
     }
 
     const pin = authPayload;
@@ -359,9 +380,7 @@ export class WebSocketHandler {
       try {
         await this.authService.setPin(pin);
         const authRes = await this.authService.verifyPin(pin);
-        this.authenticatedClients.add(socket);
-        this.sendControl(socket, { type: 'AUTH_SUCCESS', token: authRes.token || 'session_token' });
-        this.onClientAuthenticated(socket);
+        this.activateAuthenticatedSession(socket, authRes.token || 'session_token', true);
       } catch (err: any) {
         this.sendControl(socket, {
           type: 'AUTH_FAILED',
@@ -373,10 +392,9 @@ export class WebSocketHandler {
     }
 
     const result = await this.authService.verifyPin(pin);
-    if (result.success) {
-      this.authenticatedClients.add(socket);
-      this.sendControl(socket, { type: 'AUTH_SUCCESS', token: result.token });
-      this.onClientAuthenticated(socket);
+    if (result.success && result.token) {
+      // Manual PIN login supersedes any existing active client session
+      this.activateAuthenticatedSession(socket, result.token, true);
     } else {
       this.sendControl(socket, {
         type: 'AUTH_FAILED',
@@ -384,6 +402,55 @@ export class WebSocketHandler {
         remainingAttempts: result.remainingAttempts,
       });
     }
+  }
+
+  private activateAuthenticatedSession(
+    socket: WebSocket,
+    token: string,
+    supersedeExisting = false,
+  ): void {
+    if (supersedeExisting) {
+      const otherActiveSockets = [...this.authenticatedClients].filter((s) => s !== socket);
+      for (const existing of otherActiveSockets) {
+        console.log(
+          '[WebSocketHandler] Disconnecting previous client session superseded by new PIN login.',
+        );
+        this.sendControl(existing, {
+          type: 'SESSION_CONFLICT',
+          error: '別の端末からPIN認証で接続されたため切断されました。',
+        });
+        this.evictClientSocket(existing, 4009, 'Superseded by new PIN login');
+      }
+    }
+
+    const session = this.clientSessions.get(socket);
+    if (session) {
+      session.authToken = token;
+    }
+    this.authenticatedClients.add(socket);
+    this.sendControl(socket, { type: 'AUTH_SUCCESS', token });
+    this.onClientAuthenticated(socket);
+  }
+
+  private evictClientSocket(socket: WebSocket, code: number, reason: string): void {
+    this.allClients.delete(socket);
+    this.authenticatedClients.delete(socket);
+
+    const session = this.clientSessions.get(socket);
+    if (session) {
+      if (session.pacingTimer) {
+        clearTimeout(session.pacingTimer);
+        session.pacingTimer = null;
+      }
+      session.playbackQueue = [];
+      this.clientSessions.delete(socket);
+    }
+
+    try {
+      if (typeof (socket as any).close === 'function') {
+        socket.close(code, reason);
+      }
+    } catch {}
   }
 
   private onClientAuthenticated(socket: WebSocket): void {
