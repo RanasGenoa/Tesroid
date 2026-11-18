@@ -9,6 +9,7 @@ import {
   type FavoriteItem,
   PERFORMANCE_PRESET_DEFAULTS,
   type PerformancePreset,
+  pinHomeFavoriteFirst,
   resolveHomeUrl,
 } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
@@ -159,7 +160,10 @@ export function registerSettingsRoutes(
       }
 
       if (resetFavorites === true) {
-        updates.favorites = DEFAULT_FAVORITES.map((f) => ({ ...f }));
+        updates.favorites = pinHomeFavoriteFirst(
+          DEFAULT_FAVORITES.map((f) => ({ ...f })),
+          DEFAULT_HOME_FAVORITE_ID,
+        );
         updates.homeFavoriteId = DEFAULT_HOME_FAVORITE_ID;
       } else {
         if (favorites !== undefined) {
@@ -221,6 +225,13 @@ export function registerSettingsRoutes(
           if (!updates.favorites.some((f) => f.id === currentHomeId)) {
             updates.homeFavoriteId = updates.favorites[0]?.id || DEFAULT_HOME_FAVORITE_ID;
           }
+        }
+
+        if (updates.favorites !== undefined || updates.homeFavoriteId !== undefined) {
+          const currentConfig = configStore.getConfig();
+          const nextFavorites = updates.favorites ?? currentConfig.favorites;
+          const nextHomeFavoriteId = updates.homeFavoriteId ?? currentConfig.homeFavoriteId;
+          updates.favorites = pinHomeFavoriteFirst(nextFavorites, nextHomeFavoriteId);
         }
       }
 

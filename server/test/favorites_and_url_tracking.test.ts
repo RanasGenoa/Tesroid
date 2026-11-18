@@ -45,10 +45,11 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
     it('seeds all 11 default preset favorites in exact order with youtube as default home', () => {
       expect(DEFAULT_HOME_FAVORITE_ID).toBe('youtube');
       expect(DEFAULT_FAVORITES).toHaveLength(11);
+      expect(DEFAULT_FAVORITES[0].id).toBe(DEFAULT_HOME_FAVORITE_ID);
       expect(DEFAULT_FAVORITES.map((f) => f.id)).toEqual([
+        'youtube',
         'tver',
         'primevideo',
-        'youtube',
         'netflix',
         'abema',
         'disneyplus',
@@ -59,11 +60,16 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
         'google',
       ]);
       expect(DEFAULT_FAVORITES[0]).toEqual({
+        id: 'youtube',
+        title: 'YouTube',
+        url: 'https://www.youtube.com',
+      });
+      expect(DEFAULT_FAVORITES[1]).toEqual({
         id: 'tver',
         title: 'TVer',
         url: 'https://tver.jp',
       });
-      expect(DEFAULT_FAVORITES[1]).toEqual({
+      expect(DEFAULT_FAVORITES[2]).toEqual({
         id: 'primevideo',
         title: 'Prime Video',
         url: 'https://www.amazon.co.jp/primevideo',
@@ -87,10 +93,10 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
 
       // getConfig() returns deep-cloned favorites array
       cfg.favorites[0].title = 'Mutated';
-      expect(store.getConfig().favorites[0].title).toBe('TVer');
+      expect(store.getConfig().favorites[0].title).toBe('YouTube');
     });
 
-    it('persists custom favorites & homeFavoriteId and clones updates', () => {
+    it('persists custom favorites & homeFavoriteId, pins home at index 0, and clones updates', () => {
       const store = new ConfigStore(tmpDir);
       const custom: FavoriteItem[] = [
         { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
@@ -103,8 +109,8 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
 
       const reloaded = new ConfigStore(tmpDir);
       expect(reloaded.getConfig().favorites).toEqual([
-        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
         { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
       ]);
       expect(reloaded.getConfig().homeFavoriteId).toBe('abema');
       expect(resolveHomeUrl(reloaded.getConfig())).toBe('https://abema.tv');
@@ -187,6 +193,33 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       expect(resolveHomeUrl({ favorites: [], homeFavoriteId: 'youtube' })).toBe(
         'https://www.youtube.com',
       );
+    });
+
+    it('normalizes existing config.json on load so homeFavoriteId is pinned at index 0', () => {
+      const unpinnedDir = path.join(tmpDir, 'unpinned');
+      fs.mkdirSync(unpinnedDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(unpinnedDir, 'config.json'),
+        JSON.stringify({
+          favorites: [
+            { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+            { id: 'primevideo', title: 'Prime Video', url: 'https://www.amazon.co.jp/primevideo' },
+            { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+            { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+          ],
+          homeFavoriteId: 'abema',
+        }),
+        'utf-8',
+      );
+
+      const store = new ConfigStore(unpinnedDir);
+      expect(store.getConfig().homeFavoriteId).toBe('abema');
+      expect(store.getConfig().favorites.map((f) => f.id)).toEqual([
+        'abema',
+        'tver',
+        'primevideo',
+        'youtube',
+      ]);
     });
   });
 
@@ -289,6 +322,45 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       expect(resetRes.statusCode).toBe(200);
       expect(resetRes.json().settings.favorites).toEqual(DEFAULT_FAVORITES);
       expect(resetRes.json().settings.homeFavoriteId).toBe(DEFAULT_HOME_FAVORITE_ID);
+
+      // Updating homeFavoriteId only (without passing favorites) moves the new Home favorite to index 0
+      const homeOnlyRes = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: authHeaders,
+        payload: { homeFavoriteId: 'primevideo' },
+      });
+      expect(homeOnlyRes.statusCode).toBe(200);
+      expect(homeOnlyRes.json().settings.homeFavoriteId).toBe('primevideo');
+      expect(homeOnlyRes.json().settings.favorites[0].id).toBe('primevideo');
+      expect(
+        homeOnlyRes
+          .json()
+          .settings.favorites.slice(0, 4)
+          .map((f: FavoriteItem) => f.id),
+      ).toEqual(['primevideo', 'youtube', 'tver', 'netflix']);
+
+      // Updating favorites + homeFavoriteId where homeFavoriteId is not at index 0 pins it to index 0
+      const bothRes = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: authHeaders,
+        payload: {
+          favorites: [
+            { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+            { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+            { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+          ],
+          homeFavoriteId: 'abema',
+        },
+      });
+      expect(bothRes.statusCode).toBe(200);
+      expect(bothRes.json().settings.homeFavoriteId).toBe('abema');
+      expect(bothRes.json().settings.favorites.map((f: FavoriteItem) => f.id)).toEqual([
+        'abema',
+        'tver',
+        'youtube',
+      ]);
     });
 
     it('PUT /api/settings rejects unsafe URLs, malformed items, duplicate IDs, >100 items, and invalid homeFavoriteId with HTTP 400', async () => {
