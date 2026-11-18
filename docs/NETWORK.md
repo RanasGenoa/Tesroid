@@ -56,7 +56,7 @@
 [ Tesla Browser ] ──HTTPS/WSS──> [ Cloudflare Edge ] ══暗号化トンネル══> [ Tesroid コンテナ (内蔵 cloudflared ➔ localhost:8080) ]
 ```
 
-#### ステップバイステップ手順（初心者向け・単一コンテナ同梱構成）
+#### セットアップ手順（単一コンテナ同梱構成）
 
 1. **ドメインの Cloudflare 登録**:
    お持ちの独自ドメイン（お名前.com, Cloudflare Registrar 等で取得）を Cloudflare に登録し、ネームサーバーを Cloudflare に切り替えます。

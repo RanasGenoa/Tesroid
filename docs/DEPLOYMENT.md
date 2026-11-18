@@ -38,7 +38,7 @@ Tesroid は低遅延・省CPU負荷を実現するため、VAAPI ハードウェ
 
 1. **格安 VPS / GPU なしクラウド VM**:
    - 映像エンコードに `h264_vaapi`（ホストの `/dev/dri/renderD128`）を必須としており、`libx264` 等による CPU ソフトウェアエンコードへのフォールバックを持ちません。そのため GPU なしの一般的な VPS では起動・配信できません。
-   - 仮に CPU エンコードを行う構成にした場合でも、安定動作には 2〜4 vCPU / 4GB RAM 以上（月額 1,500〜3,500 円程度）のスペックと動画ストリーミングに伴うネットワーク帯域、および Linux / DNS 設定の知識が必要になります。GPU パススルー付きクラウド VM はコストが高額になるため非推奨です。
+   - 仮に CPU エンコードを行う構成にした場合でも、安定動作には 2〜4 vCPU / 4GB RAM 以上（月額 1,500〜3,500 円程度）のスペックと動画ストリーミングに伴うネットワーク帯域がかかります。GPU パススルー付きクラウド VM はコストが高額になるため非推奨です。
 2. **Windows PC (Docker Desktop / WSL2)**:
    - WSL2 上の Docker 環境には Linux の `/dev/dri`（VAAPI レンダーノード）を直接パススルーできないため、現行構成では動作しません。
    - また、PC のスリープ移行や Windows Update による自動再起動で車載からの接続が途切れやすく、常時稼働サーバー用途には不向きです。
@@ -49,9 +49,9 @@ Tesroid は低遅延・省CPU負荷を実現するため、VAAPI ハードウェ
 
 ## 2. 一般的な Docker / Docker Compose 環境でのデプロイ
 
-Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入手順です。初心者の方はビルド不要の **2-A** または **2-B** をおすすめします。
+Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入手順です。通常はビルド不要の **2-A** または **2-B** をおすすめします。
 
-### 2-A. ビルド不要の Docker Compose コピペ導入（推奨・初心者向け）
+### 2-A. ビルド不要の Docker Compose コピペ導入（推奨）
 
 公開されているビルド済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と [`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml) を使用することで、`git clone` やローカルでの `docker build` を行わずに起動できます。
 

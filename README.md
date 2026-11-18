@@ -130,12 +130,12 @@ Tesroid は低遅延・省リソースを実現するため、ハードウェア
 
 ## 🚀 クイックスタート (Docker Compose)
 
-### 🔰 初心者向け導入（ビルド不要・推奨）
+### ⚡ ビルド不要導入（推奨）
 
 ローカルでの `docker build` を行わず、公開済みのベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）を使ってすぐに起動できます（初回起動時にコンテナが Google Chrome を自動取得します）。
 
 - **方法 A: ビルド不要の Docker Compose コピペ導入**
-  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を使い、`.env` または YAML 内に `TUNNEL_TOKEN` を設定するだけで Cloudflare Tunnel も含めて自動起動します。詳しい手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#2-a-ビルド不要の-docker-compose-コピペ導入推奨初心者向け) を参照してください。
+  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を使い、`.env` または YAML 内に `TUNNEL_TOKEN` を設定するだけで Cloudflare Tunnel も含めて自動起動します。詳しい手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#2-a-ビルド不要の-docker-compose-コピペ導入推奨) を参照してください。
 - **方法 B: ワンショット導入スクリプト（Intel x86_64 Linux 向け）**
   Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます：
   ```bash
