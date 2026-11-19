@@ -5,8 +5,15 @@ set -euo pipefail
 # Tesroid ワンショット導入スクリプト (Intel / AMD x86_64 Linux 向け)
 # ==============================================================================
 
+TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+if [[ "$TARGET_USER" != "root" ]] && getent passwd "$TARGET_USER" >/dev/null 2>&1; then
+  TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+else
+  TARGET_HOME="${HOME}"
+fi
+
 IMAGE_NAME="ghcr.io/ranasgenoa/tesroid:latest"
-DEFAULT_INSTALL_DIR="${HOME}/tesroid"
+DEFAULT_INSTALL_DIR="${TARGET_HOME}/tesroid"
 DEFAULT_PORT="9001"
 MIN_RECOMMENDED_MEM_KB=$((1900 * 1024)) # 約 2GB (ハードウェア予約分を考慮)
 
@@ -201,7 +208,6 @@ echo ""
 # ------------------------------------------------------------------------------
 info "3/5 GPU および Docker のユーザー権限を設定しています..."
 
-TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 GROUPS_TO_ADD=()
 NEED_RELOGIN=false
 
@@ -237,11 +243,11 @@ info "4/5 対話式セットアップを開始します..."
 # インストール先ディレクトリ
 read_input "インストール先ディレクトリ [${DEFAULT_INSTALL_DIR}]: " INPUT_DIR
 INSTALL_DIR="${INPUT_DIR:-$DEFAULT_INSTALL_DIR}"
-# 先頭の ~/ を $HOME/ に展開
+# 先頭の ~/ を $TARGET_HOME/ に展開
 if [[ "$INSTALL_DIR" == "~" ]]; then
-  INSTALL_DIR="$HOME"
+  INSTALL_DIR="$TARGET_HOME"
 elif [[ "$INSTALL_DIR" == "~/"* ]]; then
-  INSTALL_DIR="${HOME}/${INSTALL_DIR#~/}"
+  INSTALL_DIR="${TARGET_HOME}/${INSTALL_DIR#~/}"
 fi
 
 # 公開ポート
@@ -259,6 +265,7 @@ echo ""
 info "Cloudflare Tunnel を利用する場合、Zero Trust で取得した TUNNEL_TOKEN を入力してください。"
 info "（ローカル検証や既存のリバースプロキシを使う場合は空欄のまま Enter でスキップできます）"
 read_input "TUNNEL_TOKEN [空欄でスキップ]: " TUNNEL_TOKEN
+TUNNEL_TOKEN="$(printf '%s' "$TUNNEL_TOKEN" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
 mkdir -p "$INSTALL_DIR"
 
@@ -273,7 +280,9 @@ if [[ -f "$COMPOSE_FILE" || -f "$ENV_FILE" ]]; then
   fi
 fi
 
-cat > "$ENV_FILE" <<EOF
+(
+  umask 077
+  cat > "$ENV_FILE" <<EOF
 # Tesroid Configuration
 TESROID_PORT="${TESROID_PORT}"
 BROWSER_URL="https://www.youtube.com"
@@ -285,6 +294,7 @@ VAAPI_DEVICE=/dev/dri/renderD128
 LIBVA_DRIVER_NAME=iHD
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
 EOF
+)
 chmod 600 "$ENV_FILE"
 
 cat > "$COMPOSE_FILE" <<EOF
@@ -318,6 +328,10 @@ volumes:
   tesroid-data:
     driver: local
 EOF
+
+if [[ "$TARGET_USER" != "root" && "$(id -u)" -eq 0 ]]; then
+  chown -R "${TARGET_USER}:$(id -gn "$TARGET_USER")" "$INSTALL_DIR"
+fi
 
 ok "設定ファイルを生成しました:"
 echo "  - ${COMPOSE_FILE}"

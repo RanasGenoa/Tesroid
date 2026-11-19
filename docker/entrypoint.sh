@@ -22,7 +22,8 @@ fi
 # Start cloudflared in the background when TUNNEL_TOKEN is provided
 if [ -n "${TUNNEL_TOKEN:-}" ]; then
   echo "[entrypoint] Starting cloudflared tunnel..."
-  cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
+  # TUNNEL_TOKEN はコマンドライン引数露出を避けるため環境変数から直接読み取らせる
+  cloudflared tunnel --no-autoupdate run &
 fi
 
 # init: true (tini) により、コンテナ停止時はプロセスツリー全体に SIGTERM が転送・回収されます

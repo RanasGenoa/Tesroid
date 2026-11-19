@@ -96,8 +96,11 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-# 3b. Install cloudflared binary (Linux amd64)
-RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
+# 3b. Install cloudflared binary (Linux amd64, pinned version & SHA256 verified)
+ARG CLOUDFLARED_VERSION=2026.11.1
+ARG CLOUDFLARED_SHA256=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7
+RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared && \
+    echo "${CLOUDFLARED_SHA256}  /usr/local/bin/cloudflared" | sha256sum -c - && \
     chmod +x /usr/local/bin/cloudflared && \
     cloudflared --version
 
