@@ -39,6 +39,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PULSE_SERVER=unix:/tmp/pulse-socket \
     PULSE_SINK=virtual_sink \
     PUBLIC_DIR=/app/server/public \
+    TINI_KILL_PROCESS_GROUP=1 \
     LANG=ja_JP.UTF-8 \
     LANGUAGE=ja_JP:ja \
     LC_ALL=ja_JP.UTF-8

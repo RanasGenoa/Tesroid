@@ -344,9 +344,9 @@ prompt_configuration() {
       continue
     fi
 
-    # Cloudflare Tunnel トークン形式 (Base64 / JWT 互換文字のみ) の検証
-    if [[ ! "$raw_token" =~ ^[A-Za-z0-9_=-]{20,}$ ]]; then
-      warn "TUNNEL_TOKEN の形式が正しくありません（英数字・記号 _ - = のみ、20文字以上）。再度確認して入力してください。"
+    # Cloudflare Tunnel トークン形式 (標準 Base64 / Base64URL / JWT 互換文字のみ) の検証
+    if [[ ! "$raw_token" =~ ^[A-Za-z0-9+/=_.-]{20,}$ ]]; then
+      warn "TUNNEL_TOKEN の形式が正しくありません（英数字・記号 + / = _ . - のみ、20文字以上）。再度確認して入力してください。"
       continue
     fi
 
@@ -423,7 +423,7 @@ volumes:
 EOF
 
   if [[ "$TARGET_USER" != "root" && $EUID -eq 0 ]]; then
-    chown -R "${TARGET_USER}:$(id -gn "$TARGET_USER")" "$INSTALL_DIR"
+    chown "${TARGET_USER}:$(id -gn "$TARGET_USER")" "$INSTALL_DIR" "$COMPOSE_FILE" "$ENV_FILE"
   fi
 
   ok "設定ファイルを生成しました:"

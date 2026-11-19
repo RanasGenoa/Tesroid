@@ -32,12 +32,19 @@ if [ -n "${TUNNEL_TOKEN:-}" ]; then
   echo "[entrypoint] Starting cloudflared tunnel..."
   # Pass TUNNEL_TOKEN via environment variable (not CLI arguments) to avoid /proc/<pid>/cmdline exposure,
   # then unset it immediately so Node.js / Google Chrome child processes do not inherit the token.
-  cloudflared tunnel --no-autoupdate run &
+  (
+    set +e
+    cloudflared tunnel --no-autoupdate run
+    exit_code=$?
+    if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 130 ] && [ "$exit_code" -ne 143 ]; then
+      echo "[entrypoint] ERROR: cloudflared exited unexpectedly (code: ${exit_code}). Please check TUNNEL_TOKEN." >&2
+    fi
+  ) &
   unset TUNNEL_TOKEN
 fi
 
 # 3. Launch application server
-# Note: With `init: true` (tini) in Docker Compose, SIGTERM/SIGINT are forwarded to the entire process group.
+# Note: With `init: true` (tini) and `TINI_KILL_PROCESS_GROUP=1`, SIGTERM/SIGINT are forwarded to the entire process group.
 cd /app/server
 if [ "$#" -gt 0 ]; then
   exec "$@"
