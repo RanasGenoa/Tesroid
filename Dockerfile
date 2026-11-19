@@ -89,7 +89,7 @@ RUN mkdir -p /etc/apt/keyrings && \
 # 3. Optionally install Google Chrome Stable (INSTALL_CHROME=false skips Chrome for redistributable images)
 ARG INSTALL_CHROME=true
 RUN if [ "$INSTALL_CHROME" = "true" ]; then \
-        curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb && \
+        curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb && \
         apt-get update -qq && \
         apt-get install -qq -y --no-install-recommends /tmp/chrome.deb && \
         rm -f /tmp/chrome.deb && \
@@ -99,7 +99,7 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
 # 3b. Install cloudflared binary (Linux amd64, pinned version & SHA256 verified)
 ARG CLOUDFLARED_VERSION=2026.11.1
 ARG CLOUDFLARED_SHA256=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7
-RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared && \
+RUN curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared && \
     echo "${CLOUDFLARED_SHA256}  /usr/local/bin/cloudflared" | sha256sum -c - && \
     chmod +x /usr/local/bin/cloudflared && \
     cloudflared --version
