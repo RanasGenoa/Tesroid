@@ -55,12 +55,23 @@ Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入
 
 公開されているビルド済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と [`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml) を使用することで、`git clone` やローカルでの `docker build` を行わずに起動できます。
 
+テスラ車載ブラウザは **有効な公的 SSL 証明書による HTTPS/WSS 接続** が必須であるため、このセットアップでは **Cloudflare Tunnel** を利用して自宅サーバー等をポート開放なしで安全に HTTPS 公開する構成を前提としています（Caddy / Nginx 等の自前リバースプロキシを使う場合は `TUNNEL_TOKEN` を空欄にして別途設定してください）。
+
 > [!NOTE]
 > **Google Chrome の自動取得について**:
 > `ghcr.io/ranasgenoa/tesroid:latest` には Google Chrome 本体は同梱されていません（Google Chrome の再配布規約に配慮した構成です）。**初回コンテナ起動時にコンテナ自身が Google Chrome 公式パッケージを自動ダウンロード・導入**するため、初回のみ起動に数十秒ほど時間がかかります。
 >
-> **Cloudflare Tunnel の自動有効化について**:
-> 環境変数 `TUNNEL_TOKEN` を設定して起動すると、コンテナに同梱された `cloudflared` が自動的にバックグラウンドで起動し、ポート開放なしで HTTPS 公開できます（取得手順は [docs/NETWORK.md](NETWORK.md) を参照）。
+> **Cloudflare Tunnel と `TUNNEL_TOKEN` について**:
+> 環境変数 `TUNNEL_TOKEN` を設定して起動すると、コンテナに同梱された `cloudflared` が自動的にバックグラウンドで起動し、ポート開放なしで HTTPS 公開できます。
+> - **必要なトークン (`TUNNEL_TOKEN`)**: Cloudflare の一般的な API トークンではなく、**Cloudflare Zero Trust のトンネル作成画面で発行される `cloudflared` コネクタ用トークン**（インストールコマンドの `--token` に続く `eyJh...` で始まる長い文字列）です。
+> - **Cloudflare Tunnel 側で必要な設定**:
+>   1. **ドメインの登録**: お持ちの独自ドメインを Cloudflare に登録し、ネームサーバーを Cloudflare に切り替えておきます。
+>      - ※ **DuckDNS（`*.duckdns.org`）などの無料 DDNS サブドメインは、ネームサーバー（NS）を Cloudflare に移譲できないため Cloudflare Tunnel では利用不可** です。独自ドメインを取得するか（Cloudflare Registrar なら年 \$4〜\$5 程度の最安 TLD もあり、DNS 設定が自動連携されます）、取得済みの DuckDNS をそのまま使いたい場合は `TUNNEL_TOKEN` を空欄にして [docs/NETWORK.md のパターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）](NETWORK.md#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を選択してください。
+>      - ※ ドメイン購入前にまず HTTPS 接続の動作確認だけ試したい場合は、[Quick Tunnels（`trycloudflare.com`）](NETWORK.md#補足ドメイン購入前の動作確認quick-tunnels-trycloudflarecom) による一時検証も利用できます。
+>   2. **トンネル作成とトークン取得**: [Cloudflare Zero Trust ダッシュボード](https://one.dash.cloudflare.com/) の **Networks** ➔ **Tunnels** ➔ **Create a tunnel** でコネクタに **Cloudflared** を選択してトンネルを作成し、表示される `--token` 以降の文字列（`eyJh...`）をコピーします。
+>   3. **Public Hostname（公開 URL）の転送先設定**: 同トンネルの **Public Hostname**（または **Published application routes**）で公開したいサブドメイン・ドメインを設定し、Service には **Type: `HTTP`** / **URL: `http://localhost:8080`** を指定します（`cloudflared` と Tesroid 本体が同一コンテナ内で稼働するため `localhost:8080` を指定します）。あわせて **Additional application settings** ➔ **HTTP Settings** で `No TLS Verify` を有効化し、Cloudflare ダッシュボード側の **Network** 設定で **WebSockets** が有効（デフォルト ON）であることを確認してください。
+>
+> 詳細手順や別構成（Caddy / Nginx / VPS）は [docs/NETWORK.md](NETWORK.md#パターン-a-cloudflare-tunnels-ポート開放不要最も推奨) を参照してください。
 
 #### 手順
 1. 任意の作業ディレクトリを作成し、`docker-compose.prebuilt.yml` を取得（または内容を `docker-compose.yml` として保存）します：
@@ -68,11 +79,11 @@ Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入
    mkdir -p ~/tesroid && cd ~/tesroid
    curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/docker-compose.prebuilt.yml -o docker-compose.prebuilt.yml
    ```
-2. 必要に応じて `.env` ファイルを作成し、`TUNNEL_TOKEN` やポート番号を指定します（Cloudflare Tunnel を使う場合は `TUNNEL_TOKEN` を設定してください）：
+2. `.env` ファイルを作成し、Cloudflare Zero Trust で取得した **Cloudflare Tunnel トークン（`TUNNEL_TOKEN`）** と公開ポート番号を設定します（Cloudflare Tunnel を使用しない場合は `TUNNEL_TOKEN` を空欄または省略してください）：
    ```bash
    cat <<'EOF' > .env
    TESROID_PORT=9001
-   TUNNEL_TOKEN=eyJh...ここにCloudflareのトンネルトークンを貼り付け
+   TUNNEL_TOKEN=eyJh...ここにCloudflare Zero Trustで取得したトンネルトークンを貼り付け
    EOF
    ```
 3. コンテナを起動します：
@@ -134,6 +145,7 @@ cp .env.example .env
 - `FPS`: フレームレート（デフォルト: `30`）
 - `VIDEO_BITRATE`: ビデオビットレート（デフォルト: `1000k`）
 - `LIBVA_DRIVER_NAME`: VAAPI ドライバ（Intel: `iHD`, AMD: `radeonsi`）
+- `TUNNEL_TOKEN`: Cloudflare Tunnel コネクタ用トークン（設定時は内蔵 `cloudflared` を自動起動、未設定時は無効）
 
 ### ステップ 4: Docker Compose でコンテナ起動
 ```bash

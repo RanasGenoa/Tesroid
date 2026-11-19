@@ -58,6 +58,13 @@
 
 #### セットアップ手順（単一コンテナ同梱構成）
 
+> [!IMPORTANT]
+> **無料 DDNS（DuckDNS 等）に関する制限事項**:
+> - **DuckDNS（`*.duckdns.org`）などの無料 DDNS サブドメインは、ネームサーバー（NS）を Cloudflare に移譲できないため Cloudflare Tunnel では利用できません。**
+> - Cloudflare Tunnel を利用する場合は **独自ドメインの取得が必要** です（例：Cloudflare Registrar であれば年 \$4〜\$5 程度の最安 TLD も選択でき、DNS 設定が自動連携されるため導入の手間がかかりません）。
+> - **取得済みの DuckDNS をそのまま使いたい場合** は、[**パターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）**](#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を選択してください。
+> - ドメイン購入前にまず HTTPS 接続の動作確認だけを試したい場合は、後述の [**Quick Tunnels（`trycloudflare.com`）**](#補足ドメイン購入前の動作確認quick-tunnels-trycloudflarecom) を利用できます。
+
 1. **ドメインの Cloudflare 登録**:
    お持ちの独自ドメイン（お名前.com, Cloudflare Registrar 等で取得）を Cloudflare に登録し、ネームサーバーを Cloudflare に切り替えます。
 2. **Cloudflare Zero Trust でトンネルを作成して `TUNNEL_TOKEN` を取得**:
@@ -89,10 +96,24 @@
 5. **アクセス確認**:
    ブラウザで `https://tesroid.your-domain.com` を開き、初期 PIN 設定画面が表示されれば完了です。
 
+#### （補足）ドメイン購入前の動作確認：Quick Tunnels (`trycloudflare.com`)
+
+独自ドメインを取得する前に、まずテスラ車載ブラウザからの HTTPS / WSS 接続とストリーミング動作だけを確認したい場合は、アカウント登録やドメイン不要の **Cloudflare Quick Tunnels**（`*.trycloudflare.com`）による一時検証が可能です。
+
+`tesroid-server` コンテナが起動している状態で以下のコマンドを実行すると、コンソールに一時的な HTTPS 公開 URL（`https://xxxx-xxxx.trycloudflare.com`）が表示されます：
+
+```bash
+docker exec -it tesroid-server cloudflared tunnel --no-autoupdate --url http://localhost:8080
+```
+
+> [!NOTE]
+> Quick Tunnels はコマンドを終了（`Ctrl+C`）または再起動するたびに URL が変わり、稼働保証（SLA）もないため **一時的な動作確認専用** です。日常運用には上記の `TUNNEL_TOKEN`（独自ドメイン）構成、またはパターン B を使用してください。
+
 <details>
 <summary>（参考）別コンテナで cloudflared を起動する構成（ローカルビルド版等で分離したい場合）</summary>
 
-`cloudflared` を Tesroid コンテナと分離してサイドカー起動する場合は、`docker-compose.yml` に以下を追加し、Public Hostname の **URL** には `http://tesroid:8080`（同一 Docker ネットワークの場合）または `http://host.docker.internal:9001` を指定してください。
+`cloudflared` を Tesroid コンテナと分離してサイドカー起動する場合は、`docker-compose.yml` に以下を追加します。
+Public Hostname の **URL** には、同一 Docker Compose ネットワーク内の **`http://tesroid:8080` を第一推奨** として指定してください（`http://host.docker.internal:9001` を使用する場合は、Linux 環境の Docker では `cloudflared` サービス側に `extra_hosts: ["host.docker.internal:host-gateway"]` の指定が必要になる場合があります）。
 
 ```yaml
 services:
@@ -105,9 +126,12 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared-tunnel
     restart: unless-stopped
-    command: tunnel run
+    command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=eyJh... # Cloudflareダッシュボードで取得したトークン
+    # host.docker.internal を使う場合のみ有効化:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
 ```
 
 </details>
