@@ -118,15 +118,15 @@ export class WebSocketHandler {
     return undefined;
   }
 
-  private notifySecondaryLiveJump(): void {
+  private notifyOtherSessionsLiveJump(sourceSocket: WebSocket): void {
     for (const client of this.authenticatedClients) {
+      if (client === sourceSocket) continue;
       const session = this.clientSessions.get(client);
-      if (session?.role === 'secondary') {
-        if (session.mode === 'CATCHUP') {
-          this.abortCatchupAndSwitchToLive(session);
-        }
-        this.sendControl(client, { type: 'PRIMARY_JUMP_TO_LIVE', timestamp: Date.now() });
+      if (!session) continue;
+      if (session.mode === 'CATCHUP') {
+        this.abortCatchupAndSwitchToLive(session);
       }
+      this.sendControl(client, { type: 'PRIMARY_JUMP_TO_LIVE', timestamp: Date.now() });
     }
   }
 
@@ -277,14 +277,22 @@ export class WebSocketHandler {
     this.lastInputAt = Date.now();
     if (socket) {
       const session = this.clientSessions.get(socket);
+      let switchedAnyCatchup = false;
       if (session && session.mode === 'CATCHUP') {
         console.log(
           '[WebSocketHandler] Auto-Hybrid: User input detected during CATCHUP. Switching immediately to LIVE mode.',
         );
         this.abortCatchupAndSwitchToLive(session);
-        if (session.role !== 'secondary') {
-          this.notifySecondaryLiveJump();
+        switchedAnyCatchup = true;
+      }
+      for (const otherClient of this.authenticatedClients) {
+        if (otherClient !== socket && this.clientSessions.get(otherClient)?.mode === 'CATCHUP') {
+          switchedAnyCatchup = true;
+          break;
         }
+      }
+      if (switchedAnyCatchup) {
+        this.notifyOtherSessionsLiveJump(socket);
       }
     } else {
       for (const session of this.clientSessions.values()) {
@@ -1226,9 +1234,7 @@ export class WebSocketHandler {
               '[WebSocketHandler] Explicit JUMP_TO_LIVE requested by client. Switching immediately to LIVE.',
             );
             this.abortCatchupAndSwitchToLive(session);
-            if (session.role !== 'secondary') {
-              this.notifySecondaryLiveJump();
-            }
+            this.notifyOtherSessionsLiveJump(socket);
           }
           this.sendControl(socket, { type: 'LIVE_JUMPED', timestamp: Date.now() });
           break;

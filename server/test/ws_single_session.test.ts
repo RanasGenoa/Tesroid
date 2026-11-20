@@ -576,6 +576,17 @@ describe('WebSocketHandler Multi-Display Secondary Session (Issue #70)', () => {
     );
     expect(secondary.sentControl.some((m) => m.type === 'PRIMARY_JUMP_TO_LIVE')).toBe(true);
 
+    // Secondary triggers JUMP_TO_LIVE -> primary also receives PRIMARY_JUMP_TO_LIVE (bidirectional sync)
+    primary.sentControl.length = 0;
+    await sendMessage(
+      secondary,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'JUMP_TO_LIVE' })),
+      ]),
+    );
+    expect(primary.sentControl.some((m) => m.type === 'PRIMARY_JUMP_TO_LIVE')).toBe(true);
+
     handler.close();
   });
 });

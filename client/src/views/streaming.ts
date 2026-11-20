@@ -1246,9 +1246,7 @@ export function renderStreamingView(
       updateHudConnStatus();
       updateHudLiveStatus();
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
-      if (isSecondarySession) {
-        executeJumpToLive(true, false);
-      }
+      executeJumpToLive(true, false);
     } else if (msg.type === 'AUTH_SUCCESS') {
       sendBufferFeedback(true);
     } else if (msg.type === 'LIVE_JUMPED') {
