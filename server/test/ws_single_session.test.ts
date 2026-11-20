@@ -587,6 +587,17 @@ describe('WebSocketHandler Multi-Display Secondary Session (Issue #70)', () => {
     );
     expect(primary.sentControl.some((m) => m.type === 'PRIMARY_JUMP_TO_LIVE')).toBe(true);
 
+    // broadcastStreamSettings sends STREAM_SETTINGS_UPDATED to both primary and secondary
+    handler.broadcastStreamSettings({ maxFps: 60, bitrate: 2000000 });
+    expect(primary.sentControl.find((m) => m.type === 'STREAM_SETTINGS_UPDATED')).toEqual({
+      type: 'STREAM_SETTINGS_UPDATED',
+      stream: { maxFps: 60, bitrate: 2000000 },
+    });
+    expect(secondary.sentControl.find((m) => m.type === 'STREAM_SETTINGS_UPDATED')).toEqual({
+      type: 'STREAM_SETTINGS_UPDATED',
+      stream: { maxFps: 60, bitrate: 2000000 },
+    });
+
     handler.close();
   });
 });

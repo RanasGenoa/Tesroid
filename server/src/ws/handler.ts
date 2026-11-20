@@ -108,6 +108,13 @@ export class WebSocketHandler {
     return this.authenticatedClients.size > 0;
   }
 
+  public broadcastStreamSettings(stream: { maxFps?: number; bitrate?: number }): void {
+    this.broadcastControl({
+      type: 'STREAM_SETTINGS_UPDATED',
+      stream,
+    });
+  }
+
   private getPrimarySession(): ClientSession | undefined {
     for (const client of this.authenticatedClients) {
       const session = this.clientSessions.get(client);
@@ -433,11 +440,11 @@ export class WebSocketHandler {
     const pin = isSecondary ? authPayload.slice('SECONDARY:'.length).trim() : authPayload;
 
     if (!config.isSetupCompleted) {
-      // First-time setup
+      // First-time setup always establishes a primary session
       try {
         await this.authService.setPin(pin);
         const authRes = await this.authService.verifyPin(pin);
-        this.applyManualLogin(socket, authRes.token || 'session_token', isSecondary);
+        this.applyManualLogin(socket, authRes.token || 'session_token', false);
       } catch (err: any) {
         this.sendControl(socket, {
           type: 'AUTH_FAILED',
@@ -462,6 +469,17 @@ export class WebSocketHandler {
 
   private applyManualLogin(socket: WebSocket, token: string, isSecondary: boolean): void {
     if (isSecondary) {
+      // Prune stale inactive secondary tokens so authorizedSessions does not grow unbounded
+      const activeTokens = new Set<string>();
+      for (const client of this.authenticatedClients) {
+        const activeToken = this.clientSessions.get(client)?.authToken;
+        if (activeToken) activeTokens.add(activeToken);
+      }
+      for (const [existingToken, existingRole] of this.authorizedSessions.entries()) {
+        if (existingRole === 'secondary' && !activeTokens.has(existingToken)) {
+          this.authorizedSessions.delete(existingToken);
+        }
+      }
       this.authorizedSessions.set(token, 'secondary');
       this.activateAuthenticatedSession(socket, token, false, 'secondary');
       return;

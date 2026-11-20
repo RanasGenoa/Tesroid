@@ -880,8 +880,8 @@ export function renderStreamingView(
   let primaryAnchorPtsUs = 0;
   let primaryAnchorLocalMs = 0;
 
-  if (isSecondarySession && typeof (avSync as any).setExternalMasterPtsProvider === 'function') {
-    (avSync as any).setExternalMasterPtsProvider(() => {
+  if (isSecondarySession && typeof avSync.setExternalMasterPtsProvider === 'function') {
+    avSync.setExternalMasterPtsProvider(() => {
       if (primaryAnchorPtsUs <= 0 || primaryAnchorLocalMs <= 0) return null;
       const elapsedMs = performance.now() - primaryAnchorLocalMs;
       if (elapsedMs < -1000 || elapsedMs > 5000) return null;
@@ -987,7 +987,7 @@ export function renderStreamingView(
   // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
   let resizeTimer: any = null;
   const sendResize = (immediate: boolean = false) => {
-    if (sessionRole === 'secondary') return;
+    if (isSecondarySession) return;
     const execute = () => {
       const vpWidth = streamViewport?.clientWidth || 0;
       const vpHeight = streamViewport?.clientHeight || 0;
@@ -1006,7 +1006,7 @@ export function renderStreamingView(
   };
 
   const onResize = () => sendResize(false);
-  if (sessionRole !== 'secondary') {
+  if (!isSecondarySession) {
     window.addEventListener('resize', onResize);
     sendResize(false);
   }
@@ -1247,6 +1247,27 @@ export function renderStreamingView(
       updateHudLiveStatus();
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
       executeJumpToLive(true, false);
+    } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
+      let streamSettingsChanged = false;
+      if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
+        const nextFps = Number(msg.stream.maxFps);
+        if (nextFps !== currentFps) {
+          currentFps = nextFps;
+          targetFps = currentFps;
+          framePacer.setTargetFps(targetFps);
+          streamSettingsChanged = true;
+        }
+      }
+      if (typeof msg.stream?.bitrate === 'number' && Number.isFinite(msg.stream.bitrate)) {
+        const nextBitrate = Number(msg.stream.bitrate);
+        if (nextBitrate !== currentBitrate) {
+          currentBitrate = nextBitrate;
+          streamSettingsChanged = true;
+        }
+      }
+      if (streamSettingsChanged) {
+        updateToggleButtons();
+      }
     } else if (msg.type === 'AUTH_SUCCESS') {
       sendBufferFeedback(true);
     } else if (msg.type === 'LIVE_JUMPED') {
@@ -1738,11 +1759,11 @@ export function renderStreamingView(
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
-    if (sessionRole !== 'secondary') {
+    if (!isSecondarySession) {
       window.removeEventListener('resize', onResize);
     }
-    if (typeof (avSync as any).setExternalMasterPtsProvider === 'function') {
-      (avSync as any).setExternalMasterPtsProvider(undefined);
+    if (typeof avSync.setExternalMasterPtsProvider === 'function') {
+      avSync.setExternalMasterPtsProvider(undefined);
     }
     if (!isSecondarySession) {
       canvas.removeEventListener('pointerdown', autoUnlockAudio);
