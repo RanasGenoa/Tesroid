@@ -386,12 +386,38 @@ function captureCdpTouchBridgeScript(): string {
   }
 }
 
+const normalizeFullscreenCore = (src: string): string => {
+  const startToken = 'const clampScale =';
+  const endToken = 'setInterval(patchYtPlayer, 1000);';
+  const start = src.indexOf(startToken);
+  const end = src.indexOf(endToken, start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return src
+    .slice(start, end + endToken.length)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('//'))
+    .join('\n');
+};
+
+const scriptSources = [
+  {
+    name: 'extension/content.js',
+    run: (ctx: vm.Context) => vm.runInContext(contentJs, ctx),
+  },
+  {
+    name: 'buildCarFullscreenScript()',
+    run: (ctx: vm.Context) => vm.runInContext(`(() => { ${buildCarFullscreenScript()} })()`, ctx),
+  },
+] as const;
+
 describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('keeps all 3 injection points synchronized on unified guard, CSS fixes, and WebAuthn preservation', () => {
+  it('keeps all 3 injection points synchronized on unified guard, CSS fixes, core-body parity, and WebAuthn preservation', () => {
     const sharedScript = buildCarFullscreenScript(130);
     const bridgeScript = captureCdpTouchBridgeScript();
 
@@ -409,6 +435,11 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(src).toContain('yt-navigate-start');
       expect(src).not.toContain("setAttribute('fullscreen'");
     }
+
+    // Core controller body in buildCarFullscreenScript() and extension/content.js must remain identical
+    expect(normalizeFullscreenCore(buildCarFullscreenScript())).toBe(
+      normalizeFullscreenCore(contentJs),
+    );
 
     // manager.ts & xdotool.ts both delegate to buildCarFullscreenScript and preserve WebAuthn
     expect(managerTs).toContain('buildCarFullscreenScript(this.displayScale)');
@@ -454,169 +485,7 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
     expect(env2.headEl.children.filter((c) => c.id === 'tesroid-car-style')).toHaveLength(1);
   });
 
-  it('intercepts .ytp-fullscreen-button clicks cleanly in capture phase without double-toggle or firing YouTube click listener', () => {
-    const env = createRichDomEnv();
-    vm.runInContext(contentJs, env.ctx);
-
-    const fsBtn = env.fsBtnEl;
-    const fsSvg = env.fsSvgEl;
-    const player = env.playerEl;
-    if (!fsBtn || !fsSvg || !player) throw new Error('Expected YouTube mock DOM elements');
-
-    const ytClickSpy = vi.fn();
-    const playerClickSpy = vi.fn();
-    fsBtn.addEventListener('click', ytClickSpy, false);
-    player.addEventListener('click', playerClickSpy, false);
-
-    // Even if YouTube marked button disabled before click, clicking child SVG enters once
-    fsBtn.setAttribute('aria-disabled', 'true');
-    fsBtn.setAttribute('disabled', '');
-    fsBtn.style.pointerEvents = 'none';
-    fsBtn.style.opacity = '0.4';
-
-    const clickEv = fsSvg.click();
-    expect(clickEv.defaultPrevented).toBe(true);
-    expect(clickEv.immediatePropagationStopped).toBe(true);
-    expect(ytClickSpy).not.toHaveBeenCalled();
-    expect(playerClickSpy).not.toHaveBeenCalled();
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-    expect(player.classList.contains('ytp-fullscreen')).toBe(true);
-    expect(fsBtn.hasAttribute('aria-disabled')).toBe(false);
-    expect(fsBtn.hasAttribute('disabled')).toBe(false);
-    expect(fsBtn.style.pointerEvents).toBe('auto');
-    expect(fsBtn.style.opacity).toBe('1');
-
-    // Second click on button itself exits cleanly without double-toggle
-    const exitEv = fsBtn.click();
-    expect(exitEv.immediatePropagationStopped).toBe(true);
-    expect(ytClickSpy).not.toHaveBeenCalled();
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
-    expect(env.mockDoc.fullscreenElement).toBeNull();
-
-    // Newly replaced .ytp-fullscreen-button (before 1000ms interval ticks) is ALSO intercepted immediately!
-    const { newBtn, newSvg } = env.attachNewFsButton();
-    const ytNewListener = vi.fn();
-    newBtn.addEventListener('click', ytNewListener, false);
-    newBtn.addEventListener('click', ytNewListener, true);
-    newSvg.click();
-    expect(ytNewListener).not.toHaveBeenCalled();
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-  });
-
-  it('exposes complete Fullscreen API surface, dispatches fullscreenchange/webkitfullscreenchange, and handles all enter/exit paths', async () => {
-    const env = createRichDomEnv();
-    vm.runInContext(contentJs, env.ctx);
-
-    expect(env.mockDoc.fullscreenEnabled).toBe(true);
-    expect(env.mockDoc.webkitFullscreenEnabled).toBe(true);
-
-    const docFsChanges: string[] = [];
-    const winResizes: number[] = [];
-    env.mockDoc.addEventListener('fullscreenchange', () => docFsChanges.push('fullscreenchange'));
-    env.mockDoc.addEventListener('webkitfullscreenchange', () =>
-      docFsChanges.push('webkitfullscreenchange'),
-    );
-    env.mockWin.addEventListener('resize', () => winResizes.push(1));
-
-    // 1. Enter via webkitRequestFullscreen (must return Promise)
-    await (env.playerEl as any).webkitRequestFullscreen();
-    expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(true);
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-    expect(env.flexyEl?.hasAttribute('fullscreen')).toBe(false);
-    expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(true);
-    expect(env.mockDoc.fullscreen).toBe(true);
-    expect(env.mockDoc.webkitIsFullScreen).toBe(true);
-    expect(env.mockDoc.fullscreenElement).toBe(env.playerEl);
-    expect(env.mockDoc.webkitFullscreenElement).toBe(env.playerEl);
-    expect(env.mockDoc.webkitCurrentFullScreenElement).toBe(env.playerEl);
-    expect(docFsChanges).toEqual(['fullscreenchange', 'webkitfullscreenchange']);
-    expect(winResizes.length).toBe(1);
-
-    // 2. Exit via Escape key
-    const escEv = new env.MockEvent('keydown', { key: 'Escape' });
-    env.mockWin.dispatchEvent(escEv);
-    expect(escEv.defaultPrevented).toBe(true);
-    expect(escEv.immediatePropagationStopped).toBe(true);
-    expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
-    expect(env.playerEl?.classList.contains('ytp-fullscreen')).toBe(false);
-    expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(false);
-    expect(env.mockDoc.fullscreenElement).toBeNull();
-    expect(docFsChanges).toEqual([
-      'fullscreenchange',
-      'webkitfullscreenchange',
-      'fullscreenchange',
-      'webkitfullscreenchange',
-    ]);
-
-    // 3. Enter via player.toggleFullscreen() & exit via yt-navigate-start
-    env.playerEl?.toggleFullscreen?.();
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-    env.mockWin.dispatchEvent(new env.MockEvent('yt-navigate-start'));
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
-
-    // 4. Enter via HTMLVideoElement.prototype.webkitEnterFullscreen & exit via webkitExitFullscreen
-    (env.videoEl as any).webkitEnterFullscreen();
-    expect(env.mockDoc.fullscreenElement).toBe(env.videoEl);
-    await env.mockDoc.webkitExitFullscreen();
-    expect(env.mockDoc.fullscreenElement).toBeNull();
-  });
-
-  it('adapts window.screen dimensions during fullscreen so YouTube 2s screen-size check never marks fullscreen unavailable', () => {
-    const env = createRichDomEnv({
-      screenWidth: 1920,
-      screenHeight: 1080,
-      outerWidth: 1256,
-      outerHeight: 658,
-      innerWidth: 1256,
-      innerHeight: 626,
-    });
-    vm.runInContext(contentJs, env.ctx);
-
-    // Before fullscreen: native Xvfb screen size preserved
-    expect(env.mockScreen.width).toBe(1920);
-    expect(env.mockScreen.height).toBe(1080);
-
-    // Enter fullscreen: screen dimensions reflect Chrome window so screen*0.9 <= outerWidth/Height
-    env.mockWin.tesroidEnterFs();
-    expect(env.mockScreen.width).toBe(1256);
-    expect(env.mockScreen.height).toBe(658);
-    expect(env.mockScreen.width * 0.9 > env.mockWin.outerWidth).toBe(false);
-    expect(env.mockScreen.height * 0.9 > env.mockWin.outerHeight).toBe(false);
-
-    // After exit: native Xvfb screen size restored
-    env.mockWin.tesroidExitFs();
-    expect(env.mockScreen.width).toBe(1920);
-    expect(env.mockScreen.height).toBe(1080);
-  });
-
-  it('supports non-YouTube generic video and container fullscreen cleanly', () => {
-    const env = createRichDomEnv({ withYouTube: false });
-    vm.runInContext(`(() => { ${buildCarFullscreenScript()} })()`, env.ctx);
-
-    const wrapper = new env.MockEl('div', 'custom-player');
-    const video2 = new env.MockVideoEl('second-video');
-    env.bodyEl.appendChild(wrapper);
-    env.bodyEl.appendChild(video2);
-
-    (wrapper as any).requestFullscreen();
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-    expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(true);
-    expect(env.mockDoc.fullscreenElement).toBe(wrapper);
-
-    // Switching directly to another target clears class from previous element
-    (video2 as any).requestFullscreen();
-    expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(false);
-    expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(true);
-    expect(env.mockDoc.fullscreenElement).toBe(video2);
-
-    env.mockDoc.exitFullscreen();
-    expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(false);
-    expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
-    expect(env.mockDoc.fullscreenElement).toBeNull();
-  });
-
-  it('rounds fractional displayScale consistently in clampDisplayScale, buildCarFullscreenScript, and content.js', () => {
+  it('rounds fractional displayScale consistently in clampDisplayScale and buildCarFullscreenScript prelude', () => {
     expect(clampDisplayScale(125.6)).toBe(126);
     expect(clampDisplayScale(49.4)).toBe(120);
 
@@ -624,20 +493,206 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
     vm.runInContext(`(() => { ${buildCarFullscreenScript(125.6)} })()`, envFromBuilder.ctx);
     expect(envFromBuilder.mockWin.__tesroidDisplayScale).toBe(126);
     expect(envFromBuilder.cssVars.get('--tesroid-zoom')).toBe('1.26');
-
-    envFromBuilder.mockWin.tesroidSetZoom(133.4);
-    expect(envFromBuilder.mockWin.__tesroidDisplayScale).toBe(133);
-    expect(envFromBuilder.cssVars.get('--tesroid-zoom')).toBe('1.33');
-
-    const envFromExt = createRichDomEnv();
-    vm.runInContext(contentJs, envFromExt.ctx);
-    envFromExt.mockWin.tesroidSetZoom(125.6);
-    expect(envFromExt.mockWin.__tesroidDisplayScale).toBe(126);
-    expect(envFromExt.cssVars.get('--tesroid-zoom')).toBe('1.26');
   });
 
-  it('skips redundant DOM attribute and style writes during interval polling when fullscreen button is already ready', () => {
-    const runPollingCheck = (script: string) => {
+  describe.each(scriptSources)('behavioral parity ($name)', ({ run }) => {
+    it('intercepts .ytp-fullscreen-button clicks cleanly in capture phase without double-toggle or firing YouTube click listener', () => {
+      const env = createRichDomEnv();
+      run(env.ctx);
+
+      const fsBtn = env.fsBtnEl;
+      const fsSvg = env.fsSvgEl;
+      const player = env.playerEl;
+      if (!fsBtn || !fsSvg || !player) throw new Error('Expected YouTube mock DOM elements');
+
+      const ytClickSpy = vi.fn();
+      const playerClickSpy = vi.fn();
+      fsBtn.addEventListener('click', ytClickSpy, false);
+      player.addEventListener('click', playerClickSpy, false);
+
+      // Even if YouTube marked button disabled before click, clicking child SVG enters once
+      fsBtn.setAttribute('aria-disabled', 'true');
+      fsBtn.setAttribute('disabled', '');
+      fsBtn.style.pointerEvents = 'none';
+      fsBtn.style.opacity = '0.4';
+
+      const clickEv = fsSvg.click();
+      expect(clickEv.defaultPrevented).toBe(true);
+      expect(clickEv.immediatePropagationStopped).toBe(true);
+      expect(ytClickSpy).not.toHaveBeenCalled();
+      expect(playerClickSpy).not.toHaveBeenCalled();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+      expect(player.classList.contains('ytp-fullscreen')).toBe(true);
+      expect(fsBtn.hasAttribute('aria-disabled')).toBe(false);
+      expect(fsBtn.hasAttribute('disabled')).toBe(false);
+      expect(fsBtn.style.pointerEvents).toBe('auto');
+      expect(fsBtn.style.opacity).toBe('1');
+
+      // Second click on button itself exits cleanly without double-toggle
+      const exitEv = fsBtn.click();
+      expect(exitEv.immediatePropagationStopped).toBe(true);
+      expect(ytClickSpy).not.toHaveBeenCalled();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+
+      // Newly replaced .ytp-fullscreen-button (before 1000ms interval ticks) is ALSO intercepted immediately!
+      const { newBtn, newSvg } = env.attachNewFsButton();
+      const ytNewListener = vi.fn();
+      newBtn.addEventListener('click', ytNewListener, false);
+      newBtn.addEventListener('click', ytNewListener, true);
+      newSvg.click();
+      expect(ytNewListener).not.toHaveBeenCalled();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+    });
+
+    it('exposes complete Fullscreen API surface, dispatches fullscreenchange/webkitfullscreenchange, and treats non-fullscreen exit calls as strict no-ops', async () => {
+      const env = createRichDomEnv();
+      run(env.ctx);
+
+      expect(env.mockDoc.fullscreenEnabled).toBe(true);
+      expect(env.mockDoc.webkitFullscreenEnabled).toBe(true);
+
+      const docFsChanges: string[] = [];
+      const winResizes: number[] = [];
+      env.mockDoc.addEventListener('fullscreenchange', () => docFsChanges.push('fullscreenchange'));
+      env.mockDoc.addEventListener('webkitfullscreenchange', () =>
+        docFsChanges.push('webkitfullscreenchange'),
+      );
+      env.mockWin.addEventListener('resize', () => winResizes.push(1));
+
+      // Calling exit while NOT in fullscreen must be a strict no-op (no spurious events)
+      env.mockWin.tesroidExitFs();
+      await env.mockDoc.exitFullscreen();
+      expect(docFsChanges).toEqual([]);
+      expect(winResizes).toHaveLength(0);
+      expect(env.playerEl?.setFauxFullscreen).not.toHaveBeenCalled();
+
+      // 1. Enter via webkitRequestFullscreen (must return Promise)
+      await (env.playerEl as any).webkitRequestFullscreen();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(true);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+      expect(env.flexyEl?.hasAttribute('fullscreen')).toBe(false);
+      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(true);
+      expect(env.mockDoc.fullscreen).toBe(true);
+      expect(env.mockDoc.webkitIsFullScreen).toBe(true);
+      expect(env.mockDoc.fullscreenElement).toBe(env.playerEl);
+      expect(env.mockDoc.webkitFullscreenElement).toBe(env.playerEl);
+      expect(env.mockDoc.webkitCurrentFullScreenElement).toBe(env.playerEl);
+      expect(docFsChanges).toEqual(['fullscreenchange', 'webkitfullscreenchange']);
+      expect(winResizes).toHaveLength(1);
+
+      // 2. Exit via Escape key
+      const escEv = new env.MockEvent('keydown', { key: 'Escape' });
+      env.mockWin.dispatchEvent(escEv);
+      expect(escEv.defaultPrevented).toBe(true);
+      expect(escEv.immediatePropagationStopped).toBe(true);
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.playerEl?.classList.contains('ytp-fullscreen')).toBe(false);
+      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges).toEqual([
+        'fullscreenchange',
+        'webkitfullscreenchange',
+        'fullscreenchange',
+        'webkitfullscreenchange',
+      ]);
+      expect(winResizes).toHaveLength(2);
+
+      // Repeated exit calls after already exiting must emit no extra events or setFauxFullscreen calls
+      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledTimes(2);
+      env.mockWin.tesroidExitFs();
+      await env.mockDoc.exitFullscreen();
+      await env.mockDoc.webkitCancelFullScreen();
+      expect(docFsChanges).toHaveLength(4);
+      expect(winResizes).toHaveLength(2);
+      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledTimes(2);
+
+      // 3. Enter via player.toggleFullscreen() & exit via yt-navigate-start
+      env.playerEl?.toggleFullscreen?.();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+      env.mockWin.dispatchEvent(new env.MockEvent('yt-navigate-start'));
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+
+      // 4. Enter via HTMLVideoElement.prototype.webkitEnterFullscreen & exit via webkitExitFullscreen
+      (env.videoEl as any).webkitEnterFullscreen();
+      expect(env.mockDoc.fullscreenElement).toBe(env.videoEl);
+      await env.mockDoc.webkitExitFullscreen();
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+    });
+
+    it('adapts window.screen dimensions during fullscreen so YouTube 2s screen-size check never marks fullscreen unavailable', () => {
+      const env = createRichDomEnv({
+        screenWidth: 1920,
+        screenHeight: 1080,
+        outerWidth: 1256,
+        outerHeight: 658,
+        innerWidth: 1256,
+        innerHeight: 626,
+      });
+      run(env.ctx);
+
+      // Before fullscreen: native Xvfb screen size preserved
+      expect(env.mockScreen.width).toBe(1920);
+      expect(env.mockScreen.height).toBe(1080);
+
+      // Enter fullscreen: screen dimensions reflect Chrome window so screen*0.9 <= outerWidth/Height
+      env.mockWin.tesroidEnterFs();
+      expect(env.mockScreen.width).toBe(1256);
+      expect(env.mockScreen.height).toBe(658);
+      expect(env.mockScreen.width * 0.9 > env.mockWin.outerWidth).toBe(false);
+      expect(env.mockScreen.height * 0.9 > env.mockWin.outerHeight).toBe(false);
+
+      // After exit: native Xvfb screen size restored
+      env.mockWin.tesroidExitFs();
+      expect(env.mockScreen.width).toBe(1920);
+      expect(env.mockScreen.height).toBe(1080);
+    });
+
+    it('supports non-YouTube generic video and container fullscreen cleanly', () => {
+      const env = createRichDomEnv({ withYouTube: false });
+      run(env.ctx);
+
+      const wrapper = new env.MockEl('div', 'custom-player');
+      const video2 = new env.MockVideoEl('second-video');
+      env.bodyEl.appendChild(wrapper);
+      env.bodyEl.appendChild(video2);
+
+      (wrapper as any).requestFullscreen();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+      expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(true);
+      expect(env.mockDoc.fullscreenElement).toBe(wrapper);
+
+      // Switching directly to another target clears class from previous element
+      (video2 as any).requestFullscreen();
+      expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(false);
+      expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(true);
+      expect(env.mockDoc.fullscreenElement).toBe(video2);
+
+      env.mockDoc.exitFullscreen();
+      expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+    });
+
+    it('rounds fractional displayScale consistently via tesroidSetZoom', () => {
+      const env = createRichDomEnv();
+      run(env.ctx);
+
+      env.mockWin.tesroidSetZoom(125.6);
+      expect(env.mockWin.__tesroidDisplayScale).toBe(126);
+      expect(env.cssVars.get('--tesroid-zoom')).toBe('1.26');
+
+      env.mockWin.tesroidSetZoom(133.4);
+      expect(env.mockWin.__tesroidDisplayScale).toBe(133);
+      expect(env.cssVars.get('--tesroid-zoom')).toBe('1.33');
+
+      env.mockWin.tesroidSetZoom(49.4);
+      expect(env.mockWin.__tesroidDisplayScale).toBe(120);
+      expect(env.cssVars.get('--tesroid-zoom')).toBe('1.2');
+    });
+
+    it('skips redundant DOM attribute and style writes during interval polling when fullscreen button is already ready', () => {
       const env = createRichDomEnv();
       const btn = env.fsBtnEl!;
       btn.setAttribute('aria-disabled', 'true');
@@ -666,7 +721,7 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
 
       const removeSpy = vi.spyOn(btn, 'removeAttribute');
 
-      vm.runInContext(script, env.ctx);
+      run(env.ctx);
 
       expect(removeSpy).toHaveBeenCalledTimes(2);
       expect(pointerEventsWrites).toBe(1);
@@ -683,9 +738,6 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(removeSpy).not.toHaveBeenCalled();
       expect(pointerEventsWrites).toBe(0);
       expect(opacityWrites).toBe(0);
-    };
-
-    runPollingCheck(`(() => { ${buildCarFullscreenScript()} })()`);
-    runPollingCheck(contentJs);
+    });
   });
 });

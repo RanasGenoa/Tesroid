@@ -81,7 +81,7 @@ export function buildCarFullscreenScript(displayScale?: number): string {
             'body.tesroid-web-fs-active #movie_player video,',
             'body.tesroid-web-fs-active .html5-video-player video { position: absolute !important; width: 100% !important; height: 100% !important; max-width: 100% !important; max-height: 100% !important; top: 0 !important; left: 0 !important; object-fit: contain !important; }',
             'body.tesroid-web-fs-active .tesroid-generic-fs-target { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; margin: 0 !important; z-index: 2147483647 !important; background: #000 !important; object-fit: contain !important; }',
-            'body.tesroid-web-fs-active .tesroid-generic-fs-target video { width: 100% !important; height: 100% !important; max-width: 100% !important; max-height: 100% !important; object-fit: contain !important; }'
+            'body.tesroid-web-fs-active .tesroid-generic-fs-target video { width: 100% !important; height: 100% !important; max-width: 100% !important; max-height: 100% !important; object-fit: contain !important; }',
           ].join('\\n');
           root.appendChild(el);
         }
@@ -103,7 +103,11 @@ export function buildCarFullscreenScript(displayScale?: number): string {
       let activeFsEl = null;
 
       const isFsActive = () =>
-        !!(activeFsEl || document.body?.classList?.contains('tesroid-web-fs-active'));
+        !!(
+          activeFsEl ||
+          document.body?.classList?.contains('tesroid-web-fs-active') ||
+          document.documentElement?.classList?.contains('tesroid-web-fs-root')
+        );
 
       // Prevent YouTube's 2s fullscreen screen-size check (window.screen * 0.9 vs window.outerWidth/Height)
       // from disabling .ytp-fullscreen-button and showing "Fullscreen is unavailable" on 1920x1080 Xvfb
@@ -235,6 +239,9 @@ export function buildCarFullscreenScript(displayScale?: number): string {
       };
 
       window.tesroidExitFs = () => {
+        if (!isFsActive()) {
+          return;
+        }
         const prevEl = activeFsEl;
         activeFsEl = null;
         document.documentElement?.classList?.remove('tesroid-web-fs-root');

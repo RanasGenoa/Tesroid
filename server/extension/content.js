@@ -146,7 +146,11 @@
   let activeFsEl = null;
 
   const isFsActive = () =>
-    !!(activeFsEl || document.body?.classList?.contains('tesroid-web-fs-active'));
+    !!(
+      activeFsEl ||
+      document.body?.classList?.contains('tesroid-web-fs-active') ||
+      document.documentElement?.classList?.contains('tesroid-web-fs-root')
+    );
 
   // Prevent YouTube's 2s fullscreen screen-size check (window.screen * 0.9 vs window.outerWidth/Height)
   // from disabling .ytp-fullscreen-button and showing "Fullscreen is unavailable" on 1920x1080 Xvfb
@@ -278,6 +282,9 @@
   };
 
   window.tesroidExitFs = () => {
+    if (!isFsActive()) {
+      return;
+    }
     const prevEl = activeFsEl;
     activeFsEl = null;
     document.documentElement?.classList?.remove('tesroid-web-fs-root');
