@@ -4,7 +4,7 @@ import {
   DEFAULT_HOME_FAVORITE_ID,
   escapeHtml,
   type FavoriteItem,
-  insertFavoriteAfterHome,
+  insertFavoritePreservingHome,
   pinHomeFavoriteFirst,
 } from '../src/views/icons.js';
 import { openSettingsWithAuth } from '../src/views/settings-modal.js';
@@ -1058,7 +1058,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       expect(DEFAULT_FAVORITES.some((f) => f.title.includes('動作不可'))).toBe(false);
     });
 
-    it('pins Home first via pinHomeFavoriteFirst and inserts conditionally via insertFavoriteAfterHome without re-pinning', () => {
+    it('pins Home first via pinHomeFavoriteFirst and inserts conditionally via insertFavoritePreservingHome without re-pinning', () => {
       const items: FavoriteItem[] = [
         { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
         { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
@@ -1069,7 +1069,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
 
       const newFav: FavoriteItem = { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' };
       // When Home ('youtube') is NOT at index 0, insert at index 0 without moving Home
-      const insertedWhenHomeNotFirst = insertFavoriteAfterHome(items, newFav, 'youtube');
+      const insertedWhenHomeNotFirst = insertFavoritePreservingHome(items, newFav, 'youtube');
       expect(insertedWhenHomeNotFirst.map((f) => f.id)).toEqual([
         'abema',
         'tver',
@@ -1078,7 +1078,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
       ]);
 
       // When Home ('tver') IS at index 0, insert right after Home at index 1
-      const insertedWhenHomeFirst = insertFavoriteAfterHome(items, newFav, 'tver');
+      const insertedWhenHomeFirst = insertFavoritePreservingHome(items, newFav, 'tver');
       expect(insertedWhenHomeFirst.map((f) => f.id)).toEqual([
         'tver',
         'abema',
@@ -1086,7 +1086,7 @@ describe('Issue #49: HUD Favorites, Home Setting, and YouTube Search Visibility'
         'netflix',
       ]);
 
-      const insertedEmpty = insertFavoriteAfterHome([], newFav, 'youtube');
+      const insertedEmpty = insertFavoritePreservingHome([], newFav, 'youtube');
       expect(insertedEmpty.map((f) => f.id)).toEqual(['abema']);
     });
   });

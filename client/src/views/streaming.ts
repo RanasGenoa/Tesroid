@@ -17,7 +17,7 @@ import {
   escapeHtml,
   type FavoriteItem,
   ICONS,
-  insertFavoriteAfterHome,
+  insertFavoritePreservingHome,
   isSafeHttpUrl,
   resolveHomeFavorite,
   sanitizeFavorites,
@@ -1505,7 +1505,7 @@ export function renderStreamingView(
       title: currentBrowserTitle.trim() || hostname,
       url: currentBrowserUrl,
     };
-    const nextFavorites = insertFavoriteAfterHome(favorites, newFav, homeFavoriteId);
+    const nextFavorites = insertFavoritePreservingHome(favorites, newFav, homeFavoriteId);
 
     isAddingCurrentFavorite = true;
     try {

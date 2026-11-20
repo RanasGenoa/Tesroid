@@ -156,7 +156,7 @@ export function pinHomeFavoriteFirst(
  * Inserts a new favorite right after the home favorite (index 1) when home is currently at index 0,
  * or at index 0 otherwise while preserving the existing order without moving home.
  */
-export function insertFavoriteAfterHome(
+export function insertFavoritePreservingHome(
   favorites: FavoriteItem[],
   newItem: FavoriteItem,
   homeFavoriteId: string,

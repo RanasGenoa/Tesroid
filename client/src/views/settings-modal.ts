@@ -5,7 +5,7 @@ import {
   escapeHtml,
   type FavoriteItem,
   ICONS,
-  insertFavoriteAfterHome,
+  insertFavoritePreservingHome,
   isSafeHttpUrl,
   pinHomeFavoriteFirst,
   resolveHomeFavorite,
@@ -690,7 +690,7 @@ async function showSettingsModal(
     while (favorites.some((f) => f.id === newId)) {
       newId = `fav-${Date.now()}-${suffix++}`;
     }
-    const nextFavorites = insertFavoriteAfterHome(
+    const nextFavorites = insertFavoritePreservingHome(
       favorites,
       { id: newId, title, url },
       homeFavoriteId,
@@ -758,7 +758,7 @@ async function showSettingsModal(
       url: targetUrl,
     };
     await persistFavoritesUpdate(
-      { favorites: insertFavoriteAfterHome(favorites, newFav, homeFavoriteId) },
+      { favorites: insertFavoritePreservingHome(favorites, newFav, homeFavoriteId) },
       `お気に入りに追加しました: ${newFav.title}`,
     );
   });

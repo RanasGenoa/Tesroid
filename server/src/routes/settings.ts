@@ -226,11 +226,6 @@ export function registerSettingsRoutes(
             updates.homeFavoriteId = updates.favorites[0]?.id || DEFAULT_HOME_FAVORITE_ID;
           }
         }
-
-        if (updates.favorites === undefined && updates.homeFavoriteId !== undefined) {
-          const currentConfig = configStore.getConfig();
-          updates.favorites = pinHomeFavoriteFirst(currentConfig.favorites, updates.homeFavoriteId);
-        }
       }
 
       if (pin) {
