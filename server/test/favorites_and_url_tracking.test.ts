@@ -96,7 +96,7 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       expect(store.getConfig().favorites[0].title).toBe('YouTube');
     });
 
-    it('persists custom favorites & homeFavoriteId, pins home at index 0, and clones updates', () => {
+    it('persists custom favorites & homeFavoriteId, preserves supplied order, pins only on home-only update, and clones updates', () => {
       const store = new ConfigStore(tmpDir);
       const custom: FavoriteItem[] = [
         { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
@@ -109,11 +109,18 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
 
       const reloaded = new ConfigStore(tmpDir);
       expect(reloaded.getConfig().favorites).toEqual([
-        { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
         { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+        { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
       ]);
       expect(reloaded.getConfig().homeFavoriteId).toBe('abema');
       expect(resolveHomeUrl(reloaded.getConfig())).toBe('https://abema.tv');
+
+      // Pure homeFavoriteId update (without favorites) moves new Home to index 0
+      reloaded.updateConfig({ homeFavoriteId: 'abema' });
+      expect(reloaded.getConfig().favorites).toEqual([
+        { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+      ]);
     });
 
     it('migrates legacy config.json missing favorites, preserves explicit empty [], and filters invalid entries', () => {
@@ -195,7 +202,7 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       );
     });
 
-    it('normalizes existing config.json on load so homeFavoriteId is pinned at index 0', () => {
+    it('preserves custom favorites order on ConfigStore load when homeFavoriteId is at index > 0 and still resolves homeUrl', () => {
       const unpinnedDir = path.join(tmpDir, 'unpinned');
       fs.mkdirSync(unpinnedDir, { recursive: true });
       fs.writeFileSync(
@@ -215,11 +222,12 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       const store = new ConfigStore(unpinnedDir);
       expect(store.getConfig().homeFavoriteId).toBe('abema');
       expect(store.getConfig().favorites.map((f) => f.id)).toEqual([
-        'abema',
         'tver',
         'primevideo',
+        'abema',
         'youtube',
       ]);
+      expect(resolveHomeUrl(store.getConfig())).toBe('https://abema.tv');
     });
   });
 
@@ -340,7 +348,7 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
           .map((f: FavoriteItem) => f.id),
       ).toEqual(['primevideo', 'youtube', 'tver', 'netflix']);
 
-      // Updating favorites + homeFavoriteId where homeFavoriteId is not at index 0 pins it to index 0
+      // Updating favorites + homeFavoriteId preserves the exact supplied order without re-pinning
       const bothRes = await app.inject({
         method: 'PUT',
         url: '/api/settings',
@@ -357,9 +365,72 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
       expect(bothRes.statusCode).toBe(200);
       expect(bothRes.json().settings.homeFavoriteId).toBe('abema');
       expect(bothRes.json().settings.favorites.map((f: FavoriteItem) => f.id)).toEqual([
+        'tver',
         'abema',
+        'youtube',
+      ]);
+
+      // Reordering favorites when Home is moved off index 0 preserves order across GET, disk reload, and delete of non-home item
+      const reorderRes = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: authHeaders,
+        payload: {
+          favorites: [
+            { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+            { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+            { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+          ],
+        },
+      });
+      expect(reorderRes.statusCode).toBe(200);
+      expect(reorderRes.json().settings.homeFavoriteId).toBe('abema');
+      expect(reorderRes.json().settings.favorites.map((f: FavoriteItem) => f.id)).toEqual([
         'tver',
         'youtube',
+        'abema',
+      ]);
+
+      const getReordered = await app.inject({
+        method: 'GET',
+        url: '/api/settings',
+        headers: authHeaders,
+      });
+      expect(getReordered.json().homeFavoriteId).toBe('abema');
+      expect(getReordered.json().homeUrl).toBe('https://abema.tv');
+      expect(getReordered.json().favorites.map((f: FavoriteItem) => f.id)).toEqual([
+        'tver',
+        'youtube',
+        'abema',
+      ]);
+
+      const reloadedStore = new ConfigStore(tmpDir);
+      expect(reloadedStore.getConfig().favorites.map((f) => f.id)).toEqual([
+        'tver',
+        'youtube',
+        'abema',
+      ]);
+      expect(reloadedStore.getConfig().homeFavoriteId).toBe('abema');
+      expect(resolveHomeUrl(reloadedStore.getConfig())).toBe('https://abema.tv');
+
+      // Deleting non-home item while Home is at index > 0 preserves order and homeFavoriteId
+      const deleteNonHomeRes = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: authHeaders,
+        payload: {
+          favorites: [
+            { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+            { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+          ],
+          homeFavoriteId: 'abema',
+        },
+      });
+      expect(deleteNonHomeRes.statusCode).toBe(200);
+      expect(deleteNonHomeRes.json().settings.homeFavoriteId).toBe('abema');
+      expect(deleteNonHomeRes.json().settings.favorites.map((f: FavoriteItem) => f.id)).toEqual([
+        'youtube',
+        'abema',
       ]);
     });
 
