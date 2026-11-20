@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildCarFullscreenScript } from '../src/browser/fullscreen-script.js';
+import { buildCarFullscreenScript, clampDisplayScale } from '../src/browser/fullscreen-script.js';
 import { X11InputManager } from '../src/input/xdotool.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -614,5 +614,78 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
     expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(false);
     expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
     expect(env.mockDoc.fullscreenElement).toBeNull();
+  });
+
+  it('rounds fractional displayScale consistently in clampDisplayScale, buildCarFullscreenScript, and content.js', () => {
+    expect(clampDisplayScale(125.6)).toBe(126);
+    expect(clampDisplayScale(49.4)).toBe(120);
+
+    const envFromBuilder = createRichDomEnv();
+    vm.runInContext(`(() => { ${buildCarFullscreenScript(125.6)} })()`, envFromBuilder.ctx);
+    expect(envFromBuilder.mockWin.__tesroidDisplayScale).toBe(126);
+    expect(envFromBuilder.cssVars.get('--tesroid-zoom')).toBe('1.26');
+
+    envFromBuilder.mockWin.tesroidSetZoom(133.4);
+    expect(envFromBuilder.mockWin.__tesroidDisplayScale).toBe(133);
+    expect(envFromBuilder.cssVars.get('--tesroid-zoom')).toBe('1.33');
+
+    const envFromExt = createRichDomEnv();
+    vm.runInContext(contentJs, envFromExt.ctx);
+    envFromExt.mockWin.tesroidSetZoom(125.6);
+    expect(envFromExt.mockWin.__tesroidDisplayScale).toBe(126);
+    expect(envFromExt.cssVars.get('--tesroid-zoom')).toBe('1.26');
+  });
+
+  it('skips redundant DOM attribute and style writes during interval polling when fullscreen button is already ready', () => {
+    const runPollingCheck = (script: string) => {
+      const env = createRichDomEnv();
+      const btn = env.fsBtnEl!;
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('disabled', '');
+
+      let pointerEventsWrites = 0;
+      let opacityWrites = 0;
+      let pointerEventsVal = 'none';
+      let opacityVal = '0.5';
+      Object.defineProperty(btn.style, 'pointerEvents', {
+        get: () => pointerEventsVal,
+        set: (v: string) => {
+          pointerEventsWrites++;
+          pointerEventsVal = v;
+        },
+        configurable: true,
+      });
+      Object.defineProperty(btn.style, 'opacity', {
+        get: () => opacityVal,
+        set: (v: string) => {
+          opacityWrites++;
+          opacityVal = v;
+        },
+        configurable: true,
+      });
+
+      const removeSpy = vi.spyOn(btn, 'removeAttribute');
+
+      vm.runInContext(script, env.ctx);
+
+      expect(removeSpy).toHaveBeenCalledTimes(2);
+      expect(pointerEventsWrites).toBe(1);
+      expect(opacityWrites).toBe(1);
+
+      removeSpy.mockClear();
+      pointerEventsWrites = 0;
+      opacityWrites = 0;
+
+      // Subsequent 1s interval ticks should perform zero DOM/style writes when unchanged
+      env.intervals[0]?.();
+      env.intervals[0]?.();
+
+      expect(removeSpy).not.toHaveBeenCalled();
+      expect(pointerEventsWrites).toBe(0);
+      expect(opacityWrites).toBe(0);
+    };
+
+    runPollingCheck(`(() => { ${buildCarFullscreenScript()} })()`);
+    runPollingCheck(contentJs);
   });
 });

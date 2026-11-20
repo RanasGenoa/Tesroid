@@ -81,7 +81,7 @@
 
   const clampScale = (scalePercent) => {
     const num = Number(scalePercent);
-    return !isNaN(num) && num >= 50 && num <= 250 ? num : 120;
+    return !isNaN(num) && num >= 50 && num <= 250 ? Math.round(num) : 120;
   };
 
   const applyStyles = () => {
@@ -225,11 +225,15 @@
     for (let i = 0; i < btns.length; i++) {
       const btn = btns[i];
       if (!btn) continue;
-      btn.removeAttribute?.('aria-disabled');
-      btn.removeAttribute?.('disabled');
+      if (!btn.hasAttribute || btn.hasAttribute('aria-disabled')) {
+        btn.removeAttribute?.('aria-disabled');
+      }
+      if (!btn.hasAttribute || btn.hasAttribute('disabled')) {
+        btn.removeAttribute?.('disabled');
+      }
       if (btn.style) {
-        btn.style.pointerEvents = 'auto';
-        btn.style.opacity = '1';
+        if (btn.style.pointerEvents !== 'auto') btn.style.pointerEvents = 'auto';
+        if (btn.style.opacity !== '1') btn.style.opacity = '1';
       }
       if (!btn._tesroidHooked && typeof btn.addEventListener === 'function') {
         btn._tesroidHooked = true;
