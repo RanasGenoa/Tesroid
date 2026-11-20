@@ -123,7 +123,7 @@ async function bootstrap() {
   });
 
   // 4. Register REST API Routes
-  registerSetupRoutes(app, configStore, authService, lockoutManager, browserManager);
+  registerSetupRoutes(app, configStore, authService, lockoutManager, browserManager, wsHandler);
   registerSettingsRoutes(app, configStore, authService, browserManager, encoder);
   registerBrowserRoutes(app, browserManager, authService, encoder, wsHandler);
   registerSoundRoutes(app, authService);

@@ -57,6 +57,7 @@ export function renderStreamingView(
   avSync: AvSyncController,
   onOpenSettings: () => void,
   authToken?: string | null,
+  sessionRole: 'primary' | 'secondary' = 'primary',
 ): () => void {
   container.innerHTML = `
     <div id="screen-container">
@@ -968,6 +969,7 @@ export function renderStreamingView(
   // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
   let resizeTimer: any = null;
   const sendResize = (immediate: boolean = false) => {
+    if (sessionRole === 'secondary') return;
     const execute = () => {
       const vpWidth = streamViewport?.clientWidth || 0;
       const vpHeight = streamViewport?.clientHeight || 0;
@@ -986,8 +988,10 @@ export function renderStreamingView(
   };
 
   const onResize = () => sendResize(false);
-  window.addEventListener('resize', onResize);
-  sendResize(false);
+  if (sessionRole !== 'secondary') {
+    window.addEventListener('resize', onResize);
+    sendResize(false);
+  }
 
   // 5. Connect WebSocket streams
   const handleVideo = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
@@ -1684,7 +1688,9 @@ export function renderStreamingView(
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
-    window.removeEventListener('resize', onResize);
+    if (sessionRole !== 'secondary') {
+      window.removeEventListener('resize', onResize);
+    }
     window.removeEventListener('tesroid:settings-updated', onSettingsUpdated);
     window.removeEventListener('tesroid:stream-reset', onStreamResetEvent);
     if (saveSettingsTimer) clearTimeout(saveSettingsTimer);

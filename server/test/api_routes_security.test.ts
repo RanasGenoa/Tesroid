@@ -53,11 +53,12 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
 
     mockWsHandler = {
       restartStream: vi.fn(async () => {}),
+      hasActiveClients: vi.fn(() => false),
     };
 
     app = Fastify();
     registerHealthRoutes(app);
-    registerSetupRoutes(app, configStore, authService, lockoutManager, mockBrowser);
+    registerSetupRoutes(app, configStore, authService, lockoutManager, mockBrowser, mockWsHandler);
     registerSettingsRoutes(app, configStore, authService, mockBrowser, mockEncoder);
     registerBrowserRoutes(app, mockBrowser, authService, mockEncoder, mockWsHandler);
     registerMetricsRoutes(app, authService);
@@ -87,6 +88,7 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     const statusBefore = await app.inject({ method: 'GET', url: '/api/status' });
     expect(statusBefore.statusCode).toBe(200);
     expect(statusBefore.json().isSetupCompleted).toBe(false);
+    expect(statusBefore.json().hasActiveSession).toBe(false);
 
     // 1. Missing/empty body must return 400 (not 500 TypeError)
     const emptyRes = await app.inject({ method: 'POST', url: '/api/setup' });
@@ -306,5 +308,29 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
       ).statusCode,
     ).toBe(200);
     expect(mockBrowser.restartChrome).toHaveBeenCalled();
+  });
+
+  it('GET /api/status reflects wsHandler.hasActiveClients() and defaults hasActiveSession to false when omitted', async () => {
+    mockWsHandler.hasActiveClients.mockReturnValue(false);
+    const inactiveRes = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(inactiveRes.statusCode).toBe(200);
+    expect(inactiveRes.json().hasActiveSession).toBe(false);
+
+    mockWsHandler.hasActiveClients.mockReturnValue(true);
+    const activeRes = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(activeRes.statusCode).toBe(200);
+    expect(activeRes.json().hasActiveSession).toBe(true);
+
+    // Backward compatibility when optional 6th parameter wsHandler is omitted
+    const standaloneApp = Fastify();
+    registerSetupRoutes(standaloneApp, configStore, authService, lockoutManager, mockBrowser);
+    await standaloneApp.ready();
+    try {
+      const fallbackRes = await standaloneApp.inject({ method: 'GET', url: '/api/status' });
+      expect(fallbackRes.statusCode).toBe(200);
+      expect(fallbackRes.json().hasActiveSession).toBe(false);
+    } finally {
+      await standaloneApp.close();
+    }
   });
 });
