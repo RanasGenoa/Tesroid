@@ -13,6 +13,7 @@ import {
   resolveHomeUrl,
 } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
+import type { WebSocketHandler } from '../ws/handler.js';
 import { isValidTimezone } from './setup.js';
 
 interface VerifyPinBody {
@@ -50,6 +51,7 @@ export function registerSettingsRoutes(
   authService: AuthService,
   browserManager: BrowserManager,
   encoder?: VaapiEncoder,
+  wsHandler?: WebSocketHandler,
 ) {
   // Helper middleware for session check
   const requireAuth = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -362,6 +364,13 @@ export function registerSettingsRoutes(
             gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
           });
         }
+      }
+
+      if (stream && updates.stream && wsHandler) {
+        wsHandler.broadcastStreamSettings({
+          maxFps: updates.stream.maxFps,
+          bitrate: updates.stream.bitrate,
+        });
       }
 
       if (browserUrl) {

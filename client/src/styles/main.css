@@ -160,7 +160,7 @@ canvas#stream-canvas {
   touch-action: none;
   width: 100%;
   height: 100%;
-  object-fit: fill;
+  object-fit: contain;
 }
 
 /* Dedicated Top Slim HUD Dock Bar (Cyber & Minimalist Instrument Style) */

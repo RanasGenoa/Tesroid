@@ -9,10 +9,18 @@ export class AvSyncController {
   private audioAnchorContextTimeSec: number = 0;
   private audioAnchorPtsUs: number = 0;
   private audioContextTimeProvider?: () => number | null;
+  private externalMasterPtsProvider?: () => number | null;
   private videoPausedForBuffering: boolean = false;
 
   public setAudioContextTimeProvider(provider: () => number | null): void {
     this.audioContextTimeProvider = provider;
+  }
+
+  /**
+   * Sets an external master PTS provider (e.g. primary session playback PTS for muted secondary displays).
+   */
+  public setExternalMasterPtsProvider(provider?: () => number | null): void {
+    this.externalMasterPtsProvider = provider;
   }
 
   public setVideoBuffering(isBuffering: boolean): void {
@@ -54,16 +62,16 @@ export class AvSyncController {
    */
   public getCurrentPlayingAudioPtsUs(): number | null {
     if (!this.audioContextTimeProvider || this.audioAnchorPtsUs <= 0) {
-      return null;
+      return this.externalMasterPtsProvider ? this.externalMasterPtsProvider() : null;
     }
     const nowCtxSec = this.audioContextTimeProvider();
     if (nowCtxSec === null || nowCtxSec <= 0) {
-      return null;
+      return this.externalMasterPtsProvider ? this.externalMasterPtsProvider() : null;
     }
     const deltaSec = nowCtxSec - this.audioAnchorContextTimeSec;
     // If the anchor is more than 2 seconds in the past with no new audio packets, audio stream is idle/silent
     if (deltaSec > 1.5 || deltaSec < -10.0) {
-      return null;
+      return this.externalMasterPtsProvider ? this.externalMasterPtsProvider() : null;
     }
     return Math.round(this.audioAnchorPtsUs + deltaSec * 1_000_000);
   }
