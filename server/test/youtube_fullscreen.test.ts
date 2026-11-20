@@ -2,8 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildCarFullscreenScript, clampDisplayScale } from '../src/browser/fullscreen-script.js';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import {
+  buildCarFullscreenScript,
+  clampDisplayScale,
+  FULLSCREEN_CORE_END_MARKER,
+  FULLSCREEN_CORE_START_MARKER,
+  loadFullscreenCoreScript,
+} from '../src/browser/fullscreen-script.js';
 import { X11InputManager } from '../src/input/xdotool.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,12 +17,325 @@ const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, '..');
 
 const contentJs = fs.readFileSync(path.join(SERVER_ROOT, 'extension/content.js'), 'utf-8');
+const fullscreenScriptTs = fs.readFileSync(
+  path.join(SERVER_ROOT, 'src/browser/fullscreen-script.ts'),
+  'utf-8',
+);
 const managerTs = fs.readFileSync(path.join(SERVER_ROOT, 'src/browser/manager.ts'), 'utf-8');
 const xdotoolTs = fs.readFileSync(path.join(SERVER_ROOT, 'src/input/xdotool.ts'), 'utf-8');
 
+type MockEventHandler = (e: MockEvent) => void;
+
 interface MockListener {
-  fn: (e: any) => void;
+  fn: MockEventHandler;
   capture: boolean;
+}
+
+interface MockEventTarget {
+  parentNode: MockEventTarget | null;
+  listeners: Map<string, MockListener[]>;
+  closest?: (selector: string) => MockEl | null;
+  classList?: MockClassList;
+}
+
+interface MockStyle {
+  pointerEvents?: string;
+  opacity?: string;
+  setProperty: (key: string, value: string) => void;
+  getPropertyValue: (key: string) => string;
+}
+
+class MockClassList {
+  public set = new Set<string>();
+
+  add(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.set.add(token);
+    }
+  }
+
+  remove(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.set.delete(token);
+    }
+  }
+
+  contains(token: string): boolean {
+    return this.set.has(token);
+  }
+}
+
+class MockEvent {
+  public type: string;
+  public bubbles: boolean;
+  public key?: string;
+  public target: MockEventTarget | null = null;
+  public currentTarget: MockEventTarget | null = null;
+  public defaultPrevented = false;
+  public propagationStopped = false;
+  public immediatePropagationStopped = false;
+  public _tesroidFsHandled?: boolean;
+  public composedPath?: () => MockEventTarget[];
+
+  constructor(
+    type: string,
+    init?: {
+      bubbles?: boolean;
+      key?: string;
+      target?: MockEventTarget | null;
+      composedPath?: () => MockEventTarget[];
+    },
+  ) {
+    this.type = type;
+    this.bubbles = Boolean(init?.bubbles);
+    if (init?.key !== undefined) this.key = init.key;
+    if (init?.target !== undefined) this.target = init.target;
+    if (init?.composedPath !== undefined) this.composedPath = init.composedPath;
+  }
+
+  preventDefault(): void {
+    this.defaultPrevented = true;
+  }
+
+  stopPropagation(): void {
+    this.propagationStopped = true;
+  }
+
+  stopImmediatePropagation(): void {
+    this.immediatePropagationStopped = true;
+    this.propagationStopped = true;
+  }
+}
+
+class MockEl implements MockEventTarget {
+  public tagName: string;
+  public id = '';
+  public classList = new MockClassList();
+  public style: MockStyle;
+  public attrs = new Map<string, string>();
+  public children: MockEl[] = [];
+  public parentNode: MockEventTarget | null = null;
+  public textContent = '';
+  public listeners = new Map<string, MockListener[]>();
+  public isConnected = true;
+  public setFauxFullscreen?: Mock<(enabled: boolean) => void>;
+  public setPlaybackQualityRange?: Mock<(min: string, max: string) => void>;
+  public toggleFullscreen?: () => void;
+  public _tesroidFsHooked?: boolean;
+  declare requestFullscreen?: () => Promise<void>;
+  declare webkitRequestFullscreen?: () => Promise<void>;
+  declare webkitRequestFullScreen?: () => Promise<void>;
+
+  constructor(
+    tagName: string,
+    id = '',
+    classes: string[] = [],
+    cssVars: Map<string, string> = new Map(),
+    elementsById: Map<string, MockEl> = new Map(),
+  ) {
+    this.tagName = tagName.toUpperCase();
+    this.id = id;
+    this.style = {
+      setProperty: (k: string, v: string) => {
+        cssVars.set(k, v);
+      },
+      getPropertyValue: (k: string) => cssVars.get(k) || '',
+    };
+    for (const c of classes) {
+      this.classList.add(c);
+    }
+    if (id) {
+      elementsById.set(id, this);
+    }
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs.has(name) ? (this.attrs.get(name) ?? null) : null;
+  }
+
+  hasAttribute(name: string): boolean {
+    return this.attrs.has(name);
+  }
+
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
+
+  appendChild(child: MockEl): MockEl {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  closest(selector: string): MockEl | null {
+    const cls = selector.startsWith('.') ? selector.slice(1) : null;
+    const id = selector.startsWith('#') ? selector.slice(1) : null;
+    let cur: MockEventTarget | null = this;
+    while (cur && cur instanceof MockEl) {
+      if (cls && cur.classList.contains(cls)) return cur;
+      if (id && cur.id === id) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+
+  addEventListener(type: string, fn: MockEventHandler, capture = false): void {
+    const list = this.listeners.get(type) || [];
+    list.push({ fn, capture: Boolean(capture) });
+    this.listeners.set(type, list);
+  }
+
+  dispatchEvent(event: MockEvent): boolean {
+    if (!event.target) event.target = this;
+    const chain: MockEventTarget[] = [];
+    let cur: MockEventTarget | null = this;
+    while (cur) {
+      chain.push(cur);
+      cur = cur.parentNode;
+    }
+    // Capture phase: root -> parent
+    for (let i = chain.length - 1; i >= 1; i--) {
+      const node = chain[i];
+      const list = (node.listeners.get(event.type) || []).filter((l) => l.capture);
+      for (const l of list) {
+        if (event.immediatePropagationStopped) break;
+        event.currentTarget = node;
+        l.fn(event);
+      }
+      if (event.propagationStopped) return !event.defaultPrevented;
+    }
+    // Target phase: invoke all listeners on target in registration order
+    const targetListeners = this.listeners.get(event.type) || [];
+    for (const l of targetListeners) {
+      if (event.immediatePropagationStopped) break;
+      event.currentTarget = this;
+      l.fn(event);
+    }
+    if (!event.bubbles || event.propagationStopped) return !event.defaultPrevented;
+    // Bubble phase: parent -> root
+    for (let i = 1; i < chain.length; i++) {
+      const node = chain[i];
+      const list = (node.listeners.get(event.type) || []).filter((l) => !l.capture);
+      for (const l of list) {
+        if (event.immediatePropagationStopped) break;
+        event.currentTarget = node;
+        l.fn(event);
+      }
+      if (event.propagationStopped) break;
+    }
+    return !event.defaultPrevented;
+  }
+
+  click(): MockEvent {
+    const ev = new MockEvent('click', { bubbles: true });
+    this.dispatchEvent(ev);
+    return ev;
+  }
+}
+
+class MockVideoEl extends MockEl {
+  public muted = false;
+  public volume = 1;
+  declare webkitEnterFullscreen?: () => void;
+  declare webkitEnterFullScreen?: () => void;
+  declare webkitExitFullscreen?: () => Promise<void>;
+  declare webkitExitFullScreen?: () => Promise<void>;
+
+  constructor(
+    id = '',
+    cssVars: Map<string, string> = new Map(),
+    elementsById: Map<string, MockEl> = new Map(),
+  ) {
+    super('video', id, [], cssVars, elementsById);
+  }
+}
+
+interface MockDocument extends MockEventTarget {
+  cookie: string;
+  documentElement: MockEl;
+  head: MockEl;
+  body: MockEl;
+  fullscreenEnabled?: boolean;
+  webkitFullscreenEnabled?: boolean;
+  fullscreenElement?: MockEl | null;
+  webkitFullscreenElement?: MockEl | null;
+  webkitCurrentFullScreenElement?: MockEl | null;
+  fullscreen?: boolean;
+  webkitIsFullScreen?: boolean;
+  exitFullscreen?: () => Promise<void>;
+  webkitExitFullscreen?: () => Promise<void>;
+  webkitCancelFullScreen?: () => Promise<void>;
+  getElementById: (id: string) => MockEl | null;
+  querySelector: (selector: string) => MockEl | null;
+  querySelectorAll: (selector: string) => MockEl[];
+  createElement: (tag: string) => MockEl;
+  addEventListener: (type: string, fn: MockEventHandler, capture?: boolean) => void;
+  dispatchEvent: (ev: MockEvent) => boolean;
+}
+
+interface MockScreen {
+  width: number;
+  height: number;
+  availWidth: number;
+  availHeight: number;
+}
+
+interface MockWindow extends MockEventTarget {
+  document: MockDocument;
+  screen: MockScreen;
+  outerWidth: number;
+  outerHeight: number;
+  innerWidth: number;
+  innerHeight: number;
+  Element: typeof MockEl;
+  HTMLVideoElement: typeof MockVideoEl;
+  Event: typeof MockEvent;
+  navigator: {
+    credentials: {
+      get: Mock;
+      create: Mock;
+    };
+  };
+  PublicKeyCredential: {
+    isUserVerifyingPlatformAuthenticatorAvailable: Mock;
+    isConditionalMediationAvailable: Mock;
+  };
+  __tesroidDisplayScale?: number;
+  _tesroidExtensionLoaded?: boolean;
+  _tesroidFullscreenInstalled?: boolean;
+  _tesroidBridgeActive?: boolean;
+  tesroidSetZoom?: (scalePercent: number) => void;
+  tesroidEnterFs?: (el?: MockEl) => void;
+  tesroidExitFs?: () => void;
+  tesroidToggleFs?: () => void;
+  addEventListener: (type: string, fn: MockEventHandler, capture?: boolean) => void;
+  dispatchEvent: (ev: MockEvent) => boolean;
+  setInterval: (fn: () => void, ms?: number) => number;
+}
+
+interface CdpCommand {
+  method: string;
+  params: {
+    source?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface CdpBridgeLike {
+  isConnected: () => boolean;
+  send: (method: string, params: { source?: string; [key: string]: unknown }) => void;
+  setupCarOptimizations: () => void;
+}
+
+function requireValue<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
 }
 
 function createRichDomEnv(opts?: {
@@ -33,172 +352,31 @@ function createRichDomEnv(opts?: {
   const elementsById = new Map<string, MockEl>();
   const intervals: Array<() => void> = [];
 
-  class MockClassList {
-    public set = new Set<string>();
-    add(...tokens: string[]) {
-      for (const t of tokens) this.set.add(t);
-    }
-    remove(...tokens: string[]) {
-      for (const t of tokens) this.set.delete(t);
-    }
-    contains(token: string) {
-      return this.set.has(token);
-    }
-  }
+  const createEl = (tagName: string, id = '', classes: string[] = []): MockEl =>
+    new MockEl(tagName, id, classes, cssVars, elementsById);
 
-  class MockEvent {
-    public type: string;
-    public bubbles: boolean;
-    public key?: string;
-    public target: any = null;
-    public currentTarget: any = null;
-    public defaultPrevented = false;
-    public propagationStopped = false;
-    public immediatePropagationStopped = false;
-    public _tesroidFsHandled?: boolean;
-
-    constructor(type: string, init?: { bubbles?: boolean; key?: string }) {
-      this.type = type;
-      this.bubbles = !!init?.bubbles;
-      if (init?.key !== undefined) this.key = init.key;
-    }
-
-    preventDefault() {
-      this.defaultPrevented = true;
-    }
-    stopPropagation() {
-      this.propagationStopped = true;
-    }
-    stopImmediatePropagation() {
-      this.immediatePropagationStopped = true;
-      this.propagationStopped = true;
-    }
-  }
-
-  class MockEl {
-    public tagName: string;
-    public id = '';
-    public classList = new MockClassList();
-    public style: Record<string, any> = {
-      setProperty: (k: string, v: string) => cssVars.set(k, v),
-      getPropertyValue: (k: string) => cssVars.get(k) || '',
-    };
-    public attrs = new Map<string, string>();
-    public children: MockEl[] = [];
-    public parentNode: any = null;
-    public textContent = '';
-    public listeners = new Map<string, MockListener[]>();
-    public isConnected = true;
-    public setFauxFullscreen?: (v: boolean) => void;
-    public setPlaybackQualityRange?: (min: string, max: string) => void;
-    public toggleFullscreen?: () => void;
-
-    constructor(tagName: string, id = '', classes: string[] = []) {
-      this.tagName = tagName.toUpperCase();
-      this.id = id;
-      for (const c of classes) this.classList.add(c);
-      if (id) elementsById.set(id, this);
-    }
-
-    setAttribute(name: string, value: string) {
-      this.attrs.set(name, value);
-    }
-    getAttribute(name: string) {
-      return this.attrs.has(name) ? (this.attrs.get(name) ?? null) : null;
-    }
-    hasAttribute(name: string) {
-      return this.attrs.has(name);
-    }
-    removeAttribute(name: string) {
-      this.attrs.delete(name);
-    }
-    appendChild(child: MockEl) {
-      if (child.id) elementsById.set(child.id, child);
-      child.parentNode = this;
-      this.children.push(child);
-      return child;
-    }
-    closest(selector: string): MockEl | null {
-      const cls = selector.startsWith('.') ? selector.slice(1) : null;
-      const id = selector.startsWith('#') ? selector.slice(1) : null;
-      let cur: any = this;
-      while (cur && cur instanceof MockEl) {
-        if (cls && cur.classList.contains(cls)) return cur;
-        if (id && cur.id === id) return cur;
-        cur = cur.parentNode;
-      }
-      return null;
-    }
-    addEventListener(type: string, fn: (e: any) => void, capture = false) {
-      const list = this.listeners.get(type) || [];
-      list.push({ fn, capture: !!capture });
-      this.listeners.set(type, list);
-    }
-    dispatchEvent(event: MockEvent) {
-      if (!event.target) event.target = this;
-      const chain: any[] = [];
-      let cur: any = this;
-      while (cur) {
-        chain.push(cur);
-        cur = cur.parentNode;
-      }
-      // Capture phase: root -> target (excluding target itself for strict parent capture, then target)
-      for (let i = chain.length - 1; i >= 1; i--) {
-        const node = chain[i];
-        const list = (node.listeners?.get(event.type) || []).filter((l: MockListener) => l.capture);
-        for (const l of list) {
-          if (event.immediatePropagationStopped) break;
-          event.currentTarget = node;
-          l.fn(event);
-        }
-        if (event.propagationStopped) return !event.defaultPrevented;
-      }
-      // Target phase: invoke all listeners on target in registration order
-      const targetListeners = this.listeners.get(event.type) || [];
-      for (const l of targetListeners) {
-        if (event.immediatePropagationStopped) break;
-        event.currentTarget = this;
-        l.fn(event);
-      }
-      if (!event.bubbles || event.propagationStopped) return !event.defaultPrevented;
-      // Bubble phase: parent -> root
-      for (let i = 1; i < chain.length; i++) {
-        const node = chain[i];
-        const list = (node.listeners?.get(event.type) || []).filter(
-          (l: MockListener) => !l.capture,
-        );
-        for (const l of list) {
-          if (event.immediatePropagationStopped) break;
-          event.currentTarget = node;
-          l.fn(event);
-        }
-        if (event.propagationStopped) break;
-      }
-      return !event.defaultPrevented;
-    }
-    click() {
-      const ev = new MockEvent('click', { bubbles: true });
-      this.dispatchEvent(ev);
-      return ev;
-    }
-  }
-
-  class MockVideoEl extends MockEl {
-    public muted = false;
-    public volume = 1;
-    constructor(id = '') {
-      super('video', id);
-    }
-  }
+  const createVideoEl = (id = ''): MockVideoEl => new MockVideoEl(id, cssVars, elementsById);
 
   const docListeners = new Map<string, MockListener[]>();
   const winListeners = new Map<string, MockListener[]>();
 
-  const htmlEl = new MockEl('html');
-  const headEl = new MockEl('head');
-  const bodyEl = new MockEl('body');
+  const htmlEl = createEl('html');
+  const headEl = createEl('head');
+  const bodyEl = createEl('body');
   htmlEl.appendChild(headEl);
   htmlEl.appendChild(bodyEl);
+
+  const appendTrackedChild = (parent: MockEl, child: MockEl): MockEl => {
+    if (child.id) elementsById.set(child.id, child);
+    return parent.appendChild(child);
+  };
+
+  // Override head.appendChild so dynamically created <style id="tesroid-car-style"> registers in elementsById
+  const origHeadAppend = headEl.appendChild.bind(headEl);
+  headEl.appendChild = (child: MockEl): MockEl => {
+    if (child.id) elementsById.set(child.id, child);
+    return origHeadAppend(child);
+  };
 
   let flexyEl: MockEl | null = null;
   let playerEl: MockEl | null = null;
@@ -207,27 +385,28 @@ function createRichDomEnv(opts?: {
   let videoEl: MockVideoEl | null = null;
 
   if (withYouTube) {
-    flexyEl = new MockEl('ytd-watch-flexy');
-    playerEl = new MockEl('movie_player', 'movie_player', ['html5-video-player']);
-    playerEl.setFauxFullscreen = vi.fn();
-    playerEl.setPlaybackQualityRange = vi.fn();
-    const videoContainer = new MockEl('div', '', ['html5-video-container']);
-    videoEl = new MockVideoEl();
+    flexyEl = createEl('ytd-watch-flexy');
+    playerEl = createEl('movie_player', 'movie_player', ['html5-video-player']);
+    playerEl.setFauxFullscreen = vi.fn<(enabled: boolean) => void>();
+    playerEl.setPlaybackQualityRange = vi.fn<(min: string, max: string) => void>();
+    const videoContainer = createEl('div', '', ['html5-video-container']);
+    videoEl = createVideoEl();
     videoContainer.appendChild(videoEl);
-    fsBtnEl = new MockEl('button', '', ['ytp-fullscreen-button', 'ytp-button']);
-    fsSvgEl = new MockEl('svg');
+    fsBtnEl = createEl('button', '', ['ytp-fullscreen-button', 'ytp-button']);
+    fsSvgEl = createEl('svg');
     fsBtnEl.appendChild(fsSvgEl);
-    playerEl.appendChild(videoContainer);
-    playerEl.appendChild(fsBtnEl);
-    flexyEl.appendChild(playerEl);
-    bodyEl.appendChild(flexyEl);
+    appendTrackedChild(playerEl, videoContainer);
+    appendTrackedChild(playerEl, fsBtnEl);
+    appendTrackedChild(flexyEl, playerEl);
+    appendTrackedChild(bodyEl, flexyEl);
   } else {
-    videoEl = new MockVideoEl('generic-video');
-    bodyEl.appendChild(videoEl);
+    videoEl = createVideoEl('generic-video');
+    appendTrackedChild(bodyEl, videoEl);
   }
 
-  const mockDoc: any = {
+  const mockDoc: MockDocument = {
     cookie: '',
+    parentNode: null,
     documentElement: htmlEl,
     head: headEl,
     body: bodyEl,
@@ -244,15 +423,16 @@ function createRichDomEnv(opts?: {
       if (sel === '.ytp-fullscreen-button') return fsBtnEl ? [fsBtnEl] : [];
       return [];
     },
-    createElement: (tag: string) => new MockEl(tag),
-    addEventListener: (type: string, fn: (e: any) => void, capture = false) => {
+    createElement: (tag: string) => createEl(tag),
+    addEventListener: (type: string, fn: MockEventHandler, capture = false) => {
       const list = docListeners.get(type) || [];
-      list.push({ fn, capture: !!capture });
+      list.push({ fn, capture: Boolean(capture) });
       docListeners.set(type, list);
     },
     dispatchEvent: (ev: MockEvent) => {
       const list = docListeners.get(ev.type) || [];
-      for (const l of list) {
+      const ordered = [...list.filter((l) => l.capture), ...list.filter((l) => !l.capture)];
+      for (const l of ordered) {
         if (ev.immediatePropagationStopped) break;
         ev.currentTarget = mockDoc;
         l.fn(ev);
@@ -263,14 +443,16 @@ function createRichDomEnv(opts?: {
 
   htmlEl.parentNode = mockDoc;
 
-  const mockScreen: any = {
+  const mockScreen: MockScreen = {
     width: opts?.screenWidth ?? 1920,
     height: opts?.screenHeight ?? 1080,
     availWidth: opts?.screenWidth ?? 1920,
     availHeight: opts?.screenHeight ?? 1080,
   };
 
-  const mockWin: any = {
+  const mockWin: MockWindow = {
+    parentNode: null,
+    listeners: winListeners,
     document: mockDoc,
     screen: mockScreen,
     outerWidth: opts?.outerWidth ?? 1256,
@@ -290,9 +472,9 @@ function createRichDomEnv(opts?: {
       isUserVerifyingPlatformAuthenticatorAvailable: vi.fn().mockResolvedValue(true),
       isConditionalMediationAvailable: vi.fn().mockResolvedValue(true),
     },
-    addEventListener: (type: string, fn: (e: any) => void, capture = false) => {
+    addEventListener: (type: string, fn: MockEventHandler, capture = false) => {
       const list = winListeners.get(type) || [];
-      list.push({ fn, capture: !!capture });
+      list.push({ fn, capture: Boolean(capture) });
       winListeners.set(type, list);
     },
     dispatchEvent: (ev: MockEvent) => {
@@ -330,8 +512,8 @@ function createRichDomEnv(opts?: {
   });
 
   const attachNewFsButton = () => {
-    const newBtn = new MockEl('button', '', ['ytp-fullscreen-button', 'ytp-button']);
-    const newSvg = new MockEl('svg');
+    const newBtn = createEl('button', '', ['ytp-fullscreen-button', 'ytp-button']);
+    const newSvg = createEl('svg');
     newBtn.appendChild(newSvg);
     playerEl?.appendChild(newBtn);
     fsBtnEl = newBtn;
@@ -358,48 +540,31 @@ function createRichDomEnv(opts?: {
     },
     videoEl,
     intervals,
-    MockEl,
-    MockVideoEl,
-    MockEvent,
+    createEl,
+    createVideoEl,
     attachNewFsButton,
   };
 }
 
 function captureCdpTouchBridgeScript(): string {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = vi.fn().mockRejectedValue(new Error('CDP offline in test')) as any;
+  globalThis.fetch = vi.fn<typeof fetch>().mockRejectedValue(new Error('CDP offline in test'));
   const inputManager = new X11InputManager(':99', 1280, 720);
   try {
-    const bridge = (inputManager as any).cdpBridge;
-    const sent: Array<{ method: string; params: any }> = [];
+    const bridge = (inputManager as unknown as { cdpBridge: CdpBridgeLike }).cdpBridge;
+    const sent: CdpCommand[] = [];
     bridge.isConnected = () => true;
-    bridge.send = (method: string, params: any) => {
+    bridge.send = (method, params) => {
       sent.push({ method, params });
     };
     bridge.setupCarOptimizations();
     const evalCmd = sent.find((s) => s.method === 'Page.addScriptToEvaluateOnNewDocument');
-    expect(evalCmd?.params?.source).toBeTruthy();
-    return evalCmd?.params.source as string;
+    return requireValue(evalCmd?.params.source, 'CdpTouchBridge source script');
   } finally {
     inputManager.close();
     globalThis.fetch = originalFetch;
   }
 }
-
-const normalizeFullscreenCore = (src: string): string => {
-  const startToken = 'const clampScale =';
-  const endToken = 'setInterval(patchYtPlayer, 1000);';
-  const start = src.indexOf(startToken);
-  const end = src.indexOf(endToken, start);
-  expect(start).toBeGreaterThan(-1);
-  expect(end).toBeGreaterThan(start);
-  return src
-    .slice(start, end + endToken.length)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith('//'))
-    .join('\n');
-};
 
 const scriptSources = [
   {
@@ -417,9 +582,21 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
     vi.restoreAllMocks();
   });
 
-  it('keeps all 3 injection points synchronized on unified guard, CSS fixes, core-body parity, and WebAuthn preservation', () => {
+  it('uses content.js as Single Source of Truth across all 3 injection points with zero duplicated CSS/logic', () => {
+    const coreScript = loadFullscreenCoreScript();
     const sharedScript = buildCarFullscreenScript(130);
     const bridgeScript = captureCdpTouchBridgeScript();
+
+    expect(contentJs).toContain(FULLSCREEN_CORE_START_MARKER);
+    expect(contentJs).toContain(FULLSCREEN_CORE_END_MARKER);
+    expect(contentJs).toContain(coreScript);
+    expect(sharedScript).toContain(coreScript);
+    expect(bridgeScript).toContain(coreScript);
+
+    // Ensure fullscreen-script.ts delegates cleanly to content.js rather than duplicating CSS/DOM logic
+    expect(fullscreenScriptTs).not.toContain('.html5-video-container');
+    expect(fullscreenScriptTs).not.toContain('#cinematics');
+    expect(fullscreenScriptTs).not.toContain('tesroidEnterFs');
 
     for (const src of [contentJs, sharedScript, bridgeScript]) {
       expect(src).toContain('_tesroidFullscreenInstalled');
@@ -436,11 +613,6 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(src).not.toContain("setAttribute('fullscreen'");
     }
 
-    // Core controller body in buildCarFullscreenScript() and extension/content.js must remain identical
-    expect(normalizeFullscreenCore(buildCarFullscreenScript())).toBe(
-      normalizeFullscreenCore(contentJs),
-    );
-
     // manager.ts & xdotool.ts both delegate to buildCarFullscreenScript and preserve WebAuthn
     expect(managerTs).toContain('buildCarFullscreenScript(this.displayScale)');
     expect(managerTs).toContain('_tesroidAudioUnmuteInstalled');
@@ -455,17 +627,17 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
     // Order A: content.js -> manager(140) -> xdotool
     vm.runInContext(contentJs, env1.ctx);
     const enterFnAfterFirst = env1.mockWin.tesroidEnterFs;
-    const reqFsAfterFirst = env1.MockEl.prototype.requestFullscreen;
+    const reqFsAfterFirst = MockEl.prototype.requestFullscreen;
 
     // Enter fullscreen before manager & xdotool run to verify active state survives late injections
-    env1.mockWin.tesroidEnterFs();
+    requireValue(env1.mockWin.tesroidEnterFs, 'mockWin.tesroidEnterFs')();
     expect(env1.mockDoc.fullscreenElement).toBe(env1.playerEl);
 
     vm.runInContext(managerScript, env1.ctx);
     vm.runInContext(bridgeScript, env1.ctx);
 
     expect(env1.mockWin.tesroidEnterFs).toBe(enterFnAfterFirst);
-    expect(env1.MockEl.prototype.requestFullscreen).toBe(reqFsAfterFirst);
+    expect(MockEl.prototype.requestFullscreen).toBe(reqFsAfterFirst);
     expect(env1.mockWin.__tesroidDisplayScale).toBe(140);
     expect(env1.cssVars.get('--tesroid-zoom')).toBe('1.4');
     expect(env1.mockDoc.fullscreenElement).toBe(env1.playerEl);
@@ -500,13 +672,12 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       const env = createRichDomEnv();
       run(env.ctx);
 
-      const fsBtn = env.fsBtnEl;
-      const fsSvg = env.fsSvgEl;
-      const player = env.playerEl;
-      if (!fsBtn || !fsSvg || !player) throw new Error('Expected YouTube mock DOM elements');
+      const fsBtn = requireValue(env.fsBtnEl, 'fsBtnEl');
+      const fsSvg = requireValue(env.fsSvgEl, 'fsSvgEl');
+      const player = requireValue(env.playerEl, 'playerEl');
 
-      const ytClickSpy = vi.fn();
-      const playerClickSpy = vi.fn();
+      const ytClickSpy = vi.fn<MockEventHandler>();
+      const playerClickSpy = vi.fn<MockEventHandler>();
       fsBtn.addEventListener('click', ytClickSpy, false);
       player.addEventListener('click', playerClickSpy, false);
 
@@ -537,17 +708,50 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
 
       // Newly replaced .ytp-fullscreen-button (before 1000ms interval ticks) is ALSO intercepted immediately!
       const { newBtn, newSvg } = env.attachNewFsButton();
-      const ytNewListener = vi.fn();
+      const ytNewListener = vi.fn<MockEventHandler>();
       newBtn.addEventListener('click', ytNewListener, false);
       newBtn.addEventListener('click', ytNewListener, true);
       newSvg.click();
       expect(ytNewListener).not.toHaveBeenCalled();
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
+
+      // Shadow DOM / non-Element target lacking `.closest()` falls back to `composedPath()` cleanly
+      const lateDocSpy = vi.fn<MockEventHandler>();
+      env.mockDoc.addEventListener('click', lateDocSpy, true);
+      const shadowInner: MockEventTarget = {
+        parentNode: null,
+        listeners: new Map(),
+      };
+      const shadowEv = new MockEvent('click', {
+        bubbles: true,
+        target: shadowInner,
+        composedPath: () => [shadowInner, newBtn, player, env.mockDoc],
+      });
+      env.mockDoc.dispatchEvent(shadowEv);
+      expect(shadowEv.defaultPrevented).toBe(true);
+      expect(shadowEv.immediatePropagationStopped).toBe(true);
+      expect(lateDocSpy).not.toHaveBeenCalled();
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
     });
 
-    it('exposes complete Fullscreen API surface, dispatches fullscreenchange/webkitfullscreenchange, and treats non-fullscreen exit calls as strict no-ops', async () => {
+    it('exposes complete Fullscreen API surface, dispatches fullscreenchange/webkitfullscreenchange, and handles edge-case exits cleanly', async () => {
       const env = createRichDomEnv();
       run(env.ctx);
+
+      const player = requireValue(env.playerEl, 'playerEl');
+      const video = requireValue(env.videoEl, 'videoEl');
+      const flexy = requireValue(env.flexyEl, 'flexyEl');
+      const tesroidExitFs = requireValue(env.mockWin.tesroidExitFs, 'tesroidExitFs');
+      const exitFullscreen = requireValue(env.mockDoc.exitFullscreen, 'document.exitFullscreen');
+      const webkitExitFullscreen = requireValue(
+        env.mockDoc.webkitExitFullscreen,
+        'document.webkitExitFullscreen',
+      );
+      const webkitCancelFullScreen = requireValue(
+        env.mockDoc.webkitCancelFullScreen,
+        'document.webkitCancelFullScreen',
+      );
+      const setFauxFullscreen = requireValue(player.setFauxFullscreen, 'player.setFauxFullscreen');
 
       expect(env.mockDoc.fullscreenEnabled).toBe(true);
       expect(env.mockDoc.webkitFullscreenEnabled).toBe(true);
@@ -561,35 +765,37 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       env.mockWin.addEventListener('resize', () => winResizes.push(1));
 
       // Calling exit while NOT in fullscreen must be a strict no-op (no spurious events)
-      env.mockWin.tesroidExitFs();
-      await env.mockDoc.exitFullscreen();
+      tesroidExitFs();
+      await exitFullscreen();
       expect(docFsChanges).toEqual([]);
       expect(winResizes).toHaveLength(0);
-      expect(env.playerEl?.setFauxFullscreen).not.toHaveBeenCalled();
+      expect(setFauxFullscreen).not.toHaveBeenCalled();
 
       // 1. Enter via webkitRequestFullscreen (must return Promise)
-      await (env.playerEl as any).webkitRequestFullscreen();
+      await requireValue(player.webkitRequestFullscreen, 'player.webkitRequestFullscreen').call(
+        player,
+      );
       expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(true);
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-      expect(env.flexyEl?.hasAttribute('fullscreen')).toBe(false);
-      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(true);
+      expect(flexy.hasAttribute('fullscreen')).toBe(false);
+      expect(setFauxFullscreen).toHaveBeenCalledWith(true);
       expect(env.mockDoc.fullscreen).toBe(true);
       expect(env.mockDoc.webkitIsFullScreen).toBe(true);
-      expect(env.mockDoc.fullscreenElement).toBe(env.playerEl);
-      expect(env.mockDoc.webkitFullscreenElement).toBe(env.playerEl);
-      expect(env.mockDoc.webkitCurrentFullScreenElement).toBe(env.playerEl);
+      expect(env.mockDoc.fullscreenElement).toBe(player);
+      expect(env.mockDoc.webkitFullscreenElement).toBe(player);
+      expect(env.mockDoc.webkitCurrentFullScreenElement).toBe(player);
       expect(docFsChanges).toEqual(['fullscreenchange', 'webkitfullscreenchange']);
       expect(winResizes).toHaveLength(1);
 
       // 2. Exit via Escape key
-      const escEv = new env.MockEvent('keydown', { key: 'Escape' });
+      const escEv = new MockEvent('keydown', { key: 'Escape' });
       env.mockWin.dispatchEvent(escEv);
       expect(escEv.defaultPrevented).toBe(true);
       expect(escEv.immediatePropagationStopped).toBe(true);
       expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
-      expect(env.playerEl?.classList.contains('ytp-fullscreen')).toBe(false);
-      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledWith(false);
+      expect(player.classList.contains('ytp-fullscreen')).toBe(false);
+      expect(setFauxFullscreen).toHaveBeenCalledWith(false);
       expect(env.mockDoc.fullscreenElement).toBeNull();
       expect(docFsChanges).toEqual([
         'fullscreenchange',
@@ -600,25 +806,44 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(winResizes).toHaveLength(2);
 
       // Repeated exit calls after already exiting must emit no extra events or setFauxFullscreen calls
-      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledTimes(2);
-      env.mockWin.tesroidExitFs();
-      await env.mockDoc.exitFullscreen();
-      await env.mockDoc.webkitCancelFullScreen();
+      expect(setFauxFullscreen).toHaveBeenCalledTimes(2);
+      tesroidExitFs();
+      await exitFullscreen();
+      await webkitCancelFullScreen();
       expect(docFsChanges).toHaveLength(4);
       expect(winResizes).toHaveLength(2);
-      expect(env.playerEl?.setFauxFullscreen).toHaveBeenCalledTimes(2);
+      expect(setFauxFullscreen).toHaveBeenCalledTimes(2);
 
       // 3. Enter via player.toggleFullscreen() & exit via yt-navigate-start
-      env.playerEl?.toggleFullscreen?.();
+      requireValue(player.toggleFullscreen, 'player.toggleFullscreen')();
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
-      env.mockWin.dispatchEvent(new env.MockEvent('yt-navigate-start'));
+      env.mockWin.dispatchEvent(new MockEvent('yt-navigate-start'));
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
 
       // 4. Enter via HTMLVideoElement.prototype.webkitEnterFullscreen & exit via webkitExitFullscreen
-      (env.videoEl as any).webkitEnterFullscreen();
-      expect(env.mockDoc.fullscreenElement).toBe(env.videoEl);
-      await env.mockDoc.webkitExitFullscreen();
+      requireValue(video.webkitEnterFullscreen, 'video.webkitEnterFullscreen').call(video);
+      expect(env.mockDoc.fullscreenElement).toBe(video);
+      await webkitExitFullscreen();
       expect(env.mockDoc.fullscreenElement).toBeNull();
+
+      // 5. Disconnected fullscreen element fallback: still dispatches change events on document
+      const transientEl = env.createEl('div', 'transient-fs');
+      await requireValue(transientEl.requestFullscreen, 'transientEl.requestFullscreen').call(
+        transientEl,
+      );
+      transientEl.isConnected = false;
+      const beforeDisconnectExitCount = docFsChanges.length;
+      tesroidExitFs();
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges.slice(beforeDisconnectExitCount)).toEqual([
+        'fullscreenchange',
+        'webkitfullscreenchange',
+      ]);
+
+      // 6. Orphan root class cleanup without activeFsEl
+      env.htmlEl.classList.add('tesroid-web-fs-root');
+      tesroidExitFs();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
     });
 
     it('adapts window.screen dimensions during fullscreen so YouTube 2s screen-size check never marks fullscreen unavailable', () => {
@@ -632,44 +857,47 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       });
       run(env.ctx);
 
+      const tesroidEnterFs = requireValue(env.mockWin.tesroidEnterFs, 'tesroidEnterFs');
+      const tesroidExitFs = requireValue(env.mockWin.tesroidExitFs, 'tesroidExitFs');
+
       // Before fullscreen: native Xvfb screen size preserved
       expect(env.mockScreen.width).toBe(1920);
       expect(env.mockScreen.height).toBe(1080);
 
       // Enter fullscreen: screen dimensions reflect Chrome window so screen*0.9 <= outerWidth/Height
-      env.mockWin.tesroidEnterFs();
+      tesroidEnterFs();
       expect(env.mockScreen.width).toBe(1256);
       expect(env.mockScreen.height).toBe(658);
       expect(env.mockScreen.width * 0.9 > env.mockWin.outerWidth).toBe(false);
       expect(env.mockScreen.height * 0.9 > env.mockWin.outerHeight).toBe(false);
 
       // After exit: native Xvfb screen size restored
-      env.mockWin.tesroidExitFs();
+      tesroidExitFs();
       expect(env.mockScreen.width).toBe(1920);
       expect(env.mockScreen.height).toBe(1080);
     });
 
-    it('supports non-YouTube generic video and container fullscreen cleanly', () => {
+    it('supports non-YouTube generic video and container fullscreen cleanly', async () => {
       const env = createRichDomEnv({ withYouTube: false });
       run(env.ctx);
 
-      const wrapper = new env.MockEl('div', 'custom-player');
-      const video2 = new env.MockVideoEl('second-video');
+      const wrapper = env.createEl('div', 'custom-player');
+      const video2 = env.createVideoEl('second-video');
       env.bodyEl.appendChild(wrapper);
       env.bodyEl.appendChild(video2);
 
-      (wrapper as any).requestFullscreen();
+      await requireValue(wrapper.requestFullscreen, 'wrapper.requestFullscreen').call(wrapper);
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(true);
       expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(true);
       expect(env.mockDoc.fullscreenElement).toBe(wrapper);
 
       // Switching directly to another target clears class from previous element
-      (video2 as any).requestFullscreen();
+      await requireValue(video2.requestFullscreen, 'video2.requestFullscreen').call(video2);
       expect(wrapper.classList.contains('tesroid-generic-fs-target')).toBe(false);
       expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(true);
       expect(env.mockDoc.fullscreenElement).toBe(video2);
 
-      env.mockDoc.exitFullscreen();
+      await requireValue(env.mockDoc.exitFullscreen, 'document.exitFullscreen')();
       expect(video2.classList.contains('tesroid-generic-fs-target')).toBe(false);
       expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
       expect(env.mockDoc.fullscreenElement).toBeNull();
@@ -679,22 +907,24 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       const env = createRichDomEnv();
       run(env.ctx);
 
-      env.mockWin.tesroidSetZoom(125.6);
+      const tesroidSetZoom = requireValue(env.mockWin.tesroidSetZoom, 'tesroidSetZoom');
+
+      tesroidSetZoom(125.6);
       expect(env.mockWin.__tesroidDisplayScale).toBe(126);
       expect(env.cssVars.get('--tesroid-zoom')).toBe('1.26');
 
-      env.mockWin.tesroidSetZoom(133.4);
+      tesroidSetZoom(133.4);
       expect(env.mockWin.__tesroidDisplayScale).toBe(133);
       expect(env.cssVars.get('--tesroid-zoom')).toBe('1.33');
 
-      env.mockWin.tesroidSetZoom(49.4);
+      tesroidSetZoom(49.4);
       expect(env.mockWin.__tesroidDisplayScale).toBe(120);
       expect(env.cssVars.get('--tesroid-zoom')).toBe('1.2');
     });
 
     it('skips redundant DOM attribute and style writes during interval polling when fullscreen button is already ready', () => {
       const env = createRichDomEnv();
-      const btn = env.fsBtnEl!;
+      const btn = requireValue(env.fsBtnEl, 'fsBtnEl');
       btn.setAttribute('aria-disabled', 'true');
       btn.setAttribute('disabled', '');
 
