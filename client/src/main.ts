@@ -86,8 +86,10 @@ class AppRouter {
         this.currentPin = authPayload;
         this.authToken = null;
 
-        // Unlock AudioContext inside tap gesture
-        await this.audioPlayer.unlock();
+        // Unlock AudioContext inside tap gesture (disabled for secondary display sessions)
+        if (!isSecondary) {
+          await this.audioPlayer.unlock();
+        }
 
         // Connect WebSocket and send auth
         if (!this.wsClient.isConnected()) {

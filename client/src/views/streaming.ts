@@ -876,7 +876,20 @@ export function renderStreamingView(
     updateHudLiveStatus();
   };
 
-  const executeJumpToLive = (silent = false) => {
+  const isSecondarySession = sessionRole === 'secondary';
+  let primaryAnchorPtsUs = 0;
+  let primaryAnchorLocalMs = 0;
+
+  if (isSecondarySession && typeof (avSync as any).setExternalMasterPtsProvider === 'function') {
+    (avSync as any).setExternalMasterPtsProvider(() => {
+      if (primaryAnchorPtsUs <= 0 || primaryAnchorLocalMs <= 0) return null;
+      const elapsedMs = performance.now() - primaryAnchorLocalMs;
+      if (elapsedMs < -1000 || elapsedMs > 5000) return null;
+      return Math.round(primaryAnchorPtsUs + elapsedMs * 1000);
+    });
+  }
+
+  const executeJumpToLive = (silent = false, notifyServer = true) => {
     if (typeof decoder.flushPendingForLiveJump === 'function') {
       decoder.flushPendingForLiveJump();
     }
@@ -889,11 +902,13 @@ export function renderStreamingView(
       audioPlayer.resetJitterBuffer();
     }
     jitterController.reset();
+    primaryAnchorPtsUs = 0;
+    primaryAnchorLocalMs = 0;
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
     lastHudLiveState = '';
-    if (wsClient.isConnected()) {
+    if (notifyServer && wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
     }
     updateHudLiveStatus();
@@ -956,15 +971,18 @@ export function renderStreamingView(
   // 3. Touch Mapper
   const touchMapper = new TouchMapper(canvas, wsClient, latencyController);
 
-  // Auto-unlock AudioContext on any user touch/click anywhere on screen
+  // Auto-unlock AudioContext on any user touch/click anywhere on screen (disabled for secondary display)
   const autoUnlockAudio = () => {
+    if (isSecondarySession) return;
     const stats = audioPlayer.getStats();
     if (!stats.isUnlocked || stats.state === 'suspended') {
       audioPlayer.unlock();
     }
   };
-  canvas.addEventListener('pointerdown', autoUnlockAudio);
-  window.addEventListener('pointerdown', autoUnlockAudio, { capture: true });
+  if (!isSecondarySession) {
+    canvas.addEventListener('pointerdown', autoUnlockAudio);
+    window.addEventListener('pointerdown', autoUnlockAudio, { capture: true });
+  }
 
   // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
   let resizeTimer: any = null;
@@ -1006,6 +1024,7 @@ export function renderStreamingView(
 
   const handleAudio = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
+    if (isSecondarySession) return;
     metricsCollector.recordAudioPacket();
     audioPlayer.handleAudioPacket(msg.flags, msg.pts, msg.data);
   };
@@ -1197,8 +1216,39 @@ export function renderStreamingView(
       metricsCollector.updateRtt(instantRtt);
       jitterController.updateRtt(instantRtt);
 
+      if (isSecondarySession) {
+        if (
+          typeof msg.primaryTargetBufferMs === 'number' &&
+          Number.isFinite(msg.primaryTargetBufferMs)
+        ) {
+          const syncedTargetMs = clampBufferDepthMs(msg.primaryTargetBufferMs);
+          if (Math.abs(syncedTargetMs - targetBufferMs) >= 500) {
+            targetBufferMs = syncedTargetMs;
+            if (typeof decoder.setBufferDepth === 'function') {
+              decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+            }
+          }
+        }
+        if (
+          typeof msg.primaryRenderedPts === 'number' &&
+          msg.primaryRenderedPts > 0 &&
+          typeof msg.primaryFeedbackAgeMs === 'number' &&
+          msg.primaryFeedbackAgeMs < 5000
+        ) {
+          primaryAnchorPtsUs = msg.primaryRenderedPts;
+          primaryAnchorLocalMs = now - msg.primaryFeedbackAgeMs - Math.round(rawRtt / 2);
+        } else if (msg.primaryRenderedPts === null) {
+          primaryAnchorPtsUs = 0;
+          primaryAnchorLocalMs = 0;
+        }
+      }
+
       updateHudConnStatus();
       updateHudLiveStatus();
+    } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
+      if (isSecondarySession) {
+        executeJumpToLive(true, false);
+      }
     } else if (msg.type === 'AUTH_SUCCESS') {
       sendBufferFeedback(true);
     } else if (msg.type === 'LIVE_JUMPED') {
@@ -1431,11 +1481,13 @@ export function renderStreamingView(
     updateHudLiveStatus();
 
     // Audio Autoplay & Unlock Guidance for Tesla Browser
-    const audioStats = audioPlayer.getStats();
-    if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
-      if (!hasPromptedAudioUnlock) {
-        hasPromptedAudioUnlock = true;
-        showToast('画面をタップすると音声を再生します', 'info');
+    if (!isSecondarySession) {
+      const audioStats = audioPlayer.getStats();
+      if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
+        if (!hasPromptedAudioUnlock) {
+          hasPromptedAudioUnlock = true;
+          showToast('画面をタップすると音声を再生します', 'info');
+        }
       }
     }
   }, 1000);
@@ -1690,6 +1742,13 @@ export function renderStreamingView(
     window.removeEventListener('pointerdown', resetHudDimTimer);
     if (sessionRole !== 'secondary') {
       window.removeEventListener('resize', onResize);
+    }
+    if (typeof (avSync as any).setExternalMasterPtsProvider === 'function') {
+      (avSync as any).setExternalMasterPtsProvider(undefined);
+    }
+    if (!isSecondarySession) {
+      canvas.removeEventListener('pointerdown', autoUnlockAudio);
+      window.removeEventListener('pointerdown', autoUnlockAudio, { capture: true });
     }
     window.removeEventListener('tesroid:settings-updated', onSettingsUpdated);
     window.removeEventListener('tesroid:stream-reset', onStreamResetEvent);

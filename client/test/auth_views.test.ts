@@ -24,6 +24,7 @@ function setupPinEntryDom() {
 
   const dotsEl: any = { innerHTML: '', style: {} };
   const submitBtn = makeButton('pin-submit-btn', false);
+  const secondaryBtn = makeButton('pin-secondary-btn', false);
   const settingsBtn = makeButton('pin-settings-btn', false);
   elementsById.set('pin-dots', dotsEl);
   elementsById.set('pin-submit-btn', submitBtn);
@@ -41,19 +42,10 @@ function setupPinEntryDom() {
     get: () => htmlValue,
     set: (html: string) => {
       htmlValue = html;
-      if (html.includes('id="pin-secondary-option"')) {
-        elementsById.set('pin-secondary-option', { id: 'pin-secondary-option' });
+      if (html.includes('id="pin-secondary-btn"')) {
+        elementsById.set('pin-secondary-btn', secondaryBtn);
       } else {
-        elementsById.delete('pin-secondary-option');
-      }
-      if (html.includes('id="pin-secondary-checkbox"')) {
-        elementsById.set('pin-secondary-checkbox', {
-          id: 'pin-secondary-checkbox',
-          type: 'checkbox',
-          checked: false,
-        });
-      } else {
-        elementsById.delete('pin-secondary-checkbox');
+        elementsById.delete('pin-secondary-btn');
       }
     },
   });
@@ -64,7 +56,7 @@ function setupPinEntryDom() {
     btn.click();
   };
 
-  return { container, dotsEl, submitBtn, settingsBtn, pressKey };
+  return { container, dotsEl, submitBtn, secondaryBtn, settingsBtn, pressKey };
 }
 
 describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
@@ -129,7 +121,7 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
     expect(settingsOpened).toBe(1);
   });
 
-  it('renderPinEntry hides secondary display option when hasActiveSession is omitted or false', () => {
+  it('renderPinEntry hides secondary button when hasActiveSession is omitted or false', () => {
     const { container, submitBtn, pressKey } = setupPinEntryDom();
     const submitted: Array<{ pin: string; isSecondary?: boolean }> = [];
 
@@ -140,10 +132,10 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
       vi.fn(),
     );
 
-    expect(container.innerHTML).not.toContain('pin-secondary-option');
-    expect(container.innerHTML).not.toContain('pin-secondary-checkbox');
-    expect(document.getElementById('pin-secondary-option')).toBeNull();
-    expect(document.getElementById('pin-secondary-checkbox')).toBeNull();
+    expect(container.innerHTML).not.toContain('pin-connect-actions');
+    expect(container.innerHTML).not.toContain('pin-secondary-btn');
+    expect(document.getElementById('pin-secondary-btn')).toBeNull();
+    expect(container.innerHTML).toContain('ストリーミング接続開始');
 
     pressKey('1');
     pressKey('2');
@@ -161,9 +153,9 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
       { hasActiveSession: false },
     );
 
-    expect(container.innerHTML).not.toContain('pin-secondary-option');
-    expect(container.innerHTML).not.toContain('pin-secondary-checkbox');
-    expect(document.getElementById('pin-secondary-checkbox')).toBeNull();
+    expect(container.innerHTML).not.toContain('pin-connect-actions');
+    expect(container.innerHTML).not.toContain('pin-secondary-btn');
+    expect(document.getElementById('pin-secondary-btn')).toBeNull();
 
     pressKey('5');
     pressKey('6');
@@ -173,8 +165,8 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
     expect(submitted).toEqual([{ pin: '5678', isSecondary: false }]);
   });
 
-  it('renderPinEntry renders secondary display checkbox when hasActiveSession is true and forwards checked state', () => {
-    const { container, submitBtn, pressKey } = setupPinEntryDom();
+  it('renderPinEntry renders side-by-side green primary and blue secondary buttons when hasActiveSession is true', () => {
+    const { container, submitBtn, secondaryBtn, pressKey } = setupPinEntryDom();
     const submitted: Array<{ pin: string; isSecondary?: boolean }> = [];
 
     renderPinEntry(
@@ -185,30 +177,27 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
       { hasActiveSession: true },
     );
 
-    expect(container.innerHTML).toContain('id="pin-secondary-option"');
-    expect(container.innerHTML).toContain('id="pin-secondary-checkbox"');
-    expect(container.innerHTML).toContain('type="checkbox"');
-    expect(container.innerHTML).toContain(
-      'セカンドディスプレイとして接続（既存接続を維持・解像度追従なし）',
-    );
-    expect(container.innerHTML.indexOf('id="pin-secondary-option"')).toBeLessThan(
-      container.innerHTML.indexOf('id="pin-submit-btn"'),
-    );
+    expect(container.innerHTML).toContain('id="pin-connect-actions"');
+    expect(container.innerHTML).toContain('id="pin-submit-btn"');
+    expect(container.innerHTML).toContain('id="pin-secondary-btn"');
+    expect(container.innerHTML).toContain('メインとして接続');
+    expect(container.innerHTML).toContain('セカンドディスプレイとして接続');
+    expect(container.innerHTML).toContain('#00ff88');
+    expect(container.innerHTML).toContain('#3e6ae1');
 
-    const checkbox = document.getElementById('pin-secondary-checkbox') as HTMLInputElement | null;
-    expect(checkbox).not.toBeNull();
-    if (!checkbox) throw new Error('Expected #pin-secondary-checkbox to exist');
-    expect(checkbox.checked).toBe(false);
-
+    // Disabled until 4 digits are entered
     pressKey('1');
     pressKey('2');
     pressKey('3');
-    pressKey('4');
-    submitBtn.click();
-    expect(submitted).toEqual([{ pin: '1234', isSecondary: false }]);
+    expect(submitBtn.disabled).toBe(true);
+    expect(secondaryBtn.disabled).toBe(true);
 
-    checkbox.checked = true;
+    pressKey('4');
+    expect(submitBtn.disabled).toBe(false);
+    expect(secondaryBtn.disabled).toBe(false);
+
     submitBtn.click();
+    secondaryBtn.click();
     expect(submitted).toEqual([
       { pin: '1234', isSecondary: false },
       { pin: '1234', isSecondary: true },

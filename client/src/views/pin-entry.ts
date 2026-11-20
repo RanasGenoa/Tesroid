@@ -21,17 +21,19 @@ export function renderPinEntry(
               .join(' ')
           : '<span style="color: #666; font-size: 24px;">PINを入力</span>';
     }
-    const submitBtn = document.getElementById('pin-submit-btn') as HTMLButtonElement;
-    if (submitBtn) {
-      submitBtn.disabled = pin.length < 4;
+    const updateButtonState = (btn: HTMLButtonElement | null) => {
+      if (!btn) return;
+      btn.disabled = pin.length < 4;
       if (pin.length >= 4) {
-        submitBtn.style.opacity = '1';
-        submitBtn.style.transform = 'scale(1.02)';
+        btn.style.opacity = '1';
+        btn.style.transform = 'scale(1.02)';
       } else {
-        submitBtn.style.opacity = '0.4';
-        submitBtn.style.transform = 'scale(1)';
+        btn.style.opacity = '0.4';
+        btn.style.transform = 'scale(1)';
       }
-    }
+    };
+    updateButtonState(document.getElementById('pin-submit-btn') as HTMLButtonElement | null);
+    updateButtonState(document.getElementById('pin-secondary-btn') as HTMLButtonElement | null);
   };
 
   container.innerHTML = `
@@ -99,28 +101,28 @@ export function renderPinEntry(
         ${
           showSecondaryOption
             ? `
-        <div id="pin-secondary-option" style="
-          display: flex; align-items: center; justify-content: center;
-          margin-bottom: 10px;
-        ">
-          <label for="pin-secondary-checkbox" style="
-            display: inline-flex; align-items: center; gap: 10px;
-            padding: 8px 14px; border-radius: 10px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            color: #bbb; font-size: 13px; cursor: pointer;
-            user-select: none; -webkit-tap-highlight-color: transparent;
-          ">
-            <input id="pin-secondary-checkbox" type="checkbox" style="
-              width: 18px; height: 18px; accent-color: #00ff88;
-              flex-shrink: 0; cursor: pointer; margin: 0;
-            " />
-            <span>セカンドディスプレイとして接続（既存接続を維持・解像度追従なし）</span>
-          </label>
+        <div id="pin-connect-actions" style="display: flex; gap: 12px; width: 100%;">
+          <button id="pin-submit-btn" style="
+            flex: 1; height: 52px; background: #00ff88; color: #000;
+            border: none; border-radius: 12px; font-size: 16px; font-weight: 700;
+            cursor: pointer; transition: all 0.15s ease; opacity: 0.4;
+            box-shadow: 0 4px 16px rgba(0,255,136,0.28);
+            white-space: nowrap; padding: 0 12px;
+          " disabled>
+            メインとして接続
+          </button>
+          <button id="pin-secondary-btn" style="
+            flex: 1.25; height: 52px; background: #3e6ae1; color: #fff;
+            border: none; border-radius: 12px; font-size: 16px; font-weight: 700;
+            cursor: pointer; transition: all 0.15s ease; opacity: 0.4;
+            box-shadow: 0 4px 16px rgba(62,106,225,0.35);
+            white-space: nowrap; padding: 0 12px;
+          " disabled>
+            セカンドディスプレイとして接続
+          </button>
         </div>
         `
-            : ''
-        }
+            : `
         <button id="pin-submit-btn" style="
           width: 100%; height: 60px; background: #00ff88; color: #000;
           border: none; border-radius: 14px; font-size: 20px; font-weight: 700;
@@ -129,6 +131,8 @@ export function renderPinEntry(
         " disabled>
           ストリーミング接続開始 ➔
         </button>
+        `
+        }
       </div>
     </div>
 
@@ -172,13 +176,18 @@ export function renderPinEntry(
     });
   });
 
-  // Submit handler
-  const submitBtn = document.getElementById('pin-submit-btn') as HTMLButtonElement;
-  submitBtn.addEventListener('click', () => {
+  // Submit handlers
+  const submitBtn = document.getElementById('pin-submit-btn') as HTMLButtonElement | null;
+  submitBtn?.addEventListener('click', () => {
     if (pin.length >= 4) {
-      const checkbox = document.getElementById('pin-secondary-checkbox') as HTMLInputElement | null;
-      const isSecondary = Boolean(checkbox?.checked);
-      onSubmit(pin, isSecondary);
+      onSubmit(pin, false);
+    }
+  });
+
+  const secondaryBtn = document.getElementById('pin-secondary-btn') as HTMLButtonElement | null;
+  secondaryBtn?.addEventListener('click', () => {
+    if (pin.length >= 4) {
+      onSubmit(pin, true);
     }
   });
 

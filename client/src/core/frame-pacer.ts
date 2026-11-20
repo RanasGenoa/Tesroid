@@ -544,6 +544,33 @@ export class FramePacer {
     if (this.isBuffering || this.frameQueue.length === 0) return;
 
     const now = performance.now();
+    const playingMasterPts =
+      typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function'
+        ? this.avSync.getCurrentPlayingAudioPtsUs()
+        : null;
+
+    // If playback queue is severely behind master clock (> 2000ms), drop oldest stale frames to catch up smoothly
+    if (playingMasterPts !== null && playingMasterPts > 0 && this.frameQueue.length > 1) {
+      let droppedAny = false;
+      while (
+        this.frameQueue.length > 1 &&
+        (playingMasterPts - this.frameQueue[0].ptsUs) / 1000 > 2000
+      ) {
+        const stale = this.frameQueue.shift();
+        if (stale) {
+          droppedAny = true;
+          try {
+            stale.frame.close();
+          } catch {}
+          this.onFrameDropped?.();
+          this.onFrameProcessed?.();
+        }
+      }
+      if (droppedAny && this.frameQueue[0].scheduledRenderTime > now + 2) {
+        this.frameQueue[0].scheduledRenderTime = now;
+      }
+    }
+
     const nextItem = this.frameQueue[0];
 
     if (nextItem.scheduledRenderTime <= now + 2) {

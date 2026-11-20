@@ -447,4 +447,135 @@ describe('WebSocketHandler Multi-Display Secondary Session (Issue #70)', () => {
 
     handler.close();
   });
+
+  it('mutes audio for secondary sessions, reports primary buffering PTS in PONG, and notifies PRIMARY_JUMP_TO_LIVE', async () => {
+    const mockAuth: any = {
+      verifyPin: vi
+        .fn()
+        .mockResolvedValueOnce({ success: true, token: 'token-primary' })
+        .mockResolvedValueOnce({ success: true, token: 'token-secondary' }),
+      validateSession: vi.fn(() => true),
+    };
+    const encoderListeners = new Map<string, Function>();
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 10 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.CONFIG, 0n, Buffer.from([0, 0, 0, 1, 0x67]));
+    playbackBuffer.addAudio(0x02, 0n, Buffer.from('OpusHead'));
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1000000n, Buffer.from([0, 0, 0, 1, 0x65]));
+    playbackBuffer.addAudio(0x01, 1000000n, Buffer.from([0x11, 0x22]));
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 3000000n, Buffer.from([0, 0, 0, 1, 0x65]));
+
+    const mockBrowser: any = {
+      getDimensions: () => ({ width: 1280, height: 720 }),
+      getState: () => 'running',
+      getCurrentUrl: () => 'https://www.youtube.com',
+      resume: vi.fn(),
+      pause: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      isChromeAlive: () => true,
+    };
+    const mockEncoder: any = {
+      isRunning: vi.fn(() => true),
+      start: vi.fn(),
+      stop: vi.fn(),
+      restart: vi.fn().mockResolvedValue(undefined),
+      getCachedKeyframe: () => ({ data: Buffer.from([0, 0, 0, 1, 0x65]), pts: 3000000n }),
+      isKeyframeStale: () => false,
+      getCurrentPts: () => 3000000n,
+      getCachedSpsPps: () => Buffer.from([0, 0, 0, 1, 0x67]),
+      getCachedOpusHead: () => Buffer.from('OpusHead'),
+      on: vi.fn((ev: string, cb: Function) => encoderListeners.set(ev, cb)),
+    };
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      {} as any,
+      { getConfig: () => ({ isSetupCompleted: true }) } as any,
+      playbackBuffer,
+    );
+
+    const primary = createMockSocket();
+    const secondary = createMockSocket();
+
+    handler.handleConnection(primary.socket);
+    await sendMessage(
+      primary,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+
+    // Primary reports rendered PTS 2s behind latest (1000000n vs 3000000n)
+    await sendMessage(
+      primary,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(
+          JSON.stringify({
+            type: 'BUFFER_FEEDBACK',
+            bufferedMs: 2000,
+            targetBufferMs: 12000,
+            lastRenderedPts: '1000000',
+            isInteractive: false,
+          }),
+        ),
+      ]),
+    );
+
+    // Secondary joins while primary is buffered
+    handler.handleConnection(secondary.socket);
+    await sendMessage(
+      secondary,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+    );
+
+    // Emit live audio packet -> only primary should receive audio channel (0x02)
+    const primaryAudioBefore = primary.socket.send.mock.calls.filter(
+      (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+    ).length;
+    const secondaryAudioBefore = secondary.socket.send.mock.calls.filter(
+      (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+    ).length;
+
+    encoderListeners.get('audio')?.({
+      flags: 0x01,
+      pts: 3020000n,
+      data: Buffer.from([0xaa, 0xbb]),
+    });
+
+    const primaryAudioAfter = primary.socket.send.mock.calls.filter(
+      (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+    ).length;
+    const secondaryAudioAfter = secondary.socket.send.mock.calls.filter(
+      (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+    ).length;
+
+    expect(primaryAudioAfter).toBeGreaterThan(primaryAudioBefore);
+    expect(secondaryAudioBefore).toBe(0);
+    expect(secondaryAudioAfter).toBe(0);
+
+    // Secondary sends PING -> PONG includes primaryRenderedPts & primaryTargetBufferMs
+    await sendMessage(
+      secondary,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'PING', id: 99, clientTime: 100 })),
+      ]),
+    );
+    const pong = secondary.sentControl.find((m) => m.type === 'PONG' && m.id === 99);
+    expect(pong).toBeDefined();
+    expect(pong.primaryRenderedPts).toBe(1000000);
+    expect(pong.primaryTargetBufferMs).toBe(12000);
+    expect(typeof pong.primaryFeedbackAgeMs).toBe('number');
+
+    // Primary triggers JUMP_TO_LIVE -> secondary receives PRIMARY_JUMP_TO_LIVE
+    await sendMessage(
+      primary,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'JUMP_TO_LIVE' })),
+      ]),
+    );
+    expect(secondary.sentControl.some((m) => m.type === 'PRIMARY_JUMP_TO_LIVE')).toBe(true);
+
+    handler.close();
+  });
 });
