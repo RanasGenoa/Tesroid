@@ -5,7 +5,7 @@ import {
   escapeHtml,
   type FavoriteItem,
   ICONS,
-  insertFavoriteAfterHome,
+  insertFavoritePreservingHome,
   isSafeHttpUrl,
   pinHomeFavoriteFirst,
   resolveHomeFavorite,
@@ -453,12 +453,11 @@ async function showSettingsModal(
     }
 
     const resolvedHome = resolveHomeFavorite(favorites, homeFavoriteId);
-    const isHomePinnedAtZero = favorites[0]?.id === resolvedHome.id;
     favoritesManageList.innerHTML = favorites
       .map((item, idx) => {
         const isHome = item.id === resolvedHome.id;
-        const disableUp = idx === 0 || (idx === 1 && isHomePinnedAtZero);
-        const disableDown = idx === favorites.length - 1 || (idx === 0 && isHome);
+        const disableUp = idx === 0;
+        const disableDown = idx === favorites.length - 1;
         const safeId = escapeHtml(item.id);
         const safeTitle = escapeHtml(item.title);
         const safeUrl = escapeHtml(item.url);
@@ -540,7 +539,7 @@ async function showSettingsModal(
       );
 
       findModalElement(`fav-up-${item.id}`, `fav-up-${safeId}`)?.addEventListener('click', () => {
-        if (idx <= 0 || (idx === 1 && isHomePinnedAtZero)) return;
+        if (idx <= 0) return;
         const reordered = favorites.map((f) => ({ ...f }));
         const prev = reordered[idx - 1];
         reordered[idx - 1] = reordered[idx];
@@ -551,7 +550,7 @@ async function showSettingsModal(
       findModalElement(`fav-down-${item.id}`, `fav-down-${safeId}`)?.addEventListener(
         'click',
         () => {
-          if (idx >= favorites.length - 1 || (idx === 0 && item.id === resolvedHome.id)) return;
+          if (idx >= favorites.length - 1) return;
           const reordered = favorites.map((f) => ({ ...f }));
           const next = reordered[idx + 1];
           reordered[idx + 1] = reordered[idx];
@@ -637,7 +636,6 @@ async function showSettingsModal(
       if (favorites.length > 0 && !favorites.some((f) => f.id === homeFavoriteId)) {
         homeFavoriteId = favorites[0].id;
       }
-      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
 
       renderFavoritesManageList();
       window.dispatchEvent(
@@ -692,7 +690,7 @@ async function showSettingsModal(
     while (favorites.some((f) => f.id === newId)) {
       newId = `fav-${Date.now()}-${suffix++}`;
     }
-    const nextFavorites = insertFavoriteAfterHome(
+    const nextFavorites = insertFavoritePreservingHome(
       favorites,
       { id: newId, title, url },
       homeFavoriteId,
@@ -760,7 +758,7 @@ async function showSettingsModal(
       url: targetUrl,
     };
     await persistFavoritesUpdate(
-      { favorites: insertFavoriteAfterHome(favorites, newFav, homeFavoriteId) },
+      { favorites: insertFavoritePreservingHome(favorites, newFav, homeFavoriteId) },
       `お気に入りに追加しました: ${newFav.title}`,
     );
   });
@@ -939,7 +937,6 @@ async function showSettingsModal(
       if (typeof data.homeFavoriteId === 'string' && data.homeFavoriteId.trim()) {
         homeFavoriteId = data.homeFavoriteId.trim();
       }
-      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
       renderFavoritesManageList();
       if (data.displayScale) {
         (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(
