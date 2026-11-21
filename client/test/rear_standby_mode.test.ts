@@ -305,6 +305,10 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     capturedOnFrame?.({ close: vi.fn() });
     expect(statusOverlay.style.display).toBe('none');
 
+    // Duplicate PRIMARY_SESSION_STATUS { active: true } while already streaming must NOT re-show overlay
+    emitWs('control', { type: 'PRIMARY_SESSION_STATUS', active: true });
+    expect(statusOverlay.style.display).toBe('none');
+
     // Primary disconnects -> PRIMARY_SESSION_STATUS active: false -> returns to rear standby overlay and resets audio buffer
     emitWs('control', { type: 'PRIMARY_SESSION_STATUS', active: false });
     expect(statusOverlay.style.display).toBe('flex');
@@ -354,5 +358,28 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
 
     emitWs('audio', { flags: 0x01, pts: 3000n, data: new Uint8Array([5, 6]) });
     expect(mockAudioPlayer.handleAudioPacket).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables stop and restart actions in power modal while in rear-seat standby mode', () => {
+    cleanupView = renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      vi.fn(),
+      'token-rear',
+      'secondary',
+      { initialPrimaryActive: false },
+    );
+
+    elementRegistry.get('hud-stop-btn').click();
+    const modal = elementRegistry.get('power-menu-modal');
+    expect(modal).toBeDefined();
+    expect(modal.innerHTML).toContain('disabled');
+
+    // Even if clicked programmatically, stop/restart must not trigger commands or fetch
+    elementRegistry.get('power-quick-stop-btn').click();
+    elementRegistry.get('power-browser-restart-btn').click();
+    expect(mockWsClient.send).not.toHaveBeenCalled();
   });
 });

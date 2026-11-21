@@ -1130,6 +1130,9 @@ export function renderStreamingView(
     overlay.className = 'modal-overlay';
     overlay.id = 'power-menu-modal';
 
+    const isRearStandby = isSecondarySession && !isPrimarySessionActive;
+    const standbyActionStyle = isRearStandby ? 'opacity: 0.45; cursor: not-allowed;' : '';
+
     overlay.innerHTML = `
       <div class="card" style="max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; position: relative; border-radius: 4px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -1138,12 +1141,16 @@ export function renderStreamingView(
           </h3>
           <button id="power-modal-close-btn" class="hud-btn" style="font-size: 18px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 3px;">✕</button>
         </div>
-        <p style="font-size: 13px; margin-bottom: 16px; color: var(--text-muted);">車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。</p>
+        <p style="font-size: 13px; margin-bottom: 16px; color: var(--text-muted);">${
+          isRearStandby
+            ? '後席モニター待ち受け中のため、停止・再起動は前席接続後に利用できます。'
+            : '車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。'
+        }</p>
         <div style="display: flex; flex-direction: column; gap: 12px;">
-          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 700; border-radius: 4px;">
+          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 700; border-radius: 4px; ${standbyActionStyle}" ${isRearStandby ? 'disabled' : ''}>
             ${ICONS.stop} ワンタップ停止 (省電力スタンバイ)
           </button>
-          <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
+          <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18); ${standbyActionStyle}" ${isRearStandby ? 'disabled' : ''}>
             ${ICONS.refresh} ブラウザ＆配信再起動
           </button>
           <button id="power-disconnect-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
@@ -1178,6 +1185,10 @@ export function renderStreamingView(
     overlay.querySelector('#power-quick-stop-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
+      if (isSecondarySession && !isPrimarySessionActive) {
+        showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+        return;
+      }
       closePowerModal();
       triggerStop();
     });
@@ -1185,6 +1196,10 @@ export function renderStreamingView(
     overlay.querySelector('#power-browser-restart-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
+      if (isSecondarySession && !isPrimarySessionActive) {
+        showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+        return;
+      }
       closePowerModal();
       browserRestart(token);
     });
@@ -1362,6 +1377,7 @@ export function renderStreamingView(
       }
     } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
       if (!isSecondarySession) return;
+      const wasPrimaryActive = isPrimarySessionActive;
       const nextActive = Boolean(msg.active);
       isPrimarySessionActive = nextActive;
       if (!nextActive) {
@@ -1384,7 +1400,7 @@ export function renderStreamingView(
         serverMode = 'LIVE';
         updateHudLiveStatus();
         showRearStandbyScreen();
-      } else {
+      } else if (!wasPrimaryActive) {
         if (noticeActionBox) noticeActionBox.style.display = 'none';
         if (noticeActionBtn) noticeActionBtn.style.display = '';
         if (healthBrowser) {
@@ -1870,13 +1886,6 @@ export function renderStreamingView(
     performIntentionalDisconnect();
   });
 
-  const onPageHide = () => {
-    if (wsClient.isConnected()) {
-      wsClient.send(ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }));
-    }
-  };
-  window.addEventListener('pagehide', onPageHide);
-
   // Settings
   document.getElementById('hud-settings-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1893,7 +1902,6 @@ export function renderStreamingView(
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
-    window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('resize', onResize);
     if (typeof avSync.setExternalMasterPtsProvider === 'function') {
       avSync.setExternalMasterPtsProvider(undefined);

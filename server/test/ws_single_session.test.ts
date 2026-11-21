@@ -1050,4 +1050,63 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('avoids acting_primary churn on code 1001 page reload within 3s, promotes after 3s if not returning, and sends BROWSER_STATUS only to resumed standby secondaries', async () => {
+    vi.useFakeTimers();
+    try {
+      const mockAuth: any = {
+        verifyPin: vi
+          .fn()
+          .mockResolvedValueOnce({ success: true, token: 'token-front' })
+          .mockResolvedValueOnce({ success: true, token: 'token-rear' }),
+        validateSession: vi.fn(() => true),
+      };
+      const { handler } = createTestContext(mockAuth);
+
+      const front = createMockSocket();
+      handler.handleConnection(front.socket);
+      await sendMessage(
+        front,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+      );
+
+      const rear = createMockSocket();
+      handler.handleConnection(rear.socket);
+      await sendMessage(
+        rear,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+      );
+
+      rear.sentControl.length = 0;
+
+      // 1. Front reloads (code 1001) and reconnects within 1s -> NO acting_primary promotion and NO duplicate PRIMARY_SESSION_STATUS
+      front.listeners.get('close')?.(1001);
+      expect(handler.hasActingPrimaryClients()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      const frontReloaded = createMockSocket();
+      handler.handleConnection(frontReloaded.socket);
+      await sendMessage(
+        frontReloaded,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('TOKEN:token-front')]),
+      );
+
+      expect(handler.hasActingPrimaryClients()).toBe(false);
+      expect(rear.sentControl.some((m) => m.type === 'SESSION_ROLE_CHANGED')).toBe(false);
+      expect(rear.sentControl.some((m) => m.type === 'PRIMARY_SESSION_STATUS')).toBe(false);
+
+      // 2. Front closes tab (code 1001) and does NOT return within 3s -> promotes rear to acting_primary
+      frontReloaded.listeners.get('close')?.(1001);
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(handler.hasActingPrimaryClients()).toBe(true);
+      expect(rear.sentControl.find((m) => m.type === 'SESSION_ROLE_CHANGED')).toEqual({
+        type: 'SESSION_ROLE_CHANGED',
+        effectiveRole: 'acting_primary',
+      });
+
+      handler.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

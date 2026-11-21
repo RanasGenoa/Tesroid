@@ -62,6 +62,8 @@ export class WebSocketHandler {
   private clientSessions: Map<WebSocket, ClientSession> = new Map();
 
   private autoSleepTimer: NodeJS.Timeout | null = null;
+  private actingPrimaryGraceTimer: NodeJS.Timeout | null = null;
+  private pendingIntentionalPrimaryToken: string | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
   private resizeTimer: NodeJS.Timeout | null = null;
   private unsubscribePageInfo: (() => void) | null = null;
@@ -149,21 +151,60 @@ export class WebSocketHandler {
     return undefined;
   }
 
-  private notifySecondaryClientsPrimaryStatus(active: boolean): void {
+  private notifySecondaryClientsPrimaryStatus(active: boolean): WebSocket[] {
+    const transitionedClients: WebSocket[] = [];
     for (const client of this.authenticatedClients) {
       const session = this.clientSessions.get(client);
-      if (session?.role === 'secondary') {
-        session.isStandby = !active;
+      if (session?.role !== 'secondary') continue;
+      if (active && !session.isStandby) {
         if (session.authToken) {
           const authEntry = this.authorizedSessions.get(session.authToken);
-          if (authEntry) authEntry.standby = !active;
+          if (authEntry) authEntry.standby = false;
         }
+        continue;
+      }
+      session.isStandby = !active;
+      if (session.authToken) {
+        const authEntry = this.authorizedSessions.get(session.authToken);
+        if (authEntry) authEntry.standby = !active;
+      }
+      this.sendControl(client, {
+        type: 'PRIMARY_SESSION_STATUS',
+        active,
+      });
+      if (active) {
         this.sendControl(client, {
-          type: 'PRIMARY_SESSION_STATUS',
-          active,
+          type: 'BROWSER_STATUS',
+          state: this.browserManager.getState(),
+          url: this.browserManager.getCurrentUrl(),
+          title:
+            typeof this.browserManager.getCurrentTitle === 'function'
+              ? this.browserManager.getCurrentTitle()
+              : '',
+          dimensions: this.browserManager.getDimensions(),
         });
+        transitionedClients.push(client);
       }
     }
+    return transitionedClients;
+  }
+
+  private hasActiveStreamingSecondary(): boolean {
+    for (const client of this.authenticatedClients) {
+      const session = this.clientSessions.get(client);
+      if (session?.role === 'secondary' && !session.isStandby && client.readyState === 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private clearActingPrimaryGraceTimer(): void {
+    if (this.actingPrimaryGraceTimer) {
+      clearTimeout(this.actingPrimaryGraceTimer);
+      this.actingPrimaryGraceTimer = null;
+    }
+    this.pendingIntentionalPrimaryToken = null;
   }
 
   private enterSecondaryStandby(): void {
@@ -345,8 +386,8 @@ export class WebSocketHandler {
 
       const session = this.clientSessions.get(socket);
       const wasPrimary = wasAuthenticated && session?.role !== 'secondary';
-      const isIntentionalClose =
-        Boolean(session?.intentionalDisconnect) || code === 1000 || code === 1001;
+      const isExplicitDisconnect = Boolean(session?.intentionalDisconnect) || code === 1000;
+      const isGoingAwayClose = !isExplicitDisconnect && code === 1001;
       const closedAuthToken = session?.authToken;
       if (session) {
         if (session.pacingTimer) {
@@ -370,10 +411,37 @@ export class WebSocketHandler {
       );
 
       if (wasPrimary && !this.hasPrimaryClients()) {
-        if (isIntentionalClose && closedAuthToken) {
-          this.authorizedSessions.delete(closedAuthToken);
-        }
-        if (isIntentionalClose && this.promoteSecondaryToActingPrimary()) {
+        if (isExplicitDisconnect) {
+          if (closedAuthToken) {
+            this.authorizedSessions.delete(closedAuthToken);
+          }
+          if (this.promoteSecondaryToActingPrimary()) {
+            return;
+          }
+        } else if (isGoingAwayClose && this.hasActiveStreamingSecondary()) {
+          // Delay acting-primary promotion briefly on code 1001 (Going Away) so page reloads
+          // that reconnect immediately with TOKEN: do not cause unnecessary role/encoder churn.
+          this.clearActingPrimaryGraceTimer();
+          this.pendingIntentionalPrimaryToken = closedAuthToken ?? null;
+          this.actingPrimaryGraceTimer = setTimeout(() => {
+            this.actingPrimaryGraceTimer = null;
+            const expiredToken = this.pendingIntentionalPrimaryToken;
+            this.pendingIntentionalPrimaryToken = null;
+            if (!this.hasPrimaryClients()) {
+              if (expiredToken) {
+                this.authorizedSessions.delete(expiredToken);
+              }
+              if (!this.promoteSecondaryToActingPrimary()) {
+                const isPipelineActive =
+                  this.browserManager.getState() === 'running' || this.encoder.isRunning();
+                if (isPipelineActive) {
+                  this.scheduleAutoSleep();
+                } else {
+                  this.enterSecondaryStandby();
+                }
+              }
+            }
+          }, 3000);
           return;
         }
         const isPipelineActive =
@@ -388,6 +456,7 @@ export class WebSocketHandler {
       } else if (
         !this.hasPrimaryClients() &&
         !this.hasActingPrimaryClients() &&
+        !this.actingPrimaryGraceTimer &&
         !this.autoSleepTimer &&
         (this.browserManager.getState() === 'running' || this.encoder.isRunning())
       ) {
@@ -834,9 +903,12 @@ export class WebSocketHandler {
       }
     }
 
-    if (this.isEffectivelyPrimary(session) && this.autoSleepTimer) {
-      clearTimeout(this.autoSleepTimer);
-      this.autoSleepTimer = null;
+    if (this.isEffectivelyPrimary(session)) {
+      this.clearActingPrimaryGraceTimer();
+      if (this.autoSleepTimer) {
+        clearTimeout(this.autoSleepTimer);
+        this.autoSleepTimer = null;
+      }
     }
 
     // If browser was paused, resume it immediately
@@ -915,15 +987,15 @@ export class WebSocketHandler {
         this.startLive(socket);
       }
 
-      // Notify any waiting secondary clients that primary is now active and deliver fresh keyframe if cached
-      this.notifySecondaryClientsPrimaryStatus(true);
+      // Notify only previously-standby secondary clients that primary is now active and deliver fresh keyframe if cached
+      const resumedStandbyClients = this.notifySecondaryClientsPrimaryStatus(true);
       const isKeyframeStale =
         typeof this.encoder.isKeyframeStale === 'function'
           ? this.encoder.isKeyframeStale(2000000n)
           : false;
       if (this.encoder.isRunning() && !isKeyframeStale) {
-        for (const client of this.authenticatedClients) {
-          if (client !== socket && this.clientSessions.get(client)?.role === 'secondary') {
+        for (const client of resumedStandbyClients) {
+          if (client !== socket) {
             this.sendCachedKeyframeAndConfig(client);
           }
         }
@@ -1918,6 +1990,7 @@ export class WebSocketHandler {
       this.unsubscribePageInfo = null;
     }
     if (this.autoSleepTimer) clearTimeout(this.autoSleepTimer);
+    this.clearActingPrimaryGraceTimer();
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
 
