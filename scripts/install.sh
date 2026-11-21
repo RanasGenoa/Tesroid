@@ -50,6 +50,7 @@ NEED_RELOGIN=false
 INSTALL_DIR=""
 TESROID_PORT=""
 TUNNEL_TOKEN=""
+VAAPI_DEVICE="/dev/dri/renderD128"
 COMPOSE_FILE=""
 ENV_FILE=""
 
@@ -132,16 +133,32 @@ check_environment() {
   fi
   ok "CPU アーキテクチャ: ${arch}"
 
-  if [[ ! -e /dev/dri/renderD128 ]]; then
-    error "/dev/dri/renderD128 が見つかりません。"
-    error "Tesroid は映像エンコードに Intel / AMD GPU の VAAPI (h264_vaapi) が必須です。"
-    error "以下の環境では動作しないため、導入を中止します:"
-    error "  - 格安 VPS / GPU なしのクラウド VM"
-    error "  - Windows PC (Docker Desktop / WSL2)"
-    error "  - Linux ホストで iGPU が無効化 (BIOS 設定等) されている環境"
-    exit 1
+  if [[ -e /dev/dri/renderD128 ]]; then
+    VAAPI_DEVICE="/dev/dri/renderD128"
+    ok "VAAPI デバイスを確認: ${VAAPI_DEVICE}"
+  else
+    local fallback_render=""
+    local candidate
+    for candidate in /dev/dri/renderD*; do
+      if [[ -e "$candidate" ]]; then
+        fallback_render="$candidate"
+        break
+      fi
+    done
+
+    if [[ -n "$fallback_render" ]]; then
+      VAAPI_DEVICE="$fallback_render"
+      warn "/dev/dri/renderD128 が見つからないため、検出された ${VAAPI_DEVICE} を VAAPI デバイスとして使用します。"
+    else
+      error "/dev/dri/renderD* が見つかりません。"
+      error "Tesroid は映像エンコードに Intel / AMD GPU の VAAPI (h264_vaapi) が必須です。"
+      error "以下の環境では動作しないため、導入を中止します:"
+      error "  - 格安 VPS / GPU なしのクラウド VM"
+      error "  - Windows PC (Docker Desktop / WSL2)"
+      error "  - Linux ホストで iGPU が無効化 (BIOS 設定等) されている環境"
+      exit 1
+    fi
   fi
-  ok "VAAPI デバイスを確認: /dev/dri/renderD128"
 
   if [[ -r /proc/meminfo ]]; then
     local mem_total_kb
@@ -229,12 +246,12 @@ ensure_docker() {
     ok "Docker Compose を確認: $(docker compose version)"
   fi
 
-  if ! run_sudo docker info >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1 && ! run_sudo docker info >/dev/null 2>&1; then
     if command -v systemctl >/dev/null 2>&1; then
       info "Docker デーモンを起動しています..."
       run_sudo systemctl start docker
     fi
-    if ! run_sudo docker info >/dev/null 2>&1; then
+    if ! docker info >/dev/null 2>&1 && ! run_sudo docker info >/dev/null 2>&1; then
       error "Docker デーモンに接続できません。Docker サービスの状態を確認してください。"
       exit 1
     fi
@@ -384,7 +401,7 @@ DISPLAY_WIDTH=1280
 DISPLAY_HEIGHT=720
 FPS=30
 VIDEO_BITRATE=1000k
-VAAPI_DEVICE=/dev/dri/renderD128
+VAAPI_DEVICE="${VAAPI_DEVICE}"
 LIBVA_DRIVER_NAME=iHD
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
 EOF
