@@ -11,6 +11,12 @@ interface OnboardingHudItem {
   description: string;
 }
 
+interface OnboardingCardOptions {
+  actionButtonId: string;
+  actionButtonHtml: string;
+  closeIconId?: string;
+}
+
 const CAPABILITY_ITEMS: OnboardingCardItem[] = [
   {
     icon: ICONS.play,
@@ -90,15 +96,19 @@ function renderHudControlList(): string {
   ).join('');
 }
 
-/**
- * Renders the first-run onboarding guide focused on capabilities, touch operations, and HUD usage.
- */
-export function renderOnboardingGuide(container: HTMLElement, onNext: () => void): void {
-  container.innerHTML = `
+function buildOnboardingCardHtml(options: OnboardingCardOptions): string {
+  const closeHeaderBtn = options.closeIconId
+    ? `<button id="${options.closeIconId}" type="button" class="hud-btn" style="font-size: 20px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" title="閉じる">${ICONS.close}</button>`
+    : '';
+
+  return `
     <div class="card onboarding-card">
-      <h2>Tesroid オンボーディングガイド</h2>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+        <h2 style="margin-bottom: 8px;">Tesroid オンボーディングガイド</h2>
+        ${closeHeaderBtn}
+      </div>
       <p class="onboarding-subtitle">
-        初期設定に進む前に、Tesroid でできることと車載ブラウザでの基本操作を確認しましょう。
+        Tesroid でできることと車載ブラウザでの基本操作を確認できます。
       </p>
 
       <div class="onboarding-callout onboarding-callout-ssl">
@@ -162,13 +172,55 @@ export function renderOnboardingGuide(container: HTMLElement, onNext: () => void
       </div>
 
       <div class="onboarding-actions">
-        <button id="guide-next-btn" class="btn" style="gap: 8px;">
-          <span>理解しました。初期設定へ進む</span>
-          ${ICONS.arrowRight}
+        <button id="${options.actionButtonId}" type="button" class="btn" style="gap: 8px;">
+          ${options.actionButtonHtml}
         </button>
       </div>
     </div>
   `;
+}
+
+/**
+ * Renders the first-run onboarding guide focused on capabilities, touch operations, and HUD usage.
+ */
+export function renderOnboardingGuide(container: HTMLElement, onNext: () => void): void {
+  container.innerHTML = buildOnboardingCardHtml({
+    actionButtonId: 'guide-next-btn',
+    actionButtonHtml: `<span>理解しました。初期設定へ進む</span>${ICONS.arrowRight}`,
+  });
 
   document.getElementById('guide-next-btn')?.addEventListener('click', onNext);
+}
+
+/**
+ * Opens the onboarding guide inside a modal overlay so it can be viewed anytime without losing screen state.
+ */
+export function openOnboardingGuideModal(container: HTMLElement): void {
+  document.getElementById('onboarding-guide-modal')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'onboarding-guide-modal';
+  overlay.className = 'modal-overlay';
+  overlay.style.zIndex = '1100';
+  overlay.innerHTML = buildOnboardingCardHtml({
+    actionButtonId: 'onboarding-modal-close-action-btn',
+    actionButtonHtml: '<span>閉じる</span>',
+    closeIconId: 'onboarding-modal-close-btn',
+  });
+
+  container.appendChild(overlay);
+
+  const closeModal = () => {
+    overlay.remove();
+  };
+
+  overlay.querySelector('#onboarding-modal-close-btn')?.addEventListener('click', closeModal);
+  overlay
+    .querySelector('#onboarding-modal-close-action-btn')
+    ?.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      closeModal();
+    }
+  });
 }

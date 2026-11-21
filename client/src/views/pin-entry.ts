@@ -1,11 +1,12 @@
 import { ICONS, showToast } from './icons.js';
+import { openOnboardingGuideModal } from './onboarding.js';
 
 export function renderPinEntry(
   container: HTMLElement,
   remainingAttempts: number,
   onSubmit: (pin: string, isSecondary?: boolean) => void,
   onOpenSettings: (enteredPin?: string) => void,
-  options?: { hasActiveSession?: boolean },
+  options?: { hasActiveSession?: boolean; onOpenGuide?: () => void },
 ): void {
   let pin = '';
   let isSettingsMenuOpen = false;
@@ -121,6 +122,13 @@ export function renderPinEntry(
               <span class="pin-menu-text">
                 <span class="pin-menu-title">設定・管理コンソール</span>
                 <span class="pin-menu-sub">画質・お気に入り・PIN設定を変更</span>
+              </span>
+            </button>
+            <button id="pin-menu-open-guide-btn" type="button" class="pin-settings-menu-item">
+              <span class="pin-menu-icon" style="color: #34c759;">${ICONS.help}</span>
+              <span class="pin-menu-text">
+                <span class="pin-menu-title">使い方・オンボードガイド</span>
+                <span class="pin-menu-sub">基本操作・HUD機能・接続要件を確認</span>
               </span>
             </button>
           </div>
@@ -329,5 +337,14 @@ export function renderPinEntry(
   document.getElementById('pin-menu-open-settings-btn')?.addEventListener('click', () => {
     setSettingsMenuOpen(false);
     onOpenSettings(pin.length >= 4 ? pin : undefined);
+  });
+
+  document.getElementById('pin-menu-open-guide-btn')?.addEventListener('click', () => {
+    setSettingsMenuOpen(false);
+    if (options?.onOpenGuide) {
+      options.onOpenGuide();
+    } else {
+      openOnboardingGuideModal(container);
+    }
   });
 }

@@ -4,6 +4,7 @@ import { ClientProtocol } from './transport/protocol.js';
 import { WsClient } from './transport/ws-client.js';
 import { showToast } from './views/icons.js';
 import { renderLockoutView } from './views/lockout.js';
+import { openOnboardingGuideModal } from './views/onboarding.js';
 import { renderPinEntry } from './views/pin-entry.js';
 import { openSettingsWithAuth } from './views/settings-modal.js';
 import { renderSetupWizard } from './views/setup-wizard.js';
@@ -105,7 +106,10 @@ class AppRouter {
       (enteredPin?: string) => {
         this.openSettings(enteredPin);
       },
-      { hasActiveSession: this.hasActiveSession },
+      {
+        hasActiveSession: this.hasActiveSession,
+        onOpenGuide: () => openOnboardingGuideModal(this.appEl),
+      },
     );
   }
 
