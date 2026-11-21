@@ -1032,7 +1032,7 @@ export function renderStreamingView(
 
   const handleAudio = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
-    if (isSecondarySession) return;
+    if (isSecondarySession || !isPrimarySessionActive) return;
     metricsCollector.recordAudioPacket();
     audioPlayer.handleAudioPacket(msg.flags, msg.pts, msg.data);
   };
@@ -1323,6 +1323,7 @@ export function renderStreamingView(
         jitterController.reset();
         renderer.resetFirstFrame();
         avSync.reset();
+        audioPlayer.resetJitterBuffer();
         lastDecodedPts = 0;
         lastAckSentPts = -1;
         primaryAnchorPtsUs = 0;

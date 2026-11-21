@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderStreamingView } from '../src/views/streaming.js';
 
 let capturedOnFrame: ((frame: any) => void) | null = null;
+let lastDecoderInstance: any = null;
 
 vi.mock('../src/core/canvas-renderer.js', () => {
   return {
@@ -35,6 +36,7 @@ vi.mock('../src/core/decoder.js', () => {
   return {
     VideoStreamDecoder: function (this: any, onFrame: (frame: any) => void) {
       capturedOnFrame = onFrame;
+      lastDecoderInstance = this;
       this.handlePacket = vi.fn();
       this.setBufferDepth = vi.fn();
       this.setTelemetryCollector = vi.fn();
@@ -223,6 +225,7 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     };
     mockAudioPlayer = {
       resetJitterBuffer: vi.fn(),
+      handleAudioPacket: vi.fn(),
       setAdditionalDelay: vi.fn(),
       getStats: vi.fn(() => ({ isUnlocked: false, state: 'suspended', packetsReceived: 0 })),
       unlock: vi.fn().mockResolvedValue(undefined),
@@ -275,6 +278,12 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     statusOverlay.click();
     expect(mockWsClient.send).not.toHaveBeenCalled();
 
+    // Video/Audio packets received while waiting in standby must be ignored
+    emitWs('video', { flags: 0x01, pts: 1000n, data: new Uint8Array([1, 2, 3]) });
+    emitWs('audio', { flags: 0x01, pts: 1000n, data: new Uint8Array([4, 5]) });
+    expect(lastDecoderInstance.handlePacket).not.toHaveBeenCalled();
+    expect(mockAudioPlayer.handleAudioPacket).not.toHaveBeenCalled();
+
     // Server reports browser paused (auto-sleep) -> standby overlay must NOT be overwritten
     emitWs('control', { type: 'BROWSER_STATUS', state: 'paused' });
     emitWs('control', { type: 'SERVER_METRICS', browserState: 'paused' });
@@ -286,13 +295,23 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     expect(noticeTitle.textContent).toBe('画面配信準備中...');
     expect(statusOverlay.style.display).toBe('flex');
 
+    emitWs('video', { flags: 0x01, pts: 2000n, data: new Uint8Array([1, 2, 3]) });
+    expect(lastDecoderInstance.handlePacket).toHaveBeenCalledTimes(1);
+
     capturedOnFrame?.({ close: vi.fn() });
     expect(statusOverlay.style.display).toBe('none');
 
-    // Primary disconnects -> PRIMARY_SESSION_STATUS active: false -> returns to rear standby overlay
+    // Primary disconnects -> PRIMARY_SESSION_STATUS active: false -> returns to rear standby overlay and resets audio buffer
     emitWs('control', { type: 'PRIMARY_SESSION_STATUS', active: false });
     expect(statusOverlay.style.display).toBe('flex');
     expect(noticeTitle.textContent).toBe('後席モニター待ち受け中');
     expect(noticeActionBtn.style.display).toBe('none');
+    expect(mockAudioPlayer.resetJitterBuffer).toHaveBeenCalledTimes(1);
+
+    // Subsequent video/audio packets while back in standby are also ignored
+    emitWs('video', { flags: 0x01, pts: 3000n, data: new Uint8Array([1, 2, 3]) });
+    emitWs('audio', { flags: 0x01, pts: 3000n, data: new Uint8Array([4, 5]) });
+    expect(lastDecoderInstance.handlePacket).toHaveBeenCalledTimes(1);
+    expect(mockAudioPlayer.handleAudioPacket).not.toHaveBeenCalled();
   });
 });

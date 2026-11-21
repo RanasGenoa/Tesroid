@@ -603,7 +603,8 @@ describe('WebSocketHandler Multi-Display Secondary Session (Issue #70)', () => {
 });
 
 describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
-  it('keeps browser/encoder paused when secondary connects without primary and auto-starts when primary connects later', async () => {
+  it('keeps browser/encoder paused and skips media packets when secondary connects without primary, and auto-starts on primary login', async () => {
+    const encoderListeners = new Map<string, Function>();
     const mockAuth: any = {
       verifyPin: vi
         .fn()
@@ -618,6 +619,7 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       resume: vi.fn(),
       pause: vi.fn(),
       start: vi.fn().mockResolvedValue(undefined),
+      restartChrome: vi.fn().mockResolvedValue(undefined),
       resize: vi.fn().mockResolvedValue(undefined),
       isChromeAlive: () => true,
     };
@@ -630,7 +632,7 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       isKeyframeStale: () => true,
       getCachedSpsPps: () => null,
       getCachedOpusHead: () => null,
-      on: vi.fn(),
+      on: vi.fn((ev: string, cb: Function) => encoderListeners.set(ev, cb)),
     };
     const handler = new WebSocketHandler(
       mockAuth,
@@ -663,16 +665,34 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
     expect(mockBrowser.start).not.toHaveBeenCalled();
     expect(mockEncoder.start).not.toHaveBeenCalled();
 
-    // Secondary RESUME_BROWSER command while primary is absent must not wake browser/encoder
-    await sendMessage(
-      rear,
-      Buffer.concat([
-        Buffer.from([WSS_CHANNEL.COMMAND]),
-        Buffer.from(JSON.stringify({ type: 'RESUME_BROWSER' })),
-      ]),
-    );
+    // Media packets must NOT be sent to a standby secondary socket
+    const sendCallsBefore = rear.socket.send.mock.calls.length;
+    encoderListeners.get('video')?.({
+      flags: VIDEO_FLAGS.KEYFRAME,
+      pts: 1000000n,
+      data: Buffer.from([0, 0, 0, 1, 0x65]),
+    });
+    encoderListeners.get('audio')?.({
+      flags: 0x01,
+      pts: 1000000n,
+      data: Buffer.from([0x11, 0x22]),
+    });
+    expect(rear.socket.send.mock.calls.length).toBe(sendCallsBefore);
+
+    // Secondary RESUME_BROWSER / RESTART_ENCODER / RESTART_BROWSER while standby must not wake browser/encoder
+    for (const cmdType of ['RESUME_BROWSER', 'RESTART_ENCODER', 'RESTART_BROWSER']) {
+      await sendMessage(
+        rear,
+        Buffer.concat([
+          Buffer.from([WSS_CHANNEL.COMMAND]),
+          Buffer.from(JSON.stringify({ type: cmdType })),
+        ]),
+      );
+    }
     expect(mockBrowser.resume).not.toHaveBeenCalled();
+    expect(mockBrowser.restartChrome).not.toHaveBeenCalled();
     expect(mockEncoder.start).not.toHaveBeenCalled();
+    expect(mockEncoder.restart).not.toHaveBeenCalled();
 
     // 2. Front monitor logs in as primary -> rear MUST stay connected and receive active: true
     const front = createMockSocket();
@@ -692,6 +712,16 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
     expect(
       rear.sentControl.some((m) => m.type === 'PRIMARY_SESSION_STATUS' && m.active === true),
     ).toBe(true);
+    expect(handler.getClientSession(rear.socket)?.isStandby).toBe(false);
+
+    // Once primary is active, video packets ARE delivered to rear
+    const sendCallsAfterActive = rear.socket.send.mock.calls.length;
+    encoderListeners.get('video')?.({
+      flags: VIDEO_FLAGS.KEYFRAME,
+      pts: 2000000n,
+      data: Buffer.from([0, 0, 0, 1, 0x65]),
+    });
+    expect(rear.socket.send.mock.calls.length).toBeGreaterThan(sendCallsAfterActive);
 
     // 3. New primary device supersedes old primary, while rear secondary remains connected
     mockAuth.verifyPin.mockResolvedValueOnce({ success: true, token: 'token-front-new' });
@@ -709,9 +739,10 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
     handler.close();
   });
 
-  it('notifies secondary standby and triggers auto-sleep when primary disconnects leaving only secondary', async () => {
+  it('preserves seamless <3min reconnect for both front and rear on transient drop, and switches rear to standby upon auto-sleep', async () => {
     vi.useFakeTimers();
     try {
+      const encoderListeners = new Map<string, Function>();
       const mockAuth: any = {
         verifyPin: vi
           .fn()
@@ -719,7 +750,44 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
           .mockResolvedValueOnce({ success: true, token: 'token-rear' }),
         validateSession: vi.fn(() => true),
       };
-      const { handler, mockBrowser, mockEncoder } = createTestContext(mockAuth);
+      let browserState = 'running';
+      let encoderRunning = true;
+      const mockBrowser: any = {
+        getDimensions: () => ({ width: 1280, height: 720 }),
+        getState: vi.fn(() => browserState),
+        getCurrentUrl: () => 'https://www.youtube.com',
+        resume: vi.fn(() => {
+          browserState = 'running';
+        }),
+        pause: vi.fn(() => {
+          browserState = 'paused';
+        }),
+        start: vi.fn().mockResolvedValue(undefined),
+        resize: vi.fn().mockResolvedValue(undefined),
+        isChromeAlive: () => true,
+      };
+      const mockEncoder: any = {
+        isRunning: vi.fn(() => encoderRunning),
+        start: vi.fn(() => {
+          encoderRunning = true;
+        }),
+        stop: vi.fn(() => {
+          encoderRunning = false;
+        }),
+        restart: vi.fn().mockResolvedValue(undefined),
+        getCachedKeyframe: () => ({ data: Buffer.from([0, 0, 0, 1, 0x65]), pts: 1000n }),
+        isKeyframeStale: () => false,
+        getCachedSpsPps: () => Buffer.from([0, 0, 0, 1, 0x67]),
+        getCachedOpusHead: () => null,
+        on: vi.fn((ev: string, cb: Function) => encoderListeners.set(ev, cb)),
+      };
+      const handler = new WebSocketHandler(
+        mockAuth,
+        mockBrowser,
+        mockEncoder,
+        { updateDimensions: vi.fn() } as any,
+        { getConfig: () => ({ isSetupCompleted: true }) } as any,
+      );
 
       const front = createMockSocket();
       const rear = createMockSocket();
@@ -741,18 +809,62 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       ).toBe(true);
       rear.sentControl.length = 0;
 
-      // Primary disconnects -> secondary receives active: false and auto-sleep starts counting down
+      // 1. Transient drop of both clients (< 3 min) -> rear reconnects first via TOKEN while encoder is active
       front.listeners.get('close')?.();
+      rear.listeners.get('close')?.();
       expect(handler.hasPrimaryClients()).toBe(false);
-      expect(rear.sentControl.find((m) => m.type === 'PRIMARY_SESSION_STATUS')).toEqual({
+
+      await vi.advanceTimersByTimeAsync(15000);
+
+      const rearReconnect = createMockSocket();
+      handler.handleConnection(rearReconnect.socket);
+      await sendMessage(
+        rearReconnect,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('TOKEN:token-rear')]),
+      );
+      // Should resume seamlessly without dropping into standby during the 3-minute grace window
+      expect(
+        rearReconnect.sentControl.some(
+          (m) => m.type === 'PRIMARY_SESSION_STATUS' && m.active === false,
+        ),
+      ).toBe(false);
+      expect(handler.getClientSession(rearReconnect.socket)?.isStandby).toBe(false);
+
+      // Front recovers within 3 minutes -> seamless resume, no encoder stop/start
+      const frontReconnect = createMockSocket();
+      handler.handleConnection(frontReconnect.socket);
+      await sendMessage(
+        frontReconnect,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('TOKEN:token-front')]),
+      );
+      expect(mockEncoder.stop).not.toHaveBeenCalled();
+      expect(mockBrowser.pause).not.toHaveBeenCalled();
+
+      // 2. Front drops permanently -> after 3-minute auto-sleep expires, encoder stops, browser pauses,
+      //    and rear receives active: false standby notification & stops receiving video packets
+      rearReconnect.sentControl.length = 0;
+      frontReconnect.listeners.get('close')?.();
+      expect(
+        rearReconnect.sentControl.some(
+          (m) => m.type === 'PRIMARY_SESSION_STATUS' && m.active === false,
+        ),
+      ).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 100);
+      expect(mockEncoder.stop).toHaveBeenCalledTimes(1);
+      expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+      expect(rearReconnect.sentControl.find((m) => m.type === 'PRIMARY_SESSION_STATUS')).toEqual({
         type: 'PRIMARY_SESSION_STATUS',
         active: false,
       });
 
-      // Default autoSleepMinutes is 3 (180s) -> after 3m, encoder stops and browser pauses even though rear is still connected
-      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 100);
-      expect(mockEncoder.stop).toHaveBeenCalledTimes(1);
-      expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+      const sendBefore = rearReconnect.socket.send.mock.calls.length;
+      encoderListeners.get('video')?.({
+        flags: VIDEO_FLAGS.KEYFRAME,
+        pts: 3000000n,
+        data: Buffer.from([0, 0, 0, 1, 0x65]),
+      });
+      expect(rearReconnect.socket.send.mock.calls.length).toBe(sendBefore);
 
       handler.close();
     } finally {
