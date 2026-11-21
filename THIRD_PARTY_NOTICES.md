@@ -8,8 +8,9 @@ Tesroid incorporates or interacts with open-source and third-party components. T
 
 - **Tesla** is a registered trademark of Tesla, Inc.
 - **Google Chrome** and **YouTube** are trademarks of Google LLC.
+- **Cloudflare** and **Cloudflare Tunnel** are trademarks or registered trademarks of Cloudflare, Inc.
 
-Tesroid is an independent open-source project and is **not** affiliated with, endorsed by, or sponsored by Tesla, Inc., Google LLC, or any of their affiliates.
+Tesroid is an independent open-source project and is **not** affiliated with, endorsed by, or sponsored by Tesla, Inc., Google LLC, Cloudflare, Inc., or any of their affiliates.
 
 ---
 
@@ -20,10 +21,13 @@ This repository distributes **source code and build definitions (`Dockerfile`) o
 When you build the container image locally (`docker compose build` / `docker build`), the `Dockerfile` downloads and installs the following packages from official upstream repositories:
 
 1. **Google Chrome Stable** (`google-chrome-stable`)
-   - Downloaded directly from `https://dl.google.com/linux/direct/` during image build.
+   - Downloaded directly from `https://dl.google.com/linux/direct/` during local image build (`INSTALL_CHROME=true`, default) or at container startup (`docker/entrypoint.sh`) when using the pre-built base image (`INSTALL_CHROME=false`).
    - Governed by the [Google Chrome Terms of Service](https://www.google.com/chrome/terms/).
-   - **Important Redistribution Notice**: Because Google Chrome is proprietary software, **do not publish or redistribute pre-built Docker images built from this `Dockerfile` to public registries** (such as public Docker Hub or GHCR) without authorization. Users should build the image locally on their own host.
-2. **Ubuntu System Packages** (`ffmpeg`, `xvfb`, `openbox`, `xdotool`, `wmctrl`, `pulseaudio`, `intel-media-va-driver-non-free`, `vainfo`, `fonts-noto-cjk`, `fonts-noto-color-emoji`, `nodejs`)
+   - **Important Redistribution Notice**: Because Google Chrome is proprietary software, **do not publish or redistribute pre-built Docker images built with `INSTALL_CHROME=true` to public registries** (such as public Docker Hub or GHCR) without authorization. Official pre-built images are built with `INSTALL_CHROME=false` so that Google Chrome is not included in the distributed image.
+2. **cloudflared** (`cloudflared-linux-amd64`)
+   - Downloaded directly from `https://github.com/cloudflare/cloudflared/releases/` during image build.
+   - Licensed under the **Apache License 2.0** (`https://github.com/cloudflare/cloudflared/blob/master/LICENSE`).
+3. **Ubuntu System Packages** (`ffmpeg`, `xvfb`, `openbox`, `xdotool`, `wmctrl`, `pulseaudio`, `intel-media-va-driver-non-free`, `vainfo`, `fonts-noto-cjk`, `fonts-noto-color-emoji`, `nodejs`)
    - Installed via `apt-get` from official Ubuntu and NodeSource repositories under their respective open-source and upstream distribution licenses (MIT, BSD, LGPL/GPL, SIL Open Font License 1.1, and Intel Media Driver licenses).
 
 ---

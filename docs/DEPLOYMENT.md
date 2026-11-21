@@ -1,9 +1,13 @@
-# Tesroid デプロイメント & 運用ガイド (docs/DEPLOYMENT.md)
+# Tesroid デプロイメント & 運用ガイド（高度な設定・保守）(docs/DEPLOYMENT.md)
 
-本書は、Tesroid システムを一般的な **Docker / Docker Compose 環境（オンプレミス Linux、クラウド VM / VPS）** および **NAS 環境（TrueNAS SCALE 等）** 上でデプロイ・運用するための総合ガイドです。
+本書は、Tesroid システムを **ローカルビルド構成・NAS 環境（TrueNAS SCALE 等）・日常運用／保守** でデプロイ・管理するための詳細ガイドです。
+
+> [!TIP]
+> **初めて導入される方へ（かんたんセットアップ）**:
+> 公開済みイメージ（`docker-compose.prebuilt.yml`）と **Cloudflare Tunnel (`TUNNEL_TOKEN`)** を使って、ビルド不要・ポート開放なしで最短構築する手順は **[かんたん導入ガイド (docs/QUICKSTART.md)](QUICKSTART.md)** をご覧ください。
 
 > [!NOTE]
-> 外部公開およびテスラ車載ブラウザからアクセスするためのリバースプロキシ（HTTPS/SSL、Cloudflare Tunnel、Nginx、Caddy等）の設定手順は、[docs/NETWORK.md](NETWORK.md) をご参照ください。
+> リバースプロキシ（Caddy / Nginx / VPS）等のネットワーク公開手順は [docs/NETWORK.md](NETWORK.md) をご参照ください。
 
 ---
 
@@ -12,7 +16,8 @@
 Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エンコード（VAAPI）により、極めて低負荷・低遅延なストリーミングを実現します。
 
 ### ハードウェア要件
-- **CPU / GPU**:
+- **CPU アーキテクチャ**: `x86_64` (`amd64`) 専用
+- **GPU (VAAPI 必須)**:
   - **Intel Quick Sync Video (VAAPI)**: Intel 第6世代 Core (Skylake) 以降の統合 GPU 推奨。ドライバ `iHD` (`intel-media-va-driver-non-free`) に対応。
   - **AMD GPU (VAAPI)**: Radeon シリーズ等の VAAPI (`radeonsi`) 対応 GPU（`.env` で `LIBVA_DRIVER_NAME=radeonsi` を指定）。
 - **動作確認済み iGPU リスト**:
@@ -24,19 +29,84 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 
 ### サポート OS
-- **一般的な Linux ディストリビューション**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, Arch Linux 等
-- **NAS OS**: TrueNAS SCALE (Docker / Custom App), Unraid 等
-- **クラウド VM**: AWS EC2, さくらのVPS, ConoHa, Linode, Hetzner 等の Linux インスタンス
+- **一般的な Linux ディストリビューション**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, Arch Linux 等（`x86_64`）
+- **NAS OS**: TrueNAS SCALE (Docker / Custom App), Unraid, CasaOS 等（Intel/AMD `x86_64` CPU 搭載機）
 
 ### 必要なソフトウェア
 - Docker Engine 24.0 以上
 - Docker Compose v2.0 以上
 
+### 対応が難しい・非推奨の環境
+
+Tesroid は低遅延・省CPU負荷を実現するため、VAAPI ハードウェアエンコードと `x86_64` 環境を前提に設計されています。以下の環境は技術的な理由により非対応または非推奨です：
+
+1. **格安 VPS / GPU なしクラウド VM**:
+   - 映像エンコードに `h264_vaapi`（ホストの `/dev/dri/renderD128`）を必須としており、`libx264` 等による CPU ソフトウェアエンコードへのフォールバックを持ちません。そのため GPU なしの一般的な VPS では起動・配信できません。
+   - 仮に CPU エンコードを行う構成にした場合でも、安定動作には 2〜4 vCPU / 4GB RAM 以上（月額 1,500〜3,500 円程度）のスペックと動画ストリーミングに伴うネットワーク帯域がかかります。GPU パススルー付きクラウド VM はコストが高額になるため非推奨です。
+2. **Windows PC (Docker Desktop / WSL2)**:
+   - WSL2 上の Docker 環境には Linux の `/dev/dri`（VAAPI レンダーノード）を直接パススルーできないため、現行構成では動作しません。
+   - また、PC のスリープ移行や Windows Update による自動再起動で車載からの接続が途切れやすく、常時稼働サーバー用途には不向きです。
+3. **ARM CPU 搭載 NAS 等（Raspberry Pi / ARM64 NAS）**:
+   - コンテナイメージ・FFmpeg `h264_vaapi`・Google Chrome Stable（`amd64` 版）がすべて `x86_64` (`amd64`) 専用で構築されているため、ARM アーキテクチャでは動作しません。
+
 ---
 
 ## 2. 一般的な Docker / Docker Compose 環境でのデプロイ
 
-Ubuntu、Debian、またはクラウド VM 上の標準的な Docker 環境での導入手順です。
+Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入・運用手順です。初めて構築する場合は、Cloudflare アカウント登録〜ドメイン購入〜起動までをまとめた **[docs/QUICKSTART.md](QUICKSTART.md)** を参照してください。
+
+### 2-A. ビルド不要の Docker Compose コピペ導入（推奨）
+
+公開されているビルド済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と [`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml) を使用することで、`git clone` やローカルでの `docker build` を行わずに起動できます。
+
+> [!TIP]
+> Cloudflare のアカウント登録・安価な独自ドメインの購入・Tunnel 作成〜`TUNNEL_TOKEN` 取得までの詳細な手順は **[かんたん導入ガイド (docs/QUICKSTART.md)](QUICKSTART.md)** に記載しています。
+>
+> - **`ghcr.io/ranasgenoa/tesroid:latest` について**: Google Chrome の再配布規約に配慮し、初回起動時にコンテナ内で Google Chrome 公式パッケージを自動取得します（初回のみ数十秒〜1〜2分かかります）。
+> - **DuckDNS 等の無料 DDNS や自前リバースプロキシを使う場合**: `TUNNEL_TOKEN` を空欄にして [docs/NETWORK.md のパターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）](NETWORK.md#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を使用してください。
+
+#### 手順
+1. 任意の作業ディレクトリを作成し、`docker-compose.prebuilt.yml` を取得（または内容を `docker-compose.yml` として保存）します：
+   ```bash
+   mkdir -p ~/tesroid && cd ~/tesroid
+   curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/docker-compose.prebuilt.yml -o docker-compose.prebuilt.yml
+   ```
+2. `.env` ファイルを作成し、Cloudflare Zero Trust で取得した **Cloudflare Tunnel トークン（`TUNNEL_TOKEN`）** と公開ポート番号を設定します（Cloudflare Tunnel を使用しない場合は `TUNNEL_TOKEN` を空欄または省略してください。`TUNNEL_TOKEN` は秘密情報のため `chmod 600` での保護を推奨します）：
+   ```bash
+   cat <<'EOF' > .env
+   TESROID_PORT=9001
+   TUNNEL_TOKEN=eyJh...ここにCloudflare Zero Trustで取得したトンネルトークンを貼り付け
+   EOF
+   chmod 600 .env
+   ```
+3. コンテナを起動します：
+   ```bash
+   docker compose -f docker-compose.prebuilt.yml up -d
+   ```
+4. 起動ログおよびヘルスチェックを確認します（初回は Chrome の取得ログが流れます）：
+   ```bash
+   docker compose -f docker-compose.prebuilt.yml logs -f
+   curl -s http://127.0.0.1:9001/api/health
+   ```
+
+### 2-B. ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）
+
+Ubuntu / Debian 等の Intel x86_64 Linux 環境（ミニ PC・自宅サーバー等）では、[`scripts/install.sh`](../scripts/install.sh) を使うことで環境チェックから起動までを対話式で一括実行できます。
+
+**スクリプトが自動で行う処理**:
+- OS・CPU アーキテクチャ（`x86_64`）および `/dev/dri` デバイスの確認
+- Docker Engine / Docker Compose の確認・未導入時のインストール（Ubuntu / Debian 等）
+- 実行ユーザーの `render` / `video` グループへの追加（GPU アクセス権限付与）
+- 対話プロンプトでの設定入力（インストール先ディレクトリ、公開ポート既定 `9001`、任意の `TUNNEL_TOKEN`）
+- `ghcr.io/ranasgenoa/tesroid:latest` を使った `docker-compose.yml` と `.env` の生成・コンテナ起動
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
+bash install.sh
+```
+（リポジトリを既にクローンしている場合は `bash scripts/install.sh` を実行してください）
+
+### 2-C. ソースコードからローカルビルドする場合（開発者・カスタム向け）
 
 ### ステップ 1: リポジトリのクローン
 ```bash
@@ -68,6 +138,7 @@ cp .env.example .env
 - `FPS`: フレームレート（デフォルト: `30`）
 - `VIDEO_BITRATE`: ビデオビットレート（デフォルト: `1000k`）
 - `LIBVA_DRIVER_NAME`: VAAPI ドライバ（Intel: `iHD`, AMD: `radeonsi`）
+- `TUNNEL_TOKEN`: Cloudflare Tunnel コネクタ用トークン（設定時は内蔵 `cloudflared` を自動起動、未設定時は無効）
 
 ### ステップ 4: Docker Compose でコンテナ起動
 ```bash
@@ -115,6 +186,20 @@ docker build -t tesroid-tesroid:latest .
 ## 4. リモートホスト・NAS 上での更新 & 再デプロイ手順
 
 コードの更新や機能拡張を本番環境へ反映させる手順です。
+
+### ビルド不要イメージ (GHCR) 環境の更新
+
+`docker-compose.prebuilt.yml` または `scripts/install.sh` で導入した環境では、最新イメージを取得してコンテナを再作成します：
+
+```bash
+# docker-compose.yml（scripts/install.sh で生成した場合）
+docker compose pull
+docker compose up -d
+
+# docker-compose.prebuilt.yml を直接利用している場合
+docker compose -f docker-compose.prebuilt.yml pull
+docker compose -f docker-compose.prebuilt.yml up -d
+```
 
 ### 標準 Docker Compose 環境の更新
 ```bash

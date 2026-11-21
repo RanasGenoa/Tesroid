@@ -103,7 +103,8 @@
 
 ## 📋 動作要件
 
-- **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)、またはクラウド VM
+- **アーキテクチャ**: `x86_64` (`amd64`) 専用
+- **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)
 - **GPU**: VAAPI 対応 GPU（Intel 第6世代 Skylake 以降の統合 GPU Quick Sync Video、または AMD Radeon VAAPI）
   - ホスト上に `/dev/dri/renderD128` が存在すること
 - **動作確認済み iGPU**:
@@ -115,16 +116,54 @@
 - **ソフトウェア**: Docker Engine 24.0+ および Docker Compose v2.0+
 - **ネットワーク**: テスラ車載ブラウザから接続する場合は **公的 CA による HTTPS (SSL/TLS) 環境** が必須です（詳細は [docs/NETWORK.md](docs/NETWORK.md) を参照）
 
+### 非対応・非推奨環境
+
+Tesroid は低遅延・省リソースを実現するため、ハードウェア支援エンコード（VAAPI）と `amd64` 環境を前提としています。以下の環境は非対応または非推奨です：
+
+| 環境 | 対応状況 | 主な理由 |
+| :--- | :---: | :--- |
+| **格安 VPS / GPU なしクラウド VM** | ❌ 非対応 | 映像エンコードに `h264_vaapi`（`/dev/dri/renderD128`）が必須であり、CPU エンコード（`libx264`）へのフォールバックを持たないため動作しません。GPU 付きクラウド VM は月額コストが高額になるため非推奨です。 |
+| **Windows PC (Docker Desktop / WSL2)** | ❌ 非対応 | WSL2 上の Docker 環境には Linux の `/dev/dri` デバイスを渡せないため動作しません。またスリープや Windows Update 再起動による運用トラブルも起きやすいため非推奨です。 |
+| **ARM CPU 搭載 NAS 等 (Raspberry Pi / ARM64 NAS)** | ❌ 非対応 | `x86_64` (`amd64`) 専用設計であり、Google Chrome Stable (`amd64`) および Intel/AMD VAAPI ドライバに依存しているため動作しません。 |
+
 ---
 
 ## 🚀 クイックスタート (Docker Compose)
 
+### ⚡ かんたん導入（推奨：Docker Compose ＋ Cloudflare Tunnel）
+
+**最も簡単でおすすめの導入方法です。** 公開済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と **Cloudflare Tunnel（`TUNNEL_TOKEN`）** を組み合わせることで、**Docker ビルド不要・ルーターのポート開放不要・SSL 証明書の手動取得なし** で、テスラ車載ブラウザ必須の HTTPS/WSS 公開まで迷わず完了できます（初回起動時にコンテナが Google Chrome を自動取得します）。
+
+> [!TIP]
+> **📘 初心者向けステップバイステップガイドを用意しています**
+> Cloudflare の無料アカウント登録から安価な独自ドメイン購入（年 \$5 前後〜）、`TUNNEL_TOKEN` 発行、Docker Compose 起動までを順番に解説しています：
+> 👉 **[かんたん導入ガイド (docs/QUICKSTART.md)](docs/QUICKSTART.md)**
+
+- **方法 A: `docker-compose.prebuilt.yml` コピペ導入（一番おすすめ）**
+  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を取得し、`.env` に `TUNNEL_TOKEN` を貼り付けて `docker compose -f docker-compose.prebuilt.yml up -d` を実行するだけで起動します（手順の詳細は [docs/QUICKSTART.md](docs/QUICKSTART.md)）。
+- **方法 B: ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）**
+  Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます（途中で `TUNNEL_TOKEN` の貼り付けにも対応）：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
+  bash install.sh
+  ```
+  （リポジトリをクローン済みの場合は `bash scripts/install.sh`）
+
+### 🔧 高度なセットアップ（ローカルビルド・自前リバースプロキシ・NAS 運用向け）
+
+ソースコードからのローカルイメージビルド、TrueNAS SCALE 等の NAS 環境での構築、Caddy / Nginx / DuckDNS / VPS を用いた公開構成については、以下の詳細ガイドを参照してください：
+- **デプロイ・ローカルビルド・保守・トラブルシューティング**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+- **外部公開・リバースプロキシ（Caddy / Nginx / VPS）構成**: [docs/NETWORK.md](docs/NETWORK.md)
+
 > [!IMPORTANT]
-> 本リポジトリはソースコードおよび `Dockerfile` のみを配布しています。Google Chrome の利用規約に基づき、Docker イメージはご自身のホスト環境でローカルビルドしてご利用ください（ビルド済みイメージのパブリックレジストリへの再配布は行わないでください）。
+> 本リポジトリの `Dockerfile` からビルドした Google Chrome 同梱イメージは、Google Chrome の利用規約に基づきパブリックレジストリへ再配布しないでください。配布済みの `ghcr.io/ranasgenoa/tesroid:latest` は Chrome 非同梱のベースイメージであり、ユーザー環境での初回起動時に公式パッケージを取得します。
+
+<details>
+<summary>ローカルビルド版の最小手順（開発者・カスタマイズ向け）</summary>
 
 ```bash
 # 1. リポジトリのクローン
-git clone https://github.com/<YOUR_ORG_OR_USER>/Tesroid.git
+git clone https://github.com/RanasGenoa/Tesroid.git
 cd Tesroid
 
 # 2. 環境変数ファイルの作成（必要に応じてポートや初期URLを調整）
@@ -139,6 +178,8 @@ curl http://localhost:9001/api/health
 
 初回アクセス時にブラウザ上で **初期セットアップウィザード** が表示されます。4〜8桁の認証 PIN コードを設定してください。
 
+</details>
+
 ### 主要な環境変数 (`.env`)
 
 | 変数名 | デフォルト値 | 説明 |
@@ -151,6 +192,7 @@ curl http://localhost:9001/api/health
 | `VIDEO_BITRATE` | `1000k` | 初期映像ビットレート（車載 UI から動的に変更可能） |
 | `VAAPI_DEVICE` | `/dev/dri/renderD128` | コンテナ内で使用する VAAPI レンダーノード |
 | `LIBVA_DRIVER_NAME` | `iHD` | VAAPI ドライバ名（Intel: `iHD` / 旧世代Intel: `i965` / AMD: `radeonsi`） |
+| `TUNNEL_TOKEN` | *(空)* | Cloudflare Tunnel コネクタ用トークン（設定時は内蔵 `cloudflared` を自動起動） |
 
 ---
 
@@ -195,9 +237,10 @@ npm run docker:up
 
 ## 📚 ドキュメント一覧
 
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)**: かんたん導入ガイド（Cloudflare 登録〜ドメイン購入〜Docker Compose ＋ `TUNNEL_TOKEN` 起動）
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: 高度なデプロイメント・運用・保守ガイド（ローカルビルド / NAS / ロックアウト解除 / VAAPI 診断）
+- **[docs/NETWORK.md](docs/NETWORK.md)**: 外部公開 & ネットワーク設定詳細ガイド（Cloudflare Tunnel 技術仕様 / Caddy / Nginx / VPS）
 - **[CONTRIBUTING.md](CONTRIBUTING.md)**: コントリビューション・ブランチ運用 & バージョニングガイド
-- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: デプロイメント・運用・保守ガイド（Docker Compose / NAS / ロックアウト解除 / VAAPI 診断）
-- **[docs/NETWORK.md](docs/NETWORK.md)**: 外部公開 & ネットワーク設定完全ガイド（Cloudflare Tunnel / Caddy / Nginx）
 - **[docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md)**: 描画最適化・ヒステリシス制御・CDP ネイティブタッチ技術仕様書
 - **[AGENTS.md](AGENTS.md)**: 開発者・コントリビューター・AI エージェント向け設計ガイド
 - **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**: サードパーティライセンス表記および再配布に関する注意事項
