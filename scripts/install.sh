@@ -372,7 +372,8 @@ write_config_and_start() {
     fi
   fi
 
-  # .env は作成瞬間から 0600 権限になるようサブシェル + umask 077 で書き込む
+  # .env は作成瞬間から 0600 権限になるよう既存ファイルを削除の上、サブシェル + umask 077 で書き込む
+  rm -f "$ENV_FILE"
   (
     umask 077
     cat > "$ENV_FILE" <<EOF

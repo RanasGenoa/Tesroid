@@ -11,6 +11,7 @@ if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chro
     rm -rf "$tmp_dir"
   }
   trap cleanup_tmp EXIT INT TERM
+  chmod 755 "$tmp_dir"
 
   deb_file="$tmp_dir/google-chrome-stable_current_amd64.deb"
   curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "$CHROME_DEB_URL" -o "$deb_file"
@@ -20,6 +21,7 @@ if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chro
     exit 1
   fi
 
+  DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
   apt-get -o Acquire::Retries=3 update -qq
   DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -qq -y --no-install-recommends "$deb_file"
   rm -rf "$tmp_dir" /var/lib/apt/lists/*

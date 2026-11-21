@@ -96,7 +96,7 @@ Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入
    curl -s http://127.0.0.1:9001/api/health
    ```
 
-### 2-B. ワンショット導入スクリプト（Intel x86_64 Linux 向け）
+### 2-B. ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）
 
 Ubuntu / Debian 等の Intel x86_64 Linux 環境（ミニ PC・自宅サーバー等）では、[`scripts/install.sh`](../scripts/install.sh) を使うことで環境チェックから起動までを対話式で一括実行できます。
 
@@ -193,6 +193,20 @@ docker build -t tesroid-tesroid:latest .
 ## 4. リモートホスト・NAS 上での更新 & 再デプロイ手順
 
 コードの更新や機能拡張を本番環境へ反映させる手順です。
+
+### ビルド不要イメージ (GHCR) 環境の更新
+
+`docker-compose.prebuilt.yml` または `scripts/install.sh` で導入した環境では、最新イメージを取得してコンテナを再作成します：
+
+```bash
+# docker-compose.yml（scripts/install.sh で生成した場合）
+docker compose pull
+docker compose up -d
+
+# docker-compose.prebuilt.yml を直接利用している場合
+docker compose -f docker-compose.prebuilt.yml pull
+docker compose -f docker-compose.prebuilt.yml up -d
+```
 
 ### 標準 Docker Compose 環境の更新
 ```bash
