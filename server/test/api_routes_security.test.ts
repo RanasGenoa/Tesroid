@@ -310,16 +310,27 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     expect(mockBrowser.restartChrome).toHaveBeenCalled();
   });
 
-  it('GET /api/status reflects wsHandler.hasActiveClients() and defaults hasActiveSession to false when omitted', async () => {
+  it('GET /api/status reflects wsHandler.hasPrimaryClients() (with fallback to hasActiveClients) and defaults to false when omitted', async () => {
     mockWsHandler.hasActiveClients.mockReturnValue(false);
     const inactiveRes = await app.inject({ method: 'GET', url: '/api/status' });
     expect(inactiveRes.statusCode).toBe(200);
     expect(inactiveRes.json().hasActiveSession).toBe(false);
 
     mockWsHandler.hasActiveClients.mockReturnValue(true);
-    const activeRes = await app.inject({ method: 'GET', url: '/api/status' });
-    expect(activeRes.statusCode).toBe(200);
-    expect(activeRes.json().hasActiveSession).toBe(true);
+    const fallbackActiveRes = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(fallbackActiveRes.statusCode).toBe(200);
+    expect(fallbackActiveRes.json().hasActiveSession).toBe(true);
+
+    // When hasPrimaryClients is available (e.g., secondary-only rear standby), hasActiveSession tracks primary only
+    mockWsHandler.hasPrimaryClients = vi.fn(() => false);
+    const standbyOnlyRes = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(standbyOnlyRes.statusCode).toBe(200);
+    expect(standbyOnlyRes.json().hasActiveSession).toBe(false);
+
+    mockWsHandler.hasPrimaryClients.mockReturnValue(true);
+    const primaryActiveRes = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(primaryActiveRes.statusCode).toBe(200);
+    expect(primaryActiveRes.json().hasActiveSession).toBe(true);
 
     // Backward compatibility when optional 6th parameter wsHandler is omitted
     const standaloneApp = Fastify();

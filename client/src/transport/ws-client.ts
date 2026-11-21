@@ -110,14 +110,18 @@ export class WsClient {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
-  public close(): void {
+  public close(code?: number, reason?: string): void {
     this.isExplicitlyClosed = true;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      if (code !== undefined) {
+        this.ws.close(code, reason);
+      } else {
+        this.ws.close();
+      }
       this.ws = null;
     }
   }

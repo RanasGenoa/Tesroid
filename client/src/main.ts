@@ -18,6 +18,7 @@ class AppRouter {
   private authToken: string | null = null;
   private currentPin: string | null = null;
   private hasActiveSession: boolean = false;
+  private primarySessionActive: boolean = true;
   private sessionRole: 'primary' | 'secondary' = 'primary';
   private remainingAttempts: number = 10;
   private cleanupCurrentView: (() => void) | null = null;
@@ -51,6 +52,7 @@ class AppRouter {
 
       this.remainingAttempts = status.remainingAttempts ?? 10;
       this.hasActiveSession = Boolean(status.hasActiveSession);
+      this.primarySessionActive = this.hasActiveSession;
 
       if (status.consecutiveFailures >= 10) {
         this.showLockout();
@@ -83,6 +85,7 @@ class AppRouter {
       async (pin: string, isSecondary?: boolean) => {
         const authPayload = isSecondary ? `SECONDARY:${pin}` : pin;
         this.sessionRole = isSecondary ? 'secondary' : 'primary';
+        this.primarySessionActive = isSecondary ? this.hasActiveSession : true;
         this.currentPin = authPayload;
         this.authToken = null;
 
@@ -99,8 +102,8 @@ class AppRouter {
         // Send auth packet immediately if connected, or the 'open' handler will send it
         this.wsClient.send(ClientProtocol.packAuth(authPayload));
       },
-      () => {
-        this.openSettings();
+      (enteredPin?: string) => {
+        this.openSettings(enteredPin);
       },
       { hasActiveSession: this.hasActiveSession },
     );
@@ -116,6 +119,7 @@ class AppRouter {
       () => this.openSettings(),
       this.authToken,
       this.sessionRole,
+      { initialPrimaryActive: this.primarySessionActive },
     );
   }
 
@@ -125,13 +129,16 @@ class AppRouter {
     renderLockoutView(this.appEl);
   }
 
-  private openSettings(): void {
+  private openSettings(prefilledPin?: string): void {
     openSettingsWithAuth(
       this.appEl,
       this.authToken,
       (callback) => {
-        // Simple prompt for PIN re-auth if no valid session
-        const pin = prompt('設定にアクセスするにはPINコードを入力してください:');
+        // Use entered PIN if provided, otherwise prompt for PIN re-auth
+        const pin =
+          prefilledPin && prefilledPin.length >= 4
+            ? prefilledPin
+            : prompt('設定にアクセスするにはPINコードを入力してください:');
         if (pin) {
           fetch('/api/auth/verify', {
             method: 'POST',
@@ -215,8 +222,12 @@ class AppRouter {
           );
           this.showPinEntry();
         }
+      } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
+        this.primarySessionActive = Boolean(msg.active);
       } else if (msg.type === 'SESSION_CONFLICT') {
-        this.handleSessionConflict(msg.error);
+        const nextHasActiveSession =
+          typeof msg.hasActiveSession === 'boolean' ? msg.hasActiveSession : true;
+        this.handleSessionConflict(msg.error, nextHasActiveSession);
       }
     });
 
@@ -231,12 +242,12 @@ class AppRouter {
         this.sessionRole = 'primary';
         this.showLockout();
       } else if (ev.code === 4009 || ev.code === 4000) {
-        this.handleSessionConflict();
+        this.handleSessionConflict(undefined, this.hasActiveSession);
       }
     });
   }
 
-  private handleSessionConflict(message?: string): void {
+  private handleSessionConflict(message?: string, hasActiveSession = true): void {
     const hadSession = Boolean(this.authToken || this.currentPin || this.isStreaming);
     try {
       sessionStorage.removeItem('tesroid_token');
@@ -245,7 +256,8 @@ class AppRouter {
     this.authToken = null;
     this.currentPin = null;
     this.sessionRole = 'primary';
-    this.hasActiveSession = true;
+    this.hasActiveSession = hasActiveSession;
+    this.primarySessionActive = hasActiveSession;
     this.wsClient.close();
     if (hadSession || message) {
       showToast(

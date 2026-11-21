@@ -1,14 +1,44 @@
-import { ICONS } from './icons.js';
+import { ICONS, showToast } from './icons.js';
 
 export function renderPinEntry(
   container: HTMLElement,
   remainingAttempts: number,
   onSubmit: (pin: string, isSecondary?: boolean) => void,
-  onOpenSettings: () => void,
+  onOpenSettings: (enteredPin?: string) => void,
   options?: { hasActiveSession?: boolean },
 ): void {
   let pin = '';
+  let isSettingsMenuOpen = false;
   const showSecondaryOption = options?.hasActiveSession === true;
+
+  const setSettingsMenuOpen = (open: boolean) => {
+    isSettingsMenuOpen = open;
+    const menuEl = document.getElementById('pin-settings-menu');
+    const backdropEl = document.getElementById('pin-settings-menu-backdrop');
+    const settingsBtn = document.getElementById('pin-settings-btn');
+    if (menuEl) {
+      menuEl.style.display = open ? 'flex' : 'none';
+    }
+    if (backdropEl) {
+      backdropEl.style.display = open ? 'block' : 'none';
+    }
+    if (settingsBtn) {
+      settingsBtn.style.borderColor = open ? '#3e6ae1' : 'rgba(255,255,255,0.15)';
+      settingsBtn.style.background = open ? 'rgba(62,106,225,0.22)' : 'rgba(255,255,255,0.08)';
+    }
+  };
+
+  const showPinRequiredNotice = () => {
+    const standbyHintEl = document.getElementById('pin-standby-hint');
+    if (standbyHintEl) {
+      standbyHintEl.textContent = '先に4〜8桁のPINコードを入力してください';
+      standbyHintEl.style.color = '#ff453a';
+      standbyHintEl.style.display = 'block';
+    }
+    if (typeof document?.createElement === 'function' && document.body) {
+      showToast('先に4〜8桁のPINコードを入力してください', 'error');
+    }
+  };
 
   const updateDisplay = () => {
     const dotsEl = document.getElementById('pin-dots');
@@ -20,6 +50,17 @@ export function renderPinEntry(
               .map(() => '●')
               .join(' ')
           : '<span style="color: #666; font-size: 24px;">PINを入力</span>';
+    }
+    const standbyHintEl = document.getElementById('pin-standby-hint');
+    if (standbyHintEl && pin.length >= 4) {
+      standbyHintEl.style.display = 'none';
+    }
+    const standbySubEl = document.getElementById('pin-menu-rear-standby-sub');
+    if (standbySubEl) {
+      standbySubEl.textContent =
+        pin.length >= 4
+          ? '前席の配信開始を待機して映像を受信（入力中のPINで接続）'
+          : '先に4〜8桁のPINコードを入力してからタップ';
     }
     const updateButtonState = (btn: HTMLButtonElement | null) => {
       if (!btn) return;
@@ -45,17 +86,45 @@ export function renderPinEntry(
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       color: #fff; z-index: 1000; overflow: hidden;
     ">
+      <div id="pin-settings-menu-backdrop" style="
+        display: none; position: fixed; inset: 0; z-index: 1050; background: rgba(0, 0, 0, 0.35);
+      "></div>
+
       <!-- Header -->
-      <div style="width: 100%; max-width: 800px; display: flex; justify-content: space-between; align-items: center;">
+      <div style="width: 100%; max-width: 800px; display: flex; justify-content: space-between; align-items: center; position: relative; z-index: 1060;">
         <div style="display: flex; align-items: center; gap: 12px;">
           <div style="width: 14px; height: 14px; border-radius: 50%; background: #00ff88; box-shadow: 0 0 12px #00ff88;"></div>
           <h1 style="font-size: 24px; font-weight: 700; margin: 0; letter-spacing: 1px;">TESROID <span style="font-size: 14px; color: #00ff88; font-weight: 500;">v2 Browser</span></h1>
         </div>
-        <button id="pin-settings-btn" style="
-          background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-          color: #fff; width: 52px; height: 52px; border-radius: 12px;
-          display: flex; align-items: center; justify-content: center; cursor: pointer;
-        " title="設定">${ICONS.settings}</button>
+        <div style="position: relative;">
+          <button id="pin-settings-btn" style="
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+            color: #fff; width: 52px; height: 52px; border-radius: 12px;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+          " title="設定・接続メニュー">${ICONS.settings}</button>
+
+          <div id="pin-settings-menu" style="
+            display: none; position: absolute; top: 60px; right: 0; width: 320px;
+            flex-direction: column; gap: 8px; padding: 10px;
+            background: rgba(22, 23, 31, 0.98); border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 14px; box-shadow: 0 14px 36px rgba(0,0,0,0.65); z-index: 1060;
+          ">
+            <button id="pin-menu-rear-standby-btn" type="button" class="pin-settings-menu-item pin-settings-menu-standby">
+              <span class="pin-menu-icon" style="color: #60a5fa;">${ICONS.cinema}</span>
+              <span class="pin-menu-text">
+                <span class="pin-menu-title">後席モニター待ち受けモードで接続</span>
+                <span id="pin-menu-rear-standby-sub" class="pin-menu-sub">先に4〜8桁のPINコードを入力してからタップ</span>
+              </span>
+            </button>
+            <button id="pin-menu-open-settings-btn" type="button" class="pin-settings-menu-item">
+              <span class="pin-menu-icon" style="color: #d1d5db;">${ICONS.settings}</span>
+              <span class="pin-menu-text">
+                <span class="pin-menu-title">設定・管理コンソール</span>
+                <span class="pin-menu-sub">画質・お気に入り・PIN設定を変更</span>
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Center: PIN Display & Prompt -->
@@ -74,6 +143,9 @@ export function renderPinEntry(
         ">
           残り試行可能回数: <strong style="color: ${remainingAttempts < 5 ? '#ff3b30' : '#00ff88'};">${remainingAttempts}</strong> / 10
         </div>
+        <div id="pin-standby-hint" style="
+          display: none; font-size: 13px; margin-top: 6px; color: #ff453a; font-weight: 600;
+        "></div>
       </div>
 
       <!-- Keypad (Spread to fill touch area) -->
@@ -157,6 +229,51 @@ export function renderPinEntry(
         border-color: #00ff88;
         transform: scale(0.96);
       }
+      .pin-settings-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+        color: #fff;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .pin-settings-menu-item:active {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .pin-settings-menu-standby {
+        border-color: rgba(62, 106, 225, 0.45);
+        background: rgba(62, 106, 225, 0.16);
+      }
+      .pin-settings-menu-standby:active {
+        background: rgba(62, 106, 225, 0.3);
+      }
+      .pin-menu-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .pin-menu-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .pin-menu-title {
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
+      .pin-menu-sub {
+        font-size: 11px;
+        color: #9ca3af;
+        line-height: 1.35;
+      }
     </style>
   `;
 
@@ -191,6 +308,26 @@ export function renderPinEntry(
     }
   });
 
-  // Settings button handler
-  document.getElementById('pin-settings-btn')?.addEventListener('click', onOpenSettings);
+  // Settings menu handlers
+  document.getElementById('pin-settings-btn')?.addEventListener('click', () => {
+    setSettingsMenuOpen(!isSettingsMenuOpen);
+  });
+
+  document.getElementById('pin-settings-menu-backdrop')?.addEventListener('click', () => {
+    setSettingsMenuOpen(false);
+  });
+
+  document.getElementById('pin-menu-rear-standby-btn')?.addEventListener('click', () => {
+    setSettingsMenuOpen(false);
+    if (pin.length >= 4) {
+      onSubmit(pin, true);
+    } else {
+      showPinRequiredNotice();
+    }
+  });
+
+  document.getElementById('pin-menu-open-settings-btn')?.addEventListener('click', () => {
+    setSettingsMenuOpen(false);
+    onOpenSettings(pin.length >= 4 ? pin : undefined);
+  });
 }
