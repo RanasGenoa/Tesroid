@@ -31,6 +31,7 @@ function setupPinEntryDom() {
   const rearStandbyBtn = makeButton('pin-menu-rear-standby-btn', false);
   const rearStandbySub: any = { textContent: '' };
   const openSettingsMenuBtn = makeButton('pin-menu-open-settings-btn', false);
+  const openGuideMenuBtn = makeButton('pin-menu-open-guide-btn', false);
   const standbyHintEl: any = { textContent: '', style: { display: 'none' } };
 
   elementsById.set('pin-dots', dotsEl);
@@ -41,6 +42,7 @@ function setupPinEntryDom() {
   elementsById.set('pin-menu-rear-standby-btn', rearStandbyBtn);
   elementsById.set('pin-menu-rear-standby-sub', rearStandbySub);
   elementsById.set('pin-menu-open-settings-btn', openSettingsMenuBtn);
+  elementsById.set('pin-menu-open-guide-btn', openGuideMenuBtn);
   elementsById.set('pin-standby-hint', standbyHintEl);
 
   (globalThis as any).document = {
@@ -80,6 +82,7 @@ function setupPinEntryDom() {
     rearStandbyBtn,
     rearStandbySub,
     openSettingsMenuBtn,
+    openGuideMenuBtn,
     standbyHintEl,
     pressKey,
   };
@@ -207,6 +210,25 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
     settingsBtn.click();
     openSettingsMenuBtn.click();
     expect(openedSettingsPins).toEqual(['2580']);
+  });
+
+  it('renderPinEntry settings menu opens onboarding guide via menu item', () => {
+    const { container, settingsBtn, settingsMenu, openGuideMenuBtn } = setupPinEntryDom();
+    const onOpenGuide = vi.fn();
+
+    renderPinEntry(container, 10, vi.fn(), vi.fn(), {
+      hasActiveSession: false,
+      onOpenGuide,
+    });
+
+    expect(container.innerHTML).toContain('id="pin-menu-open-guide-btn"');
+    expect(container.innerHTML).toContain('使い方・オンボードガイド');
+
+    settingsBtn.click();
+    expect(settingsMenu.style.display).toBe('flex');
+    openGuideMenuBtn.click();
+    expect(settingsMenu.style.display).toBe('none');
+    expect(onOpenGuide).toHaveBeenCalledTimes(1);
   });
 
   it('renderPinEntry hides secondary button when hasActiveSession is omitted or false', () => {

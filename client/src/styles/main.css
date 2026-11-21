@@ -979,3 +979,164 @@ canvas#stream-canvas {
   z-index: 1000;
   backdrop-filter: blur(4px);
 }
+
+/* Onboarding guide */
+.onboarding-card {
+  max-width: 820px;
+  max-height: 90vh;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.onboarding-subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.onboarding-callout {
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 4px solid var(--primary-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+
+.onboarding-callout-ssl {
+  border-left-color: #f59e0b;
+}
+
+.onboarding-callout-keyboard {
+  border-left-color: #34c759;
+  margin-bottom: 18px;
+}
+
+.onboarding-callout-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.onboarding-callout-body {
+  font-size: 13px;
+  color: #c7c7cc;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.onboarding-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  margin: 18px 0 10px;
+}
+
+.onboarding-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.onboarding-feature-item {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.onboarding-feature-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.onboarding-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.onboarding-feature-desc {
+  font-size: 12.5px;
+  color: #b8b8bf;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.onboarding-list {
+  font-size: 13px;
+  color: #c7c7cc;
+  line-height: 1.65;
+  padding-left: 20px;
+  margin: 0 0 14px;
+}
+
+.onboarding-list li + li {
+  margin-top: 6px;
+}
+
+.onboarding-hud-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.onboarding-hud-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.onboarding-hud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 145px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.onboarding-hud-desc {
+  font-size: 13px;
+  color: #b8b8bf;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+@media (max-width: 640px) {
+  .onboarding-hud-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .onboarding-hud-badge {
+    min-width: 0;
+  }
+}
