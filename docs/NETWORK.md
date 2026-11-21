@@ -1,6 +1,10 @@
-# 外部公開 & ネットワーク設定完全ガイド (docs/NETWORK.md)
+# 外部公開 & ネットワーク設定詳細ガイド（高度な構成リファレンス）(docs/NETWORK.md)
 
-本書は、Tesroid を自宅サーバー（オンプレミス）やクラウド VM（VPS）上に構築し、**テスラ車載ブラウザから安全かつ超低遅延でアクセスするためのネットワーク設計・構築マニュアル** です。
+本書は、Tesroid を自宅サーバー（オンプレミス）やクラウド VM（VPS）上に構築し、**テスラ車載ブラウザから安全かつ超低遅延でアクセスするためのネットワーク設計・各種リバースプロキシ構築マニュアル** です。
+
+> [!TIP]
+> **初めて導入される方へ（かんたんセットアップ）**:
+> Cloudflare アカウント登録から安価なドメイン購入、Tunnel 作成、`docker-compose.prebuilt.yml` を使った起動までを一通り行う場合は、初心者向けに整理された **[かんたん導入ガイド (docs/QUICKSTART.md)](QUICKSTART.md)** をご覧ください。
 
 ---
 
@@ -58,43 +62,20 @@
 
 #### セットアップ手順（単一コンテナ同梱構成）
 
-> [!IMPORTANT]
-> **無料 DDNS（DuckDNS 等）に関する制限事項**:
-> - **DuckDNS（`*.duckdns.org`）などの無料 DDNS サブドメインは、ネームサーバー（NS）を Cloudflare に移譲できないため Cloudflare Tunnel では利用できません。**
-> - Cloudflare Tunnel を利用する場合は **独自ドメインの取得が必要** です（例：Cloudflare Registrar であれば年 \$4〜\$5 程度の最安 TLD も選択でき、DNS 設定が自動連携されるため導入の手間がかかりません）。
-> - **取得済みの DuckDNS をそのまま使いたい場合** は、[**パターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）**](#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を選択してください。
-> - ドメイン購入前にまず HTTPS 接続の動作確認だけを試したい場合は、後述の [**Quick Tunnels（`trycloudflare.com`）**](#補足ドメイン購入前の動作確認quick-tunnels-trycloudflarecom) を利用できます。
+> [!TIP]
+> **Cloudflare アカウント作成 〜 ドメイン購入 〜 トンネル作成 〜 Docker Compose 起動** までの初心者向けステップバイステップ手順は、**[かんたん導入ガイド (docs/QUICKSTART.md)](QUICKSTART.md)** に分かりやすくまとめています。
 
-1. **ドメインの Cloudflare 登録**:
-   お持ちの独自ドメイン（お名前.com, Cloudflare Registrar 等で取得）を Cloudflare に登録し、ネームサーバーを Cloudflare に切り替えます。
-2. **Cloudflare Zero Trust でトンネルを作成して `TUNNEL_TOKEN` を取得**:
-   - Cloudflare Zero Trust ダッシュボード (`https://one.dash.cloudflare.com/`) にログインします。
-   - 左メニューから **Networks** ➔ **Tunnels** ➔ **Create a tunnel** をクリックします。
-   - コネクタの種類で **Cloudflared** を選択し、任意のトンネル名（例: `tesroid-tunnel`）を入力して保存します。
-   - 画面に表示されるインストールコマンド内の `--token` に続く長い文字列（`eyJh...` で始まるトークン）をコピーします。これが **`TUNNEL_TOKEN`** です。
-3. **`docker-compose.prebuilt.yml` / `.env` に `TUNNEL_TOKEN` を貼り付けて起動**:
-   - `scripts/install.sh` を使う場合は、対話プロンプトで `TUNNEL_TOKEN` の入力を求められた際にそのまま貼り付けます。
-   - `docker-compose.prebuilt.yml` を手動で使う場合は、同じディレクトリの `.env`（または YAML 内の `environment:`）に以下を設定して起動します：
-     ```env
-     TUNNEL_TOKEN=eyJh...ここにコピーしたトークンを貼り付け
-     ```
-     ```bash
-     docker compose -f docker-compose.prebuilt.yml up -d
-     ```
-   - `TUNNEL_TOKEN` が空でない場合、コンテナ起動時に内蔵の `cloudflared` が自動的に起動します。Zero Trust 画面上のトンネルステータスが **HEALTHY** になれば接続成功です。
-4. **Public Hostname（公開 URL）の転送先を設定**:
-   トンネル設定画面の **Public Hostname** タブ（または **Published application routes**）で「Add a public hostname」を開き、以下のように設定します：
-   - **Subdomain**: `tesroid`（任意のサブドメイン）
-   - **Domain**: ご自身のドメイン（例: `your-domain.com`）
-   - **Service Type**: `HTTP`
-   - **URL**: **`http://localhost:8080`**
-     > [!IMPORTANT]
-     > `docker-compose.prebuilt.yml` や `scripts/install.sh` による単一コンテナ構成では、`cloudflared` と Tesroid 本体が同じコンテナ内で動作するため、転送先には **`http://localhost:8080`** を指定してください。
-   - **Additional application settings** ➔ **HTTP Settings**:
-     - `No TLS Verify`: 有効（内部通信が HTTP のため）
-   - Cloudflare ダッシュボード側の **Network** 設定で **WebSockets** が有効（デフォルト ON）になっていることを確認します。
-5. **アクセス確認**:
-   ブラウザで `https://tesroid.your-domain.com` を開き、初期 PIN 設定画面が表示されれば完了です。
+> [!IMPORTANT]
+> **無料 DDNS（DuckDNS 等）に関する制限事項と転送先仕様**:
+> - **DuckDNS（`*.duckdns.org`）などの無料 DDNS サブドメインは、ネームサーバー（NS）を Cloudflare に移譲できないため Cloudflare Tunnel では利用できません。** 独自ドメイン（Cloudflare Registrar で年 \$4〜\$5 前後から取得可能）をご利用ください。
+> - **取得済みの DuckDNS をそのまま使いたい場合** は、[**パターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）**](#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を選択してください。
+> - **Public Hostname（ルート）の転送先**: 単一コンテナ構成では `cloudflared` と Tesroid 本体が同一コンテナ内で動作するため、Service Type は **`HTTP`**、URL は **`localhost:8080`**（または `http://localhost:8080`）を指定します。また Cloudflare ダッシュボードの **Network** 設定で **WebSockets** が有効（デフォルト ON）であることを確認してください。
+> - ドメイン購入前にまず HTTPS 接続の動作確認だけ試したい場合は、以下の **Quick Tunnels** を利用できます。
+
+1. Cloudflare ダッシュボードで独自ドメインを用意（購入または移譲）し、[Zero Trust ダッシュボード](https://one.dash.cloudflare.com/) の **Networks** ➔ **Tunnels** ➔ **Create a tunnel** からトンネルを作成します。
+2. コネクタインストール画面に表示される **`eyJh...` で始まるトークン文字列のみ** をコピーし、`.env` の `TUNNEL_TOKEN` に設定します（秘密情報のため `.env` は `chmod 600` で保護し、リポジトリやスクリーンショットに含めないでください）。
+3. トンネルの **Public Hostname（ルート）** で公開ドメイン（サブドメイン空欄ならルートドメイン）を設定し、Service に `HTTP` / `localhost:8080` を指定します。
+4. `docker compose -f docker-compose.prebuilt.yml up -d` で起動すると内蔵 `cloudflared` が接続され、トンネル一覧のステータスが「非アクティブ（Inactive）」から **「正常（HEALTHY）」** に変わります。詳しくは [docs/QUICKSTART.md](QUICKSTART.md) を参照してください。
 
 #### （補足）ドメイン購入前の動作確認：Quick Tunnels (`trycloudflare.com`)
 

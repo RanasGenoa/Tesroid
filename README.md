@@ -130,24 +130,36 @@ Tesroid は低遅延・省リソースを実現するため、ハードウェア
 
 ## 🚀 クイックスタート (Docker Compose)
 
-### ⚡ ビルド不要導入（推奨）
+### ⚡ かんたん導入（推奨：Docker Compose ＋ Cloudflare Tunnel）
 
-ローカルでの `docker build` を行わず、公開済みのベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）を使ってすぐに起動できます（初回起動時にコンテナが Google Chrome を自動取得します）。
+**最も簡単でおすすめの導入方法です。** 公開済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と **Cloudflare Tunnel（`TUNNEL_TOKEN`）** を組み合わせることで、**Docker ビルド不要・ルーターのポート開放不要・SSL 証明書の手動取得なし** で、テスラ車載ブラウザ必須の HTTPS/WSS 公開まで迷わず完了できます（初回起動時にコンテナが Google Chrome を自動取得します）。
 
-- **方法 A: ビルド不要の Docker Compose コピペ導入**
-  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を使い、`.env` または YAML 内に `TUNNEL_TOKEN` を設定するだけで Cloudflare Tunnel も含めて自動起動します。詳しい手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#2-a-ビルド不要の-docker-compose-コピペ導入推奨) を参照してください。
+> [!TIP]
+> **📘 初心者向けステップバイステップガイドを用意しています**
+> Cloudflare の無料アカウント登録から安価な独自ドメイン購入（年 \$5 前後〜）、`TUNNEL_TOKEN` 発行、Docker Compose 起動までを順番に解説しています：
+> 👉 **[かんたん導入ガイド (docs/QUICKSTART.md)](docs/QUICKSTART.md)**
+
+- **方法 A: `docker-compose.prebuilt.yml` コピペ導入（一番おすすめ）**
+  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を取得し、`.env` に `TUNNEL_TOKEN` を貼り付けて `docker compose -f docker-compose.prebuilt.yml up -d` を実行するだけで起動します（手順の詳細は [docs/QUICKSTART.md](docs/QUICKSTART.md)）。
 - **方法 B: ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）**
-  Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます：
+  Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます（途中で `TUNNEL_TOKEN` の貼り付けにも対応）：
   ```bash
   curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
   bash install.sh
   ```
   （リポジトリをクローン済みの場合は `bash scripts/install.sh`）
 
-### 🔧 ローカルビルド版（開発者・カスタマイズ向け）
+### 🔧 高度なセットアップ（ローカルビルド・自前リバースプロキシ・NAS 運用向け）
+
+ソースコードからのローカルイメージビルド、TrueNAS SCALE 等の NAS 環境での構築、Caddy / Nginx / DuckDNS / VPS を用いた公開構成については、以下の詳細ガイドを参照してください：
+- **デプロイ・ローカルビルド・保守・トラブルシューティング**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+- **外部公開・リバースプロキシ（Caddy / Nginx / VPS）構成**: [docs/NETWORK.md](docs/NETWORK.md)
 
 > [!IMPORTANT]
 > 本リポジトリの `Dockerfile` からビルドした Google Chrome 同梱イメージは、Google Chrome の利用規約に基づきパブリックレジストリへ再配布しないでください。配布済みの `ghcr.io/ranasgenoa/tesroid:latest` は Chrome 非同梱のベースイメージであり、ユーザー環境での初回起動時に公式パッケージを取得します。
+
+<details>
+<summary>ローカルビルド版の最小手順（開発者・カスタマイズ向け）</summary>
 
 ```bash
 # 1. リポジトリのクローン
@@ -165,6 +177,8 @@ curl http://localhost:9001/api/health
 ```
 
 初回アクセス時にブラウザ上で **初期セットアップウィザード** が表示されます。4〜8桁の認証 PIN コードを設定してください。
+
+</details>
 
 ### 主要な環境変数 (`.env`)
 
@@ -223,9 +237,10 @@ npm run docker:up
 
 ## 📚 ドキュメント一覧
 
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)**: かんたん導入ガイド（Cloudflare 登録〜ドメイン購入〜Docker Compose ＋ `TUNNEL_TOKEN` 起動）
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: 高度なデプロイメント・運用・保守ガイド（ローカルビルド / NAS / ロックアウト解除 / VAAPI 診断）
+- **[docs/NETWORK.md](docs/NETWORK.md)**: 外部公開 & ネットワーク設定詳細ガイド（Cloudflare Tunnel 技術仕様 / Caddy / Nginx / VPS）
 - **[CONTRIBUTING.md](CONTRIBUTING.md)**: コントリビューション・ブランチ運用 & バージョニングガイド
-- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: デプロイメント・運用・保守ガイド（Docker Compose / NAS / ロックアウト解除 / VAAPI 診断）
-- **[docs/NETWORK.md](docs/NETWORK.md)**: 外部公開 & ネットワーク設定完全ガイド（Cloudflare Tunnel / Caddy / Nginx）
 - **[docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md)**: 描画最適化・ヒステリシス制御・CDP ネイティブタッチ技術仕様書
 - **[AGENTS.md](AGENTS.md)**: 開発者・コントリビューター・AI エージェント向け設計ガイド
 - **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**: サードパーティライセンス表記および再配布に関する注意事項
