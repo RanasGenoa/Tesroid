@@ -51,6 +51,7 @@ INSTALL_DIR=""
 TESROID_PORT=""
 TUNNEL_TOKEN=""
 VAAPI_DEVICE="/dev/dri/renderD128"
+LIBVA_DRIVER_NAME="iHD"
 COMPOSE_FILE=""
 ENV_FILE=""
 
@@ -95,6 +96,30 @@ confirm() {
   reply="$(trim_whitespace "$reply")"
   reply="${reply:-$default}"
   [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# GPU ベンダー ID から推奨 VAAPI ドライバ名を判定するヘルパー
+detect_default_libva_driver() {
+  local dev_name
+  dev_name="$(basename "$VAAPI_DEVICE")"
+  local vendor_file="/sys/class/drm/${dev_name}/device/vendor"
+
+  if [[ -r "$vendor_file" ]]; then
+    local vendor_id
+    vendor_id="$(tr '[:upper:]' '[:lower:]' < "$vendor_file" 2>/dev/null | tr -d '[:space:]')"
+    case "$vendor_id" in
+      0x1002)
+        echo "radeonsi"
+        return
+        ;;
+      0x8086)
+        echo "iHD"
+        return
+        ;;
+    esac
+  fi
+
+  echo "iHD"
 }
 
 # sudo 実行ラッパー
@@ -370,6 +395,23 @@ prompt_configuration() {
     TUNNEL_TOKEN="$raw_token"
     break
   done
+
+  # VAAPI ドライバ名の確認 (GPU ベンダーから自動判定した値を既定値として提示)
+  local default_driver
+  default_driver="$(detect_default_libva_driver)"
+  echo ""
+  info "VAAPI ドライバ名を指定してください（通常は自動判定された既定値のまま Enter で問題ありません）。"
+  info "（Intel 第6世代以降: iHD / 旧世代 Intel: i965 / AMD Radeon: radeonsi）"
+  local input_driver=""
+  while true; do
+    read_input "LIBVA_DRIVER_NAME [${default_driver}]: " input_driver
+    input_driver="$(trim_whitespace "$input_driver")"
+    LIBVA_DRIVER_NAME="${input_driver:-$default_driver}"
+    if [[ "$LIBVA_DRIVER_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      break
+    fi
+    warn "英数字・ハイフン・アンダースコアのみで入力してください（例: iHD, i965, radeonsi）。"
+  done
 }
 
 # ------------------------------------------------------------------------------
@@ -402,7 +444,7 @@ DISPLAY_HEIGHT=720
 FPS=30
 VIDEO_BITRATE=1000k
 VAAPI_DEVICE="${VAAPI_DEVICE}"
-LIBVA_DRIVER_NAME=iHD
+LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME}"
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
 EOF
   )
