@@ -17,9 +17,8 @@ import {
   escapeHtml,
   type FavoriteItem,
   ICONS,
-  insertFavoriteAfterHome,
+  insertFavoritePreservingHome,
   isSafeHttpUrl,
-  pinHomeFavoriteFirst,
   resolveHomeFavorite,
   sanitizeFavorites,
   showToast,
@@ -58,6 +57,8 @@ export function renderStreamingView(
   avSync: AvSyncController,
   onOpenSettings: () => void,
   authToken?: string | null,
+  sessionRole: 'primary' | 'secondary' = 'primary',
+  options?: { initialPrimaryActive?: boolean },
 ): () => void {
   container.innerHTML = `
     <div id="screen-container">
@@ -243,6 +244,10 @@ export function renderStreamingView(
 
   type BrowserPowerState = 'active' | 'sleeping' | 'waking';
   let browserPowerState: BrowserPowerState = 'active';
+  const isSecondarySession = sessionRole === 'secondary';
+  let isPrimarySessionActive = !isSecondarySession || (options?.initialPrimaryActive ?? true);
+  let isActingPrimary = false;
+  const isEffectivelyPrimary = () => !isSecondarySession || isActingPrimary;
 
   let instantRtt = 0;
   let minRtt = Number.POSITIVE_INFINITY;
@@ -520,7 +525,6 @@ export function renderStreamingView(
         if (typeof data.homeFavoriteId === 'string' && data.homeFavoriteId.trim()) {
           homeFavoriteId = data.homeFavoriteId.trim();
         }
-        favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
         if (!hasLiveBrowserStatus) {
           if (typeof data.browserUrl === 'string' && isSafeHttpUrl(data.browserUrl)) {
             currentBrowserUrl = data.browserUrl;
@@ -636,7 +640,6 @@ export function renderStreamingView(
       updateToggleButtons();
     }
     if (favoritesChanged) {
-      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
       updateHomeButtonTitle();
       renderFavoritesList();
     }
@@ -878,7 +881,20 @@ export function renderStreamingView(
     updateHudLiveStatus();
   };
 
-  const executeJumpToLive = (silent = false) => {
+  let primaryAnchorPtsUs = 0;
+  let primaryAnchorLocalMs = 0;
+
+  if (isSecondarySession && typeof avSync.setExternalMasterPtsProvider === 'function') {
+    avSync.setExternalMasterPtsProvider(() => {
+      if (isEffectivelyPrimary()) return null;
+      if (primaryAnchorPtsUs <= 0 || primaryAnchorLocalMs <= 0) return null;
+      const elapsedMs = performance.now() - primaryAnchorLocalMs;
+      if (elapsedMs < -1000 || elapsedMs > 5000) return null;
+      return Math.round(primaryAnchorPtsUs + elapsedMs * 1000);
+    });
+  }
+
+  const executeJumpToLive = (silent = false, notifyServer = true) => {
     if (typeof decoder.flushPendingForLiveJump === 'function') {
       decoder.flushPendingForLiveJump();
     }
@@ -891,11 +907,13 @@ export function renderStreamingView(
       audioPlayer.resetJitterBuffer();
     }
     jitterController.reset();
+    primaryAnchorPtsUs = 0;
+    primaryAnchorLocalMs = 0;
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
     lastHudLiveState = '';
-    if (wsClient.isConnected()) {
+    if (notifyServer && wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
     }
     updateHudLiveStatus();
@@ -910,6 +928,11 @@ export function renderStreamingView(
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
     resetHudDimTimer();
+
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+      return;
+    }
 
     if (isRestartingEncoder) return;
     isRestartingEncoder = true;
@@ -958,8 +981,9 @@ export function renderStreamingView(
   // 3. Touch Mapper
   const touchMapper = new TouchMapper(canvas, wsClient, latencyController);
 
-  // Auto-unlock AudioContext on any user touch/click anywhere on screen
+  // Auto-unlock AudioContext on any user touch/click anywhere on screen (disabled while acting as passive secondary)
   const autoUnlockAudio = () => {
+    if (!isEffectivelyPrimary()) return;
     const stats = audioPlayer.getStats();
     if (!stats.isUnlocked || stats.state === 'suspended') {
       audioPlayer.unlock();
@@ -971,6 +995,7 @@ export function renderStreamingView(
   // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
   let resizeTimer: any = null;
   const sendResize = (immediate: boolean = false) => {
+    if (!isEffectivelyPrimary()) return;
     const execute = () => {
       const vpWidth = streamViewport?.clientWidth || 0;
       const vpHeight = streamViewport?.clientHeight || 0;
@@ -990,11 +1015,14 @@ export function renderStreamingView(
 
   const onResize = () => sendResize(false);
   window.addEventListener('resize', onResize);
-  sendResize(false);
+  if (!isSecondarySession) {
+    sendResize(false);
+  }
 
   // 5. Connect WebSocket streams
   const handleVideo = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
+    if (isSecondarySession && !isPrimarySessionActive) return;
     metricsCollector.recordVideoPacket(msg.data.byteLength);
     jitterController.recordVideoArrival();
     decoder.handlePacket(msg.flags, msg.pts, msg.data);
@@ -1005,6 +1033,7 @@ export function renderStreamingView(
 
   const handleAudio = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
+    if (!isEffectivelyPrimary() || !isPrimarySessionActive) return;
     metricsCollector.recordAudioPacket();
     audioPlayer.handleAudioPacket(msg.flags, msg.pts, msg.data);
   };
@@ -1019,6 +1048,25 @@ export function renderStreamingView(
   const hideOverlay = () => {
     statusOverlay.style.display = 'none';
     if (noticeActionBox) noticeActionBox.style.display = 'none';
+    if (noticeActionBtn) noticeActionBtn.style.display = '';
+  };
+
+  const showRearStandbyScreen = () => {
+    showOverlay(
+      '後席モニター待ち受け中',
+      '前席モニターからの接続・配信開始を待機しています...',
+      true,
+    );
+    if (noticeActionBox && noticeActionBtn) {
+      noticeActionBtn.style.display = 'none';
+      noticeActionBox.style.display = 'flex';
+    }
+    if (healthBrowser) {
+      healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> 前席: 待機中`;
+    }
+    if (healthStream) {
+      healthStream.innerHTML = `<span class="status-dot status-idle"></span> 配信: 待機中`;
+    }
   };
 
   const showSleepingScreen = () => {
@@ -1029,6 +1077,7 @@ export function renderStreamingView(
       false,
     );
     if (noticeActionBox && noticeActionBtn) {
+      noticeActionBtn.style.display = '';
       noticeActionBtn.textContent = '再開する (タップで復帰)';
       noticeActionBox.style.display = 'flex';
     }
@@ -1037,11 +1086,28 @@ export function renderStreamingView(
     }
   };
 
+  if (isSecondarySession && !isPrimarySessionActive) {
+    showRearStandbyScreen();
+  }
+
   const triggerResume = () => {
     browserPowerState = 'waking';
     showOverlay('復帰処理中...', 'ブラウザとハードウェアエンコーダを再開しています...', true);
     if (noticeActionBox) noticeActionBox.style.display = 'none';
     wsClient.send(ClientProtocol.packCommand({ type: 'RESUME_BROWSER' }));
+  };
+
+  // Intentional Session Disconnect helper
+  const performIntentionalDisconnect = () => {
+    if (wsClient.isConnected()) {
+      wsClient.send(ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }));
+    }
+    try {
+      sessionStorage.removeItem('tesroid_token');
+      sessionStorage.removeItem('tesroid_role');
+    } catch {}
+    wsClient.close(1000, 'User requested disconnect');
+    window.location.reload();
   };
 
   // Immediate Stop Action
@@ -1064,6 +1130,9 @@ export function renderStreamingView(
     overlay.className = 'modal-overlay';
     overlay.id = 'power-menu-modal';
 
+    const isRearStandby = isSecondarySession && !isPrimarySessionActive;
+    const standbyActionStyle = isRearStandby ? 'opacity: 0.45; cursor: not-allowed;' : '';
+
     overlay.innerHTML = `
       <div class="card" style="max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; position: relative; border-radius: 4px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -1072,13 +1141,20 @@ export function renderStreamingView(
           </h3>
           <button id="power-modal-close-btn" class="hud-btn" style="font-size: 18px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 3px;">✕</button>
         </div>
-        <p style="font-size: 13px; margin-bottom: 16px; color: var(--text-muted);">車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。</p>
+        <p style="font-size: 13px; margin-bottom: 16px; color: var(--text-muted);">${
+          isRearStandby
+            ? '後席モニター待ち受け中のため、停止・再起動は前席接続後に利用できます。'
+            : '車を離れる際や一時停止時にCPU/GPU負荷を0%に凍結します。'
+        }</p>
         <div style="display: flex; flex-direction: column; gap: 12px;">
-          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 700; border-radius: 4px;">
+          <button id="power-quick-stop-btn" class="btn btn-danger" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 700; border-radius: 4px; ${standbyActionStyle}" ${isRearStandby ? 'disabled' : ''}>
             ${ICONS.stop} ワンタップ停止 (省電力スタンバイ)
           </button>
-          <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
+          <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18); ${standbyActionStyle}" ${isRearStandby ? 'disabled' : ''}>
             ${ICONS.refresh} ブラウザ＆配信再起動
+          </button>
+          <button id="power-disconnect-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
+            ${ICONS.close} セッション切断 (待機画面へ戻る)
           </button>
         </div>
       </div>
@@ -1109,6 +1185,10 @@ export function renderStreamingView(
     overlay.querySelector('#power-quick-stop-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
+      if (isSecondarySession && !isPrimarySessionActive) {
+        showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+        return;
+      }
       closePowerModal();
       triggerStop();
     });
@@ -1116,8 +1196,19 @@ export function renderStreamingView(
     overlay.querySelector('#power-browser-restart-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       resetHudDimTimer();
+      if (isSecondarySession && !isPrimarySessionActive) {
+        showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+        return;
+      }
       closePowerModal();
       browserRestart(token);
+    });
+
+    overlay.querySelector('#power-disconnect-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      resetHudDimTimer();
+      closePowerModal();
+      performIntentionalDisconnect();
     });
 
     container.appendChild(overlay);
@@ -1150,7 +1241,9 @@ export function renderStreamingView(
     serverBufferMs = 0;
     serverMode = 'LIVE';
     updateHudLiveStatus();
-    if (browserPowerState !== 'sleeping') {
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showRearStandbyScreen();
+    } else if (browserPowerState !== 'sleeping') {
       showOverlay(reasonTitle, reasonDesc, true);
     }
   };
@@ -1196,8 +1289,58 @@ export function renderStreamingView(
       metricsCollector.updateRtt(instantRtt);
       jitterController.updateRtt(instantRtt);
 
+      if (isSecondarySession && !isActingPrimary) {
+        if (
+          typeof msg.primaryTargetBufferMs === 'number' &&
+          Number.isFinite(msg.primaryTargetBufferMs)
+        ) {
+          const syncedTargetMs = clampBufferDepthMs(msg.primaryTargetBufferMs);
+          if (Math.abs(syncedTargetMs - targetBufferMs) >= 500) {
+            targetBufferMs = syncedTargetMs;
+            if (typeof decoder.setBufferDepth === 'function') {
+              decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
+            }
+          }
+        }
+        if (
+          typeof msg.primaryRenderedPts === 'number' &&
+          msg.primaryRenderedPts > 0 &&
+          typeof msg.primaryFeedbackAgeMs === 'number' &&
+          msg.primaryFeedbackAgeMs < 5000
+        ) {
+          primaryAnchorPtsUs = msg.primaryRenderedPts;
+          primaryAnchorLocalMs = now - msg.primaryFeedbackAgeMs - Math.round(rawRtt / 2);
+        } else if (msg.primaryRenderedPts === null) {
+          primaryAnchorPtsUs = 0;
+          primaryAnchorLocalMs = 0;
+        }
+      }
+
       updateHudConnStatus();
       updateHudLiveStatus();
+    } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
+      executeJumpToLive(true, false);
+    } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
+      let streamSettingsChanged = false;
+      if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
+        const nextFps = Number(msg.stream.maxFps);
+        if (nextFps !== currentFps) {
+          currentFps = nextFps;
+          targetFps = currentFps;
+          framePacer.setTargetFps(targetFps);
+          streamSettingsChanged = true;
+        }
+      }
+      if (typeof msg.stream?.bitrate === 'number' && Number.isFinite(msg.stream.bitrate)) {
+        const nextBitrate = Number(msg.stream.bitrate);
+        if (nextBitrate !== currentBitrate) {
+          currentBitrate = nextBitrate;
+          streamSettingsChanged = true;
+        }
+      }
+      if (streamSettingsChanged) {
+        updateToggleButtons();
+      }
     } else if (msg.type === 'AUTH_SUCCESS') {
       sendBufferFeedback(true);
     } else if (msg.type === 'LIVE_JUMPED') {
@@ -1205,13 +1348,81 @@ export function renderStreamingView(
       serverBufferMs = 0;
       serverMode = 'LIVE';
       updateHudLiveStatus();
+    } else if (msg.type === 'SESSION_ROLE_CHANGED') {
+      if (!isSecondarySession) return;
+      if (msg.effectiveRole === 'acting_primary') {
+        isActingPrimary = true;
+        isPrimarySessionActive = true;
+        hasPromptedAudioUnlock = false;
+        primaryAnchorPtsUs = 0;
+        primaryAnchorLocalMs = 0;
+        if (noticeActionBox) noticeActionBox.style.display = 'none';
+        if (noticeActionBtn) noticeActionBtn.style.display = '';
+        sendResize(true);
+        if (typeof audioPlayer.unlock === 'function') {
+          void audioPlayer.unlock();
+        }
+        showToast('メインセッション切断により、後席をメイン代理モードに切り替えました', 'info');
+      } else if (msg.effectiveRole === 'secondary') {
+        const wasActingPrimary = isActingPrimary;
+        isActingPrimary = false;
+        if (resizeTimer) {
+          clearTimeout(resizeTimer);
+          resizeTimer = null;
+        }
+        audioPlayer.resetJitterBuffer();
+        if (wasActingPrimary) {
+          showToast('メインセッションが復帰したため、セカンドディスプレイ表示に戻りました', 'info');
+        }
+      }
+    } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
+      if (!isSecondarySession) return;
+      const wasPrimaryActive = isPrimarySessionActive;
+      const nextActive = Boolean(msg.active);
+      isPrimarySessionActive = nextActive;
+      if (!nextActive) {
+        decoder.reset();
+        if (typeof framePacer.reset === 'function') {
+          framePacer.reset();
+        } else {
+          framePacer.resetFirstFrame();
+        }
+        jitterController.reset();
+        renderer.resetFirstFrame();
+        avSync.reset();
+        audioPlayer.resetJitterBuffer();
+        lastDecodedPts = 0;
+        lastAckSentPts = -1;
+        primaryAnchorPtsUs = 0;
+        primaryAnchorLocalMs = 0;
+        serverCatchupQueueMs = 0;
+        serverBufferMs = 0;
+        serverMode = 'LIVE';
+        updateHudLiveStatus();
+        showRearStandbyScreen();
+      } else if (!wasPrimaryActive) {
+        if (noticeActionBox) noticeActionBox.style.display = 'none';
+        if (noticeActionBtn) noticeActionBtn.style.display = '';
+        if (healthBrowser) {
+          healthBrowser.innerHTML = `<span class="status-dot status-warning"></span> Browser: 準備中...`;
+        }
+        showOverlay(
+          '画面配信準備中...',
+          '前席の配信開始を受信しました。映像を待機しています...',
+          true,
+        );
+      }
     } else if (msg.type === 'STREAM_RESET') {
       resetClientStreamPipeline(
         '配信プロセスを再起動中...',
         'エンコーダとバッファをクリーンに再初期化しています...',
       );
     } else if (msg.type === 'BROWSER_STATUS') {
-      if (healthBrowser) {
+      if (isSecondarySession && !isPrimarySessionActive) {
+        if (msg.state === 'running') {
+          browserPowerState = 'active';
+        }
+      } else if (healthBrowser) {
         if (msg.state === 'paused') {
           healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> Browser: 一時停止`;
           showSleepingScreen();
@@ -1231,7 +1442,7 @@ export function renderStreamingView(
         currentBrowserTitle = msg.title;
       }
     } else if (msg.type === 'SERVER_METRICS') {
-      if (msg.browserState === 'paused') {
+      if (msg.browserState === 'paused' && !(isSecondarySession && !isPrimarySessionActive)) {
         showSleepingScreen();
       }
     } else if (msg.type === 'RESOLUTION_CHANGED') {
@@ -1314,7 +1525,9 @@ export function renderStreamingView(
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
     if (hudConn) hudConn.title = '接続状態: 接続中 (RTT計測待機)';
-    if (browserPowerState === 'sleeping') {
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showRearStandbyScreen();
+    } else if (browserPowerState === 'sleeping') {
       showSleepingScreen();
     } else if (totalBufferedMs <= 0) {
       showOverlay('画面配信準備中...', '映像ストリームを待機しています...', true);
@@ -1430,11 +1643,13 @@ export function renderStreamingView(
     updateHudLiveStatus();
 
     // Audio Autoplay & Unlock Guidance for Tesla Browser
-    const audioStats = audioPlayer.getStats();
-    if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
-      if (!hasPromptedAudioUnlock) {
-        hasPromptedAudioUnlock = true;
-        showToast('画面をタップすると音声を再生します', 'info');
+    if (isEffectivelyPrimary()) {
+      const audioStats = audioPlayer.getStats();
+      if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
+        if (!hasPromptedAudioUnlock) {
+          hasPromptedAudioUnlock = true;
+          showToast('画面をタップすると音声を再生します', 'info');
+        }
       }
     }
   }, 1000);
@@ -1508,7 +1723,7 @@ export function renderStreamingView(
       title: currentBrowserTitle.trim() || hostname,
       url: currentBrowserUrl,
     };
-    const nextFavorites = insertFavoriteAfterHome(favorites, newFav, homeFavoriteId);
+    const nextFavorites = insertFavoritePreservingHome(favorites, newFav, homeFavoriteId);
 
     isAddingCurrentFavorite = true;
     try {
@@ -1533,7 +1748,6 @@ export function renderStreamingView(
       ) {
         homeFavoriteId = data.settings.homeFavoriteId.trim();
       }
-      favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
       updateHomeButtonTitle();
       renderFavoritesList();
       window.dispatchEvent(
@@ -1642,6 +1856,7 @@ export function renderStreamingView(
   // Tap-to-resume handlers
   let lastResumeTrigger = 0;
   const onOverlayTap = (e: Event) => {
+    if (isSecondarySession && !isPrimarySessionActive) return;
     if (
       (e.target as HTMLElement).id === 'notice-action-btn' ||
       (e.target as HTMLElement).id === 'notice-disconnect-btn'
@@ -1668,8 +1883,7 @@ export function renderStreamingView(
 
   noticeDisconnectBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    wsClient.close();
-    window.location.reload();
+    performIntentionalDisconnect();
   });
 
   // Settings
@@ -1689,6 +1903,11 @@ export function renderStreamingView(
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
     window.removeEventListener('resize', onResize);
+    if (typeof avSync.setExternalMasterPtsProvider === 'function') {
+      avSync.setExternalMasterPtsProvider(undefined);
+    }
+    canvas.removeEventListener('pointerdown', autoUnlockAudio);
+    window.removeEventListener('pointerdown', autoUnlockAudio, { capture: true });
     window.removeEventListener('tesroid:settings-updated', onSettingsUpdated);
     window.removeEventListener('tesroid:stream-reset', onStreamResetEvent);
     if (saveSettingsTimer) clearTimeout(saveSettingsTimer);

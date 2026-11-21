@@ -4,6 +4,7 @@ import type { AuthService } from '../auth.js';
 import type { BrowserManager } from '../browser/manager.js';
 import type { ConfigStore } from '../config.js';
 import type { LockoutManager } from '../lockout.js';
+import type { WebSocketHandler } from '../ws/handler.js';
 
 interface SetupBody {
   pin: string;
@@ -30,6 +31,7 @@ export function registerSetupRoutes(
   authService: AuthService,
   lockoutManager: LockoutManager,
   browserManager: BrowserManager,
+  wsHandler?: WebSocketHandler,
 ) {
   // Public status check
   app.get('/api/status', async (_req: FastifyRequest, _reply: FastifyReply) => {
@@ -42,6 +44,11 @@ export function registerSetupRoutes(
       hasDri,
       consecutiveFailures: lockoutManager.getConsecutiveFailures(),
       remainingAttempts: lockoutManager.getRemainingAttempts(),
+      hasActiveSession: wsHandler
+        ? typeof wsHandler.hasPrimaryClients === 'function'
+          ? wsHandler.hasPrimaryClients()
+          : wsHandler.hasActiveClients()
+        : false,
     };
   });
 

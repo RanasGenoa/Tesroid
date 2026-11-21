@@ -180,7 +180,7 @@ export class ConfigStore {
         ? partial.favorites.map((f) => ({ ...f }))
         : this.currentConfig.favorites.map((f) => ({ ...f }));
     const nextFavorites =
-      partial.favorites !== undefined || partial.homeFavoriteId !== undefined
+      partial.favorites === undefined && partial.homeFavoriteId !== undefined
         ? pinHomeFavoriteFirst(rawNextFavorites, nextHomeFavoriteId)
         : rawNextFavorites;
 
@@ -243,7 +243,6 @@ export class ConfigStore {
         const homeFavoriteId = favorites.some((f) => f.id === rawHomeId)
           ? rawHomeId
           : fallbackHomeId;
-        favorites = pinHomeFavoriteFirst(favorites, homeFavoriteId);
 
         return {
           ...DEFAULT_CONFIG,

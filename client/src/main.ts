@@ -17,6 +17,9 @@ class AppRouter {
 
   private authToken: string | null = null;
   private currentPin: string | null = null;
+  private hasActiveSession: boolean = false;
+  private primarySessionActive: boolean = true;
+  private sessionRole: 'primary' | 'secondary' = 'primary';
   private remainingAttempts: number = 10;
   private cleanupCurrentView: (() => void) | null = null;
   private isStreaming: boolean = false;
@@ -27,11 +30,16 @@ class AppRouter {
     this.avSync = new AvSyncController();
     this.audioPlayer = new AudioPlayer(this.avSync);
 
-    // Restore cached token if available
+    // Restore cached token and role if available
     try {
       this.authToken = sessionStorage.getItem('tesroid_token');
+      const savedRole = sessionStorage.getItem('tesroid_role');
+      if (savedRole === 'primary' || savedRole === 'secondary') {
+        this.sessionRole = savedRole;
+      }
     } catch {
       this.authToken = null;
+      this.sessionRole = 'primary';
     }
 
     this.bindWsEvents();
@@ -43,6 +51,8 @@ class AppRouter {
       const status = await res.json();
 
       this.remainingAttempts = status.remainingAttempts ?? 10;
+      this.hasActiveSession = Boolean(status.hasActiveSession);
+      this.primarySessionActive = this.hasActiveSession;
 
       if (status.consecutiveFailures >= 10) {
         this.showLockout();
@@ -72,11 +82,17 @@ class AppRouter {
     renderPinEntry(
       this.appEl,
       this.remainingAttempts,
-      async (pin: string) => {
-        this.currentPin = pin;
+      async (pin: string, isSecondary?: boolean) => {
+        const authPayload = isSecondary ? `SECONDARY:${pin}` : pin;
+        this.sessionRole = isSecondary ? 'secondary' : 'primary';
+        this.primarySessionActive = isSecondary ? this.hasActiveSession : true;
+        this.currentPin = authPayload;
+        this.authToken = null;
 
-        // Unlock AudioContext inside tap gesture
-        await this.audioPlayer.unlock();
+        // Unlock AudioContext inside tap gesture (disabled for secondary display sessions)
+        if (!isSecondary) {
+          await this.audioPlayer.unlock();
+        }
 
         // Connect WebSocket and send auth
         if (!this.wsClient.isConnected()) {
@@ -84,11 +100,12 @@ class AppRouter {
         }
 
         // Send auth packet immediately if connected, or the 'open' handler will send it
-        this.wsClient.send(ClientProtocol.packAuth(pin));
+        this.wsClient.send(ClientProtocol.packAuth(authPayload));
       },
-      () => {
-        this.openSettings();
+      (enteredPin?: string) => {
+        this.openSettings(enteredPin);
       },
+      { hasActiveSession: this.hasActiveSession },
     );
   }
 
@@ -101,6 +118,8 @@ class AppRouter {
       this.avSync,
       () => this.openSettings(),
       this.authToken,
+      this.sessionRole,
+      { initialPrimaryActive: this.primarySessionActive },
     );
   }
 
@@ -110,13 +129,16 @@ class AppRouter {
     renderLockoutView(this.appEl);
   }
 
-  private openSettings(): void {
+  private openSettings(prefilledPin?: string): void {
     openSettingsWithAuth(
       this.appEl,
       this.authToken,
       (callback) => {
-        // Simple prompt for PIN re-auth if no valid session
-        const pin = prompt('設定にアクセスするにはPINコードを入力してください:');
+        // Use entered PIN if provided, otherwise prompt for PIN re-auth
+        const pin =
+          prefilledPin && prefilledPin.length >= 4
+            ? prefilledPin
+            : prompt('設定にアクセスするにはPINコードを入力してください:');
         if (pin) {
           fetch('/api/auth/verify', {
             method: 'POST',
@@ -169,8 +191,12 @@ class AppRouter {
         }
       } else if (msg.type === 'AUTH_SUCCESS') {
         this.authToken = msg.token;
+        if (msg.role === 'secondary' || msg.role === 'primary') {
+          this.sessionRole = msg.role;
+        }
         try {
           sessionStorage.setItem('tesroid_token', msg.token);
+          sessionStorage.setItem('tesroid_role', this.sessionRole);
         } catch {}
 
         if (!this.isStreaming) {
@@ -180,9 +206,11 @@ class AppRouter {
       } else if (msg.type === 'AUTH_FAILED') {
         try {
           sessionStorage.removeItem('tesroid_token');
+          sessionStorage.removeItem('tesroid_role');
         } catch {}
         this.authToken = null;
         this.currentPin = null;
+        this.sessionRole = 'primary';
 
         this.remainingAttempts = msg.remainingAttempts ?? 0;
         if (this.remainingAttempts <= 0) {
@@ -194,8 +222,12 @@ class AppRouter {
           );
           this.showPinEntry();
         }
+      } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
+        this.primarySessionActive = Boolean(msg.active);
       } else if (msg.type === 'SESSION_CONFLICT') {
-        this.handleSessionConflict(msg.error);
+        const nextHasActiveSession =
+          typeof msg.hasActiveSession === 'boolean' ? msg.hasActiveSession : true;
+        this.handleSessionConflict(msg.error, nextHasActiveSession);
       }
     });
 
@@ -204,22 +236,28 @@ class AppRouter {
         // Policy violation / lockout
         try {
           sessionStorage.removeItem('tesroid_token');
+          sessionStorage.removeItem('tesroid_role');
         } catch {}
         this.authToken = null;
+        this.sessionRole = 'primary';
         this.showLockout();
       } else if (ev.code === 4009 || ev.code === 4000) {
-        this.handleSessionConflict();
+        this.handleSessionConflict(undefined, this.hasActiveSession);
       }
     });
   }
 
-  private handleSessionConflict(message?: string): void {
+  private handleSessionConflict(message?: string, hasActiveSession = true): void {
     const hadSession = Boolean(this.authToken || this.currentPin || this.isStreaming);
     try {
       sessionStorage.removeItem('tesroid_token');
+      sessionStorage.removeItem('tesroid_role');
     } catch {}
     this.authToken = null;
     this.currentPin = null;
+    this.sessionRole = 'primary';
+    this.hasActiveSession = hasActiveSession;
+    this.primarySessionActive = hasActiveSession;
     this.wsClient.close();
     if (hadSession || message) {
       showToast(

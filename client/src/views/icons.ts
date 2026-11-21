@@ -153,19 +153,22 @@ export function pinHomeFavoriteFirst(
 }
 
 /**
- * Inserts a new favorite right after the pinned home favorite (index 1 when home is at index 0, else index 0).
+ * Inserts a new favorite right after the home favorite (index 1) when home is currently at index 0,
+ * or at index 0 otherwise while preserving the existing order without moving home.
  */
-export function insertFavoriteAfterHome(
+export function insertFavoritePreservingHome(
   favorites: FavoriteItem[],
   newItem: FavoriteItem,
   homeFavoriteId: string,
 ): FavoriteItem[] {
-  const pinned = pinHomeFavoriteFirst(favorites, homeFavoriteId);
-  const resolvedHome = pinned.length > 0 ? resolveHomeFavorite(pinned, homeFavoriteId) : null;
-  if (resolvedHome && pinned[0]?.id === resolvedHome.id) {
-    return [pinned[0], { ...newItem }, ...pinned.slice(1)];
+  const list = favorites.map((f) => ({ ...f }));
+  if (list.length > 0) {
+    const resolvedHome = resolveHomeFavorite(list, homeFavoriteId);
+    if (list[0].id === resolvedHome.id) {
+      return [list[0], { ...newItem }, ...list.slice(1)];
+    }
   }
-  return [{ ...newItem }, ...pinned];
+  return [{ ...newItem }, ...list];
 }
 
 function removeElementTree(node: unknown): void {
