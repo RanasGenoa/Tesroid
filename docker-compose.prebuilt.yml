@@ -1,0 +1,31 @@
+services:
+  tesroid:
+    image: ghcr.io/ranasgenoa/tesroid:latest
+    container_name: tesroid-server
+    init: true
+    # Intel / AMD GPU hardware acceleration (VAAPI)
+    devices:
+      - /dev/dri:/dev/dri
+    shm_size: 1g
+    ports:
+      - "${TESROID_PORT:-9001}:8080"
+    volumes:
+      - tesroid-data:/data
+    environment:
+      - PORT=8080
+      - DATA_DIR=/data
+      - NODE_ENV=production
+      # Set your Cloudflare Tunnel token to expose Tesroid securely via HTTPS/WSS
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+      - BROWSER_URL=${BROWSER_URL:-https://www.youtube.com}
+      - DISPLAY_WIDTH=${DISPLAY_WIDTH:-1280}
+      - DISPLAY_HEIGHT=${DISPLAY_HEIGHT:-720}
+      - FPS=${FPS:-30}
+      - VIDEO_BITRATE=${VIDEO_BITRATE:-1000k}
+      - VAAPI_DEVICE=${VAAPI_DEVICE:-/dev/dri/renderD128}
+      - LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-iHD}
+    restart: unless-stopped
+
+volumes:
+  tesroid-data:
+    driver: local

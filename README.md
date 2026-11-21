@@ -103,7 +103,8 @@
 
 ## 📋 動作要件
 
-- **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)、またはクラウド VM
+- **アーキテクチャ**: `x86_64` (`amd64`) 専用
+- **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)
 - **GPU**: VAAPI 対応 GPU（Intel 第6世代 Skylake 以降の統合 GPU Quick Sync Video、または AMD Radeon VAAPI）
   - ホスト上に `/dev/dri/renderD128` が存在すること
 - **動作確認済み iGPU**:
@@ -115,16 +116,42 @@
 - **ソフトウェア**: Docker Engine 24.0+ および Docker Compose v2.0+
 - **ネットワーク**: テスラ車載ブラウザから接続する場合は **公的 CA による HTTPS (SSL/TLS) 環境** が必須です（詳細は [docs/NETWORK.md](docs/NETWORK.md) を参照）
 
+### 非対応・非推奨環境
+
+Tesroid は低遅延・省リソースを実現するため、ハードウェア支援エンコード（VAAPI）と `amd64` 環境を前提としています。以下の環境は非対応または非推奨です：
+
+| 環境 | 対応状況 | 主な理由 |
+| :--- | :---: | :--- |
+| **格安 VPS / GPU なしクラウド VM** | ❌ 非対応 | 映像エンコードに `h264_vaapi`（`/dev/dri/renderD128`）が必須であり、CPU エンコード（`libx264`）へのフォールバックを持たないため動作しません。GPU 付きクラウド VM は月額コストが高額になるため非推奨です。 |
+| **Windows PC (Docker Desktop / WSL2)** | ❌ 非対応 | WSL2 上の Docker 環境には Linux の `/dev/dri` デバイスを渡せないため動作しません。またスリープや Windows Update 再起動による運用トラブルも起きやすいため非推奨です。 |
+| **ARM CPU 搭載 NAS 等 (Raspberry Pi / ARM64 NAS)** | ❌ 非対応 | `x86_64` (`amd64`) 専用設計であり、Google Chrome Stable (`amd64`) および Intel/AMD VAAPI ドライバに依存しているため動作しません。 |
+
 ---
 
 ## 🚀 クイックスタート (Docker Compose)
 
+### ⚡ ビルド不要導入（推奨）
+
+ローカルでの `docker build` を行わず、公開済みのベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）を使ってすぐに起動できます（初回起動時にコンテナが Google Chrome を自動取得します）。
+
+- **方法 A: ビルド不要の Docker Compose コピペ導入**
+  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を使い、`.env` または YAML 内に `TUNNEL_TOKEN` を設定するだけで Cloudflare Tunnel も含めて自動起動します。詳しい手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#2-a-ビルド不要の-docker-compose-コピペ導入推奨) を参照してください。
+- **方法 B: ワンショット導入スクリプト（Intel x86_64 Linux 向け）**
+  Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
+  bash install.sh
+  ```
+  （リポジトリをクローン済みの場合は `bash scripts/install.sh`）
+
+### 🔧 ローカルビルド版（開発者・カスタマイズ向け）
+
 > [!IMPORTANT]
-> 本リポジトリはソースコードおよび `Dockerfile` のみを配布しています。Google Chrome の利用規約に基づき、Docker イメージはご自身のホスト環境でローカルビルドしてご利用ください（ビルド済みイメージのパブリックレジストリへの再配布は行わないでください）。
+> 本リポジトリの `Dockerfile` からビルドした Google Chrome 同梱イメージは、Google Chrome の利用規約に基づきパブリックレジストリへ再配布しないでください。配布済みの `ghcr.io/ranasgenoa/tesroid:latest` は Chrome 非同梱のベースイメージであり、ユーザー環境での初回起動時に公式パッケージを取得します。
 
 ```bash
 # 1. リポジトリのクローン
-git clone https://github.com/<YOUR_ORG_OR_USER>/Tesroid.git
+git clone https://github.com/RanasGenoa/Tesroid.git
 cd Tesroid
 
 # 2. 環境変数ファイルの作成（必要に応じてポートや初期URLを調整）

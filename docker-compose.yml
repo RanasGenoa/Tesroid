@@ -26,6 +26,7 @@ services:
       - VIDEO_BITRATE=${VIDEO_BITRATE:-1000k}
       - VAAPI_DEVICE=${VAAPI_DEVICE:-/dev/dri/renderD128}
       - LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-iHD}
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
     restart: unless-stopped
 
 volumes:
