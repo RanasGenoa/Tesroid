@@ -246,6 +246,8 @@ export function renderStreamingView(
   let browserPowerState: BrowserPowerState = 'active';
   const isSecondarySession = sessionRole === 'secondary';
   let isPrimarySessionActive = !isSecondarySession || (options?.initialPrimaryActive ?? true);
+  let isActingPrimary = false;
+  const isEffectivelyPrimary = () => !isSecondarySession || isActingPrimary;
 
   let instantRtt = 0;
   let minRtt = Number.POSITIVE_INFINITY;
@@ -884,6 +886,7 @@ export function renderStreamingView(
 
   if (isSecondarySession && typeof avSync.setExternalMasterPtsProvider === 'function') {
     avSync.setExternalMasterPtsProvider(() => {
+      if (isEffectivelyPrimary()) return null;
       if (primaryAnchorPtsUs <= 0 || primaryAnchorLocalMs <= 0) return null;
       const elapsedMs = performance.now() - primaryAnchorLocalMs;
       if (elapsedMs < -1000 || elapsedMs > 5000) return null;
@@ -978,23 +981,21 @@ export function renderStreamingView(
   // 3. Touch Mapper
   const touchMapper = new TouchMapper(canvas, wsClient, latencyController);
 
-  // Auto-unlock AudioContext on any user touch/click anywhere on screen (disabled for secondary display)
+  // Auto-unlock AudioContext on any user touch/click anywhere on screen (disabled while acting as passive secondary)
   const autoUnlockAudio = () => {
-    if (isSecondarySession) return;
+    if (!isEffectivelyPrimary()) return;
     const stats = audioPlayer.getStats();
     if (!stats.isUnlocked || stats.state === 'suspended') {
       audioPlayer.unlock();
     }
   };
-  if (!isSecondarySession) {
-    canvas.addEventListener('pointerdown', autoUnlockAudio);
-    window.addEventListener('pointerdown', autoUnlockAudio, { capture: true });
-  }
+  canvas.addEventListener('pointerdown', autoUnlockAudio);
+  window.addEventListener('pointerdown', autoUnlockAudio, { capture: true });
 
   // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
   let resizeTimer: any = null;
   const sendResize = (immediate: boolean = false) => {
-    if (isSecondarySession) return;
+    if (!isEffectivelyPrimary()) return;
     const execute = () => {
       const vpWidth = streamViewport?.clientWidth || 0;
       const vpHeight = streamViewport?.clientHeight || 0;
@@ -1013,8 +1014,8 @@ export function renderStreamingView(
   };
 
   const onResize = () => sendResize(false);
+  window.addEventListener('resize', onResize);
   if (!isSecondarySession) {
-    window.addEventListener('resize', onResize);
     sendResize(false);
   }
 
@@ -1032,7 +1033,7 @@ export function renderStreamingView(
 
   const handleAudio = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
-    if (isSecondarySession || !isPrimarySessionActive) return;
+    if (!isEffectivelyPrimary() || !isPrimarySessionActive) return;
     metricsCollector.recordAudioPacket();
     audioPlayer.handleAudioPacket(msg.flags, msg.pts, msg.data);
   };
@@ -1096,6 +1097,19 @@ export function renderStreamingView(
     wsClient.send(ClientProtocol.packCommand({ type: 'RESUME_BROWSER' }));
   };
 
+  // Intentional Session Disconnect helper
+  const performIntentionalDisconnect = () => {
+    if (wsClient.isConnected()) {
+      wsClient.send(ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }));
+    }
+    try {
+      sessionStorage.removeItem('tesroid_token');
+      sessionStorage.removeItem('tesroid_role');
+    } catch {}
+    wsClient.close(1000, 'User requested disconnect');
+    window.location.reload();
+  };
+
   // Immediate Stop Action
   const triggerStop = () => {
     wsClient.send(ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));
@@ -1131,6 +1145,9 @@ export function renderStreamingView(
           </button>
           <button id="power-browser-restart-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
             ${ICONS.refresh} ブラウザ＆配信再起動
+          </button>
+          <button id="power-disconnect-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; font-weight: 600; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.18);">
+            ${ICONS.close} セッション切断 (待機画面へ戻る)
           </button>
         </div>
       </div>
@@ -1170,6 +1187,13 @@ export function renderStreamingView(
       resetHudDimTimer();
       closePowerModal();
       browserRestart(token);
+    });
+
+    overlay.querySelector('#power-disconnect-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      resetHudDimTimer();
+      closePowerModal();
+      performIntentionalDisconnect();
     });
 
     container.appendChild(overlay);
@@ -1250,7 +1274,7 @@ export function renderStreamingView(
       metricsCollector.updateRtt(instantRtt);
       jitterController.updateRtt(instantRtt);
 
-      if (isSecondarySession) {
+      if (isSecondarySession && !isActingPrimary) {
         if (
           typeof msg.primaryTargetBufferMs === 'number' &&
           Number.isFinite(msg.primaryTargetBufferMs)
@@ -1309,6 +1333,33 @@ export function renderStreamingView(
       serverBufferMs = 0;
       serverMode = 'LIVE';
       updateHudLiveStatus();
+    } else if (msg.type === 'SESSION_ROLE_CHANGED') {
+      if (!isSecondarySession) return;
+      if (msg.effectiveRole === 'acting_primary') {
+        isActingPrimary = true;
+        isPrimarySessionActive = true;
+        hasPromptedAudioUnlock = false;
+        primaryAnchorPtsUs = 0;
+        primaryAnchorLocalMs = 0;
+        if (noticeActionBox) noticeActionBox.style.display = 'none';
+        if (noticeActionBtn) noticeActionBtn.style.display = '';
+        sendResize(true);
+        if (typeof audioPlayer.unlock === 'function') {
+          void audioPlayer.unlock();
+        }
+        showToast('メインセッション切断により、後席をメイン代理モードに切り替えました', 'info');
+      } else if (msg.effectiveRole === 'secondary') {
+        const wasActingPrimary = isActingPrimary;
+        isActingPrimary = false;
+        if (resizeTimer) {
+          clearTimeout(resizeTimer);
+          resizeTimer = null;
+        }
+        audioPlayer.resetJitterBuffer();
+        if (wasActingPrimary) {
+          showToast('メインセッションが復帰したため、セカンドディスプレイ表示に戻りました', 'info');
+        }
+      }
     } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
       if (!isSecondarySession) return;
       const nextActive = Boolean(msg.active);
@@ -1576,7 +1627,7 @@ export function renderStreamingView(
     updateHudLiveStatus();
 
     // Audio Autoplay & Unlock Guidance for Tesla Browser
-    if (!isSecondarySession) {
+    if (isEffectivelyPrimary()) {
       const audioStats = audioPlayer.getStats();
       if (audioStats.packetsReceived > 0 && audioStats.state === 'suspended') {
         if (!hasPromptedAudioUnlock) {
@@ -1816,9 +1867,15 @@ export function renderStreamingView(
 
   noticeDisconnectBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    wsClient.close();
-    window.location.reload();
+    performIntentionalDisconnect();
   });
+
+  const onPageHide = () => {
+    if (wsClient.isConnected()) {
+      wsClient.send(ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }));
+    }
+  };
+  window.addEventListener('pagehide', onPageHide);
 
   // Settings
   document.getElementById('hud-settings-btn')?.addEventListener('click', (e) => {
@@ -1836,16 +1893,13 @@ export function renderStreamingView(
     if (hudDimTimer) clearTimeout(hudDimTimer);
     window.removeEventListener('pointermove', resetHudDimTimer);
     window.removeEventListener('pointerdown', resetHudDimTimer);
-    if (!isSecondarySession) {
-      window.removeEventListener('resize', onResize);
-    }
+    window.removeEventListener('pagehide', onPageHide);
+    window.removeEventListener('resize', onResize);
     if (typeof avSync.setExternalMasterPtsProvider === 'function') {
       avSync.setExternalMasterPtsProvider(undefined);
     }
-    if (!isSecondarySession) {
-      canvas.removeEventListener('pointerdown', autoUnlockAudio);
-      window.removeEventListener('pointerdown', autoUnlockAudio, { capture: true });
-    }
+    canvas.removeEventListener('pointerdown', autoUnlockAudio);
+    window.removeEventListener('pointerdown', autoUnlockAudio, { capture: true });
     window.removeEventListener('tesroid:settings-updated', onSettingsUpdated);
     window.removeEventListener('tesroid:stream-reset', onStreamResetEvent);
     if (saveSettingsTimer) clearTimeout(saveSettingsTimer);

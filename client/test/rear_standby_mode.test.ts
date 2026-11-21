@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WSS_CHANNEL } from '../src/transport/protocol.js';
 import { renderStreamingView } from '../src/views/streaming.js';
 
 let capturedOnFrame: ((frame: any) => void) | null = null;
@@ -231,6 +232,9 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
       unlock: vi.fn().mockResolvedValue(undefined),
       toggleMute: vi.fn(() => false),
     };
+    mockWindow.innerWidth = 1024;
+    mockWindow.innerHeight = 600;
+    mockWindow.devicePixelRatio = 1;
     mockAvSync = {
       reset: vi.fn(),
       updateVideoPts: vi.fn(),
@@ -313,5 +317,42 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     emitWs('audio', { flags: 0x01, pts: 3000n, data: new Uint8Array([4, 5]) });
     expect(lastDecoderInstance.handlePacket).toHaveBeenCalledTimes(1);
     expect(mockAudioPlayer.handleAudioPacket).not.toHaveBeenCalled();
+  });
+
+  it('enables resize & audio when promoted to acting_primary and mutes audio & disables resize when demoted back to secondary', () => {
+    cleanupView = renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      vi.fn(),
+      'token-rear',
+      'secondary',
+      { initialPrimaryActive: true },
+    );
+
+    // Initially secondary: audio ignored and resize ignored
+    emitWs('audio', { flags: 0x01, pts: 1000n, data: new Uint8Array([1, 2]) });
+    expect(mockAudioPlayer.handleAudioPacket).not.toHaveBeenCalled();
+    expect(mockWsClient.send).not.toHaveBeenCalled();
+
+    // Promoted to acting_primary -> sends immediate RESIZE, unlocks audio, and plays audio packets
+    emitWs('control', { type: 'SESSION_ROLE_CHANGED', effectiveRole: 'acting_primary' });
+    expect(mockAudioPlayer.unlock).toHaveBeenCalledTimes(1);
+    const resizeCall = mockWsClient.send.mock.calls.find(
+      (c: any[]) => c[0] instanceof Uint8Array && c[0][0] === WSS_CHANNEL.RESIZE,
+    );
+    expect(resizeCall).toBeDefined();
+
+    emitWs('audio', { flags: 0x01, pts: 2000n, data: new Uint8Array([3, 4]) });
+    expect(mockAudioPlayer.handleAudioPacket).toHaveBeenCalledTimes(1);
+
+    // Demoted back to secondary -> resets audio buffer (mute) and ignores subsequent audio packets
+    mockWsClient.send.mockClear();
+    emitWs('control', { type: 'SESSION_ROLE_CHANGED', effectiveRole: 'secondary' });
+    expect(mockAudioPlayer.resetJitterBuffer).toHaveBeenCalledTimes(1);
+
+    emitWs('audio', { flags: 0x01, pts: 3000n, data: new Uint8Array([5, 6]) });
+    expect(mockAudioPlayer.handleAudioPacket).toHaveBeenCalledTimes(1);
   });
 });

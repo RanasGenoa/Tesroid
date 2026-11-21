@@ -225,7 +225,9 @@ class AppRouter {
       } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
         this.primarySessionActive = Boolean(msg.active);
       } else if (msg.type === 'SESSION_CONFLICT') {
-        this.handleSessionConflict(msg.error);
+        const nextHasActiveSession =
+          typeof msg.hasActiveSession === 'boolean' ? msg.hasActiveSession : true;
+        this.handleSessionConflict(msg.error, nextHasActiveSession);
       }
     });
 
@@ -240,12 +242,12 @@ class AppRouter {
         this.sessionRole = 'primary';
         this.showLockout();
       } else if (ev.code === 4009 || ev.code === 4000) {
-        this.handleSessionConflict();
+        this.handleSessionConflict(undefined, this.hasActiveSession);
       }
     });
   }
 
-  private handleSessionConflict(message?: string): void {
+  private handleSessionConflict(message?: string, hasActiveSession = true): void {
     const hadSession = Boolean(this.authToken || this.currentPin || this.isStreaming);
     try {
       sessionStorage.removeItem('tesroid_token');
@@ -254,8 +256,8 @@ class AppRouter {
     this.authToken = null;
     this.currentPin = null;
     this.sessionRole = 'primary';
-    this.hasActiveSession = true;
-    this.primarySessionActive = true;
+    this.hasActiveSession = hasActiveSession;
+    this.primarySessionActive = hasActiveSession;
     this.wsClient.close();
     if (hadSession || message) {
       showToast(

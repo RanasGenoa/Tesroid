@@ -311,9 +311,10 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
     expect(elementRegistry.get('power-sleep-btn')).toBeUndefined();
     expect(elementRegistry.get('power-resume-btn')).toBeUndefined();
 
-    // 「ワンタップ停止」「ブラウザ再起動」の2つの主要アクションが存在すること
+    // 「ワンタップ停止」「ブラウザ再起動」「セッション切断」のアクションが存在すること
     expect(elementRegistry.get('power-quick-stop-btn')).toBeDefined();
     expect(elementRegistry.get('power-browser-restart-btn')).toBeDefined();
+    expect(elementRegistry.get('power-disconnect-btn')).toBeDefined();
 
     // ブラウザ再起動ボタンをクリックした時の動作確認
     const restartBtn = elementRegistry.get('power-browser-restart-btn');
@@ -324,5 +325,27 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
       method: 'POST',
       headers: { Authorization: `Bearer ${testToken}` },
     });
+  });
+
+  it('(e) 停止モーダルの「セッション切断」で DISCONNECT_SESSION 送信と正常クローズ(1000)が実行される', () => {
+    renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      onOpenSettings,
+      testToken,
+    );
+
+    elementRegistry.get('hud-stop-btn').click();
+    const disconnectBtn = elementRegistry.get('power-disconnect-btn');
+    expect(disconnectBtn).toBeDefined();
+    disconnectBtn.click();
+
+    expect(mockWsClient.send).toHaveBeenCalledWith(
+      ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }),
+    );
+    expect(mockWsClient.close).toHaveBeenCalledWith(1000, 'User requested disconnect');
+    expect((globalThis as any).window.location.reload).toHaveBeenCalledTimes(1);
   });
 });

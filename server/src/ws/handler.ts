@@ -17,6 +17,8 @@ export interface ClientSession {
   authToken?: string;
   role?: SessionRole;
   isStandby?: boolean;
+  isActingPrimary?: boolean;
+  intentionalDisconnect?: boolean;
   telemetrySessionId?: string;
   lastAckPts: bigint | null;
   lastSentVideoPts?: bigint | null;
@@ -42,7 +44,10 @@ export class WebSocketHandler {
   private authenticatedClients: Set<WebSocket> = new Set();
   private allClients: Set<WebSocket> = new Set();
   private lastSessionToken: string | null = null;
-  private authorizedSessions: Map<string, { role: SessionRole; standby?: boolean }> = new Map();
+  private authorizedSessions: Map<
+    string,
+    { role: SessionRole; standby?: boolean; actingPrimary?: boolean }
+  > = new Map();
 
   private static readonly DEFAULT_TARGET_BUFFER_MS = 10000;
   private static readonly MAX_TARGET_BUFFER_MS = 30000;
@@ -113,6 +118,20 @@ export class WebSocketHandler {
     return this.getPrimarySession() !== undefined;
   }
 
+  public hasActingPrimaryClients(): boolean {
+    for (const client of this.authenticatedClients) {
+      const session = this.clientSessions.get(client);
+      if (session?.role === 'secondary' && session.isActingPrimary) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isEffectivelyPrimary(session?: ClientSession): boolean {
+    return Boolean(session && (session.role !== 'secondary' || session.isActingPrimary));
+  }
+
   public broadcastStreamSettings(stream: { maxFps?: number; bitrate?: number }): void {
     this.broadcastControl({
       type: 'STREAM_SETTINGS_UPDATED',
@@ -152,6 +171,7 @@ export class WebSocketHandler {
       const session = this.clientSessions.get(client);
       if (session?.role === 'secondary' && !session.isStandby) {
         session.isStandby = true;
+        session.isActingPrimary = false;
         if (session.pacingTimer) {
           clearTimeout(session.pacingTimer);
           session.pacingTimer = null;
@@ -160,7 +180,10 @@ export class WebSocketHandler {
         session.mode = 'LIVE';
         if (session.authToken) {
           const authEntry = this.authorizedSessions.get(session.authToken);
-          if (authEntry) authEntry.standby = true;
+          if (authEntry) {
+            authEntry.standby = true;
+            authEntry.actingPrimary = false;
+          }
         }
         this.sendControl(client, {
           type: 'PRIMARY_SESSION_STATUS',
@@ -168,6 +191,37 @@ export class WebSocketHandler {
         });
       }
     }
+  }
+
+  private promoteSecondaryToActingPrimary(): boolean {
+    if (this.hasActingPrimaryClients()) return true;
+    for (const client of this.authenticatedClients) {
+      const session = this.clientSessions.get(client);
+      if (session?.role === 'secondary' && !session.isStandby && client.readyState === 1) {
+        session.isActingPrimary = true;
+        if (session.authToken) {
+          const authEntry = this.authorizedSessions.get(session.authToken);
+          if (authEntry) authEntry.actingPrimary = true;
+        }
+        if (this.autoSleepTimer) {
+          clearTimeout(this.autoSleepTimer);
+          this.autoSleepTimer = null;
+        }
+        this.sendControl(client, {
+          type: 'SESSION_ROLE_CHANGED',
+          effectiveRole: 'acting_primary',
+        });
+        const cachedOpusHead = this.encoder.getCachedOpusHead();
+        if (cachedOpusHead) {
+          client.send(MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, cachedOpusHead));
+        }
+        console.log(
+          '[WebSocketHandler] Promoted active secondary display to acting primary after intentional primary disconnect.',
+        );
+        return true;
+      }
+    }
+    return false;
   }
 
   private notifyOtherSessionsLiveJump(sourceSocket: WebSocket): void {
@@ -284,20 +338,23 @@ export class WebSocketHandler {
       }
     });
 
-    socket.on('close', () => {
+    socket.on('close', (code?: number) => {
       const wasAuthenticated = this.authenticatedClients.has(socket);
       this.allClients.delete(socket);
       this.authenticatedClients.delete(socket);
 
       const session = this.clientSessions.get(socket);
       const wasPrimary = wasAuthenticated && session?.role !== 'secondary';
+      const isIntentionalClose =
+        Boolean(session?.intentionalDisconnect) || code === 1000 || code === 1001;
+      const closedAuthToken = session?.authToken;
       if (session) {
         if (session.pacingTimer) {
           clearTimeout(session.pacingTimer);
           session.pacingTimer = null;
         }
         session.playbackQueue = [];
-        if (session.role !== 'secondary') {
+        if (this.isEffectivelyPrimary(session)) {
           if (session.lastAckPts !== null) {
             this.lastKnownAckPts = session.lastAckPts;
           }
@@ -309,10 +366,16 @@ export class WebSocketHandler {
       }
 
       console.log(
-        `[WebSocketHandler] Client disconnected. Remaining auth: ${this.authenticatedClients.size}, total: ${this.allClients.size}`,
+        `[WebSocketHandler] Client disconnected (code=${code ?? 'unknown'}). Remaining auth: ${this.authenticatedClients.size}, total: ${this.allClients.size}`,
       );
 
       if (wasPrimary && !this.hasPrimaryClients()) {
+        if (isIntentionalClose && closedAuthToken) {
+          this.authorizedSessions.delete(closedAuthToken);
+        }
+        if (isIntentionalClose && this.promoteSecondaryToActingPrimary()) {
+          return;
+        }
         const isPipelineActive =
           this.browserManager.getState() === 'running' || this.encoder.isRunning();
         if (isPipelineActive) {
@@ -324,6 +387,7 @@ export class WebSocketHandler {
         }
       } else if (
         !this.hasPrimaryClients() &&
+        !this.hasActingPrimaryClients() &&
         !this.autoSleepTimer &&
         (this.browserManager.getState() === 'running' || this.encoder.isRunning())
       ) {
@@ -493,7 +557,12 @@ export class WebSocketHandler {
       const existingAuth = this.authorizedSessions.get(token);
       const role: SessionRole = existingAuth?.role || 'primary';
       const wasStandby = Boolean(existingAuth?.standby);
-      this.authorizedSessions.set(token, { role, standby: wasStandby });
+      const wasActingPrimary = Boolean(existingAuth?.actingPrimary);
+      this.authorizedSessions.set(token, {
+        role,
+        standby: wasStandby,
+        actingPrimary: wasActingPrimary,
+      });
       this.activateAuthenticatedSession(socket, token, false, role, true);
       return;
     }
@@ -531,6 +600,20 @@ export class WebSocketHandler {
 
   private applyManualLogin(socket: WebSocket, token: string, isSecondary: boolean): void {
     if (isSecondary) {
+      if (!this.hasPrimaryClients() && this.hasActingPrimaryClients()) {
+        console.log(
+          '[WebSocketHandler] Rejecting secondary login while acting primary is active; primary login required.',
+        );
+        this.sendControl(socket, {
+          type: 'SESSION_CONFLICT',
+          error:
+            '現在、後席がメインセッション代理として稼働中のためセカンドディスプレイとして参加できません。メインとしてログインしてください。',
+          hasActiveSession: false,
+        });
+        this.evictClientSocket(socket, 4009, 'Acting primary active; secondary join rejected');
+        return;
+      }
+
       // Prune stale inactive secondary tokens so authorizedSessions does not grow unbounded
       const activeTokens = new Set<string>();
       for (const client of this.authenticatedClients) {
@@ -542,7 +625,11 @@ export class WebSocketHandler {
           this.authorizedSessions.delete(existingToken);
         }
       }
-      this.authorizedSessions.set(token, { role: 'secondary', standby: !this.hasPrimaryClients() });
+      this.authorizedSessions.set(token, {
+        role: 'secondary',
+        standby: !this.hasPrimaryClients(),
+        actingPrimary: false,
+      });
       this.activateAuthenticatedSession(socket, token, false, 'secondary');
       return;
     }
@@ -560,7 +647,7 @@ export class WebSocketHandler {
         this.authorizedSessions.delete(existingToken);
       }
     }
-    this.authorizedSessions.set(token, { role: 'primary', standby: false });
+    this.authorizedSessions.set(token, { role: 'primary', standby: false, actingPrimary: false });
     this.activateAuthenticatedSession(socket, token, true, 'primary');
   }
 
@@ -589,6 +676,26 @@ export class WebSocketHandler {
       }
     }
 
+    let demotedActingPrimary = false;
+    if (role === 'primary') {
+      for (const client of this.authenticatedClients) {
+        if (client === socket) continue;
+        const existingSession = this.clientSessions.get(client);
+        if (existingSession?.role === 'secondary' && existingSession.isActingPrimary) {
+          existingSession.isActingPrimary = false;
+          demotedActingPrimary = true;
+          if (existingSession.authToken) {
+            const authEntry = this.authorizedSessions.get(existingSession.authToken);
+            if (authEntry) authEntry.actingPrimary = false;
+          }
+          this.sendControl(client, {
+            type: 'SESSION_ROLE_CHANGED',
+            effectiveRole: 'secondary',
+          });
+        }
+      }
+    }
+
     const otherActiveSockets = [...this.authenticatedClients].filter((s) => s !== socket);
     const hasOtherActiveClients = otherActiveSockets.length > 0;
     const isSwitchedSession = this.lastSessionToken !== null && this.lastSessionToken !== token;
@@ -609,7 +716,7 @@ export class WebSocketHandler {
       }
     }
 
-    if (isSwitchedSession && !preserveActivePipeline) {
+    if ((isSwitchedSession && !preserveActivePipeline) || demotedActingPrimary) {
       console.log(
         '[WebSocketHandler] New client session started; resetting playback buffer and restarting encoders...',
       );
@@ -651,56 +758,83 @@ export class WebSocketHandler {
     console.log('[WebSocketHandler] Client successfully authenticated.');
     const session = this.clientSessions.get(socket);
 
-    // Rear-seat standby mode:
+    // Rear-seat standby / acting-primary mode:
     // - Manual secondary login while primary is absent -> enter standby immediately.
-    // - Token auto-reconnect while primary is absent -> enter standby if previously standby OR pipeline already stopped/slept.
-    //   If pipeline is still active within the 3-minute grace period and secondary was streaming, resume seamlessly!
+    // - Token auto-reconnect while primary is absent ->
+    //   * If previously actingPrimary and pipeline is still active (and no other actingPrimary), resume as actingPrimary.
+    //   * Enter standby if previously standby OR pipeline already stopped/slept.
+    //   * Otherwise, if pipeline is still active within the 3-minute grace period and secondary was streaming, resume seamlessly!
     if (session?.role === 'secondary' && !this.hasPrimaryClients()) {
       const authEntry = session.authToken
         ? this.authorizedSessions.get(session.authToken)
         : undefined;
       const isPipelineActive =
         this.browserManager.getState() === 'running' || this.encoder.isRunning();
-      const shouldEnterStandby =
-        !isTokenReconnect || Boolean(authEntry?.standby) || !isPipelineActive;
+      const canResumeActingPrimary =
+        isTokenReconnect &&
+        Boolean(authEntry?.actingPrimary) &&
+        isPipelineActive &&
+        !this.hasActingPrimaryClients();
 
-      if (shouldEnterStandby) {
-        console.log(
-          '[WebSocketHandler] Secondary client connected in rear-seat standby mode (no primary session). Keeping browser/encoder idle.',
-        );
-        session.mode = 'LIVE';
-        session.isStandby = true;
-        if (authEntry) authEntry.standby = true;
+      if (canResumeActingPrimary) {
+        session.isActingPrimary = true;
+        session.isStandby = false;
         this.sendControl(socket, {
-          type: 'PRIMARY_SESSION_STATUS',
-          active: false,
+          type: 'SESSION_ROLE_CHANGED',
+          effectiveRole: 'acting_primary',
         });
-        if (!this.autoSleepTimer && isPipelineActive) {
-          this.scheduleAutoSleep();
+      } else {
+        const shouldEnterStandby =
+          !isTokenReconnect || Boolean(authEntry?.standby) || !isPipelineActive;
+
+        if (shouldEnterStandby) {
+          console.log(
+            '[WebSocketHandler] Secondary client connected in rear-seat standby mode (no primary session). Keeping browser/encoder idle.',
+          );
+          session.mode = 'LIVE';
+          session.isStandby = true;
+          session.isActingPrimary = false;
+          if (authEntry) {
+            authEntry.standby = true;
+            authEntry.actingPrimary = false;
+          }
+          this.sendControl(socket, {
+            type: 'PRIMARY_SESSION_STATUS',
+            active: false,
+          });
+          if (!this.autoSleepTimer && isPipelineActive) {
+            this.scheduleAutoSleep();
+          }
+          this.sendControl(socket, {
+            type: 'BROWSER_STATUS',
+            state: this.browserManager.getState(),
+            url: this.browserManager.getCurrentUrl(),
+            title:
+              typeof this.browserManager.getCurrentTitle === 'function'
+                ? this.browserManager.getCurrentTitle()
+                : '',
+            dimensions: this.browserManager.getDimensions(),
+          });
+          return;
         }
-        this.sendControl(socket, {
-          type: 'BROWSER_STATUS',
-          state: this.browserManager.getState(),
-          url: this.browserManager.getCurrentUrl(),
-          title:
-            typeof this.browserManager.getCurrentTitle === 'function'
-              ? this.browserManager.getCurrentTitle()
-              : '',
-          dimensions: this.browserManager.getDimensions(),
-        });
-        return;
       }
     }
 
     if (session) {
       session.isStandby = false;
+      if (session.role !== 'secondary') {
+        session.isActingPrimary = false;
+      }
       if (session.authToken) {
         const authEntry = this.authorizedSessions.get(session.authToken);
-        if (authEntry) authEntry.standby = false;
+        if (authEntry) {
+          authEntry.standby = false;
+          if (session.role !== 'secondary') authEntry.actingPrimary = false;
+        }
       }
     }
 
-    if (session?.role !== 'secondary' && this.autoSleepTimer) {
+    if (this.isEffectivelyPrimary(session) && this.autoSleepTimer) {
       clearTimeout(this.autoSleepTimer);
       this.autoSleepTimer = null;
     }
@@ -869,7 +1003,7 @@ export class WebSocketHandler {
 
     const session = this.clientSessions.get(socket);
     const cachedOpusHead = this.encoder.getCachedOpusHead();
-    if (session?.role !== 'secondary' && cachedOpusHead && socket.readyState === 1) {
+    if (this.isEffectivelyPrimary(session) && cachedOpusHead && socket.readyState === 1) {
       const packet = MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, cachedOpusHead);
       socket.send(packet);
     }
@@ -910,9 +1044,9 @@ export class WebSocketHandler {
     session: ClientSession,
     catchupData: { frames: BufferedFrame[]; configVideo?: Buffer; configAudio?: Buffer },
   ): void {
-    const isSecondary = session.role === 'secondary';
+    const muteAudio = !this.isEffectivelyPrimary(session);
     session.mode = 'CATCHUP';
-    session.playbackQueue = isSecondary
+    session.playbackQueue = muteAudio
       ? catchupData.frames.filter((f) => f.type !== 'audio')
       : [...catchupData.frames];
 
@@ -937,7 +1071,7 @@ export class WebSocketHandler {
         MessageMultiplexer.packVideo(VIDEO_FLAGS.CONFIG, 0n, catchupData.configVideo),
       );
     }
-    if (!isSecondary && catchupData.configAudio && session.socket.readyState === 1) {
+    if (!muteAudio && catchupData.configAudio && session.socket.readyState === 1) {
       session.socket.send(
         MessageMultiplexer.packAudio(AUDIO_FLAGS.CONFIG, 0n, catchupData.configAudio),
       );
@@ -1143,9 +1277,12 @@ export class WebSocketHandler {
   }
 
   private handleResizeMessage(buf: Buffer, socket?: WebSocket): void {
-    if (socket && this.clientSessions.get(socket)?.role === 'secondary') {
-      console.log('[WebSocketHandler] Ignoring RESIZE from secondary display session.');
-      return;
+    if (socket) {
+      const session = this.clientSessions.get(socket);
+      if (session?.role === 'secondary' && !session.isActingPrimary) {
+        console.log('[WebSocketHandler] Ignoring RESIZE from secondary display session.');
+        return;
+      }
     }
     if (buf.length < 5) return;
     const requestedW = buf.readUInt16BE(1);
@@ -1268,7 +1405,7 @@ export class WebSocketHandler {
                 this.checkAndResumeCatchup(session);
               }
             }
-            if (session?.role !== 'secondary') {
+            if (this.isEffectivelyPrimary(session)) {
               this.lastKnownAckPts = ackPts;
             }
           }
@@ -1290,7 +1427,7 @@ export class WebSocketHandler {
               0,
               Math.min(WebSocketHandler.MAX_TARGET_BUFFER_MS, rawTargetMs),
             );
-            if (session.role !== 'secondary') {
+            if (this.isEffectivelyPrimary(session)) {
               this.lastKnownTargetBufferMs =
                 session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
             }
@@ -1300,7 +1437,7 @@ export class WebSocketHandler {
               const renderedPts = BigInt(Math.round(Number(cmd.lastRenderedPts)));
               if (renderedPts > 0n) {
                 session.lastAckPts = renderedPts;
-                if (session.role !== 'secondary') {
+                if (this.isEffectivelyPrimary(session)) {
                   this.lastKnownAckPts = renderedPts;
                 }
               }
@@ -1355,7 +1492,9 @@ export class WebSocketHandler {
           const serverBufferMs = Math.max(catchupQueueMs, serverRemainingMs);
 
           const primarySession =
-            session?.role === 'secondary' ? this.getPrimarySession() : undefined;
+            session?.role === 'secondary' && !session.isActingPrimary
+              ? this.getPrimarySession()
+              : undefined;
           const primaryRenderedPts =
             primarySession?.lastAckPts !== null &&
             primarySession?.lastAckPts !== undefined &&
@@ -1540,10 +1679,20 @@ export class WebSocketHandler {
           this.broadcastControl({ type: 'BROWSER_STATUS', state: 'paused' });
           break;
 
+        case 'DISCONNECT_SESSION': {
+          const session = this.clientSessions.get(socket);
+          if (session) {
+            session.intentionalDisconnect = true;
+          }
+          break;
+        }
+
         case 'RESUME_BROWSER':
           if (
             this.clientSessions.get(socket)?.isStandby ||
-            (this.clientSessions.get(socket)?.role === 'secondary' && !this.hasPrimaryClients())
+            (this.clientSessions.get(socket)?.role === 'secondary' &&
+              !this.clientSessions.get(socket)?.isActingPrimary &&
+              !this.hasPrimaryClients())
           ) {
             break;
           }
@@ -1674,7 +1823,7 @@ export class WebSocketHandler {
           if (client.readyState === 1) {
             // OPEN
             const session = this.clientSessions.get(client);
-            if (!session || session.role === 'secondary') continue;
+            if (!session || session.isStandby || !this.isEffectivelyPrimary(session)) continue;
 
             // 1. CATCHUP クライアント: 映像と同様にキューへ格納
             if (session.mode === 'CATCHUP') {
@@ -1708,7 +1857,7 @@ export class WebSocketHandler {
 
     this.autoSleepTimer = setTimeout(() => {
       this.autoSleepTimer = null;
-      if (!this.hasPrimaryClients()) {
+      if (!this.hasPrimaryClients() && !this.hasActingPrimaryClients()) {
         console.log(
           '[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder, pausing browser (True CPU 0%), and clearing playback buffer.',
         );

@@ -871,4 +871,183 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('promotes active secondary to acting primary on intentional primary disconnect, blocks secondary join, and restores primary on return', async () => {
+    vi.useFakeTimers();
+    try {
+      const encoderListeners = new Map<string, Function>();
+      const mockAuth: any = {
+        verifyPin: vi
+          .fn()
+          .mockResolvedValueOnce({ success: true, token: 'token-front' })
+          .mockResolvedValueOnce({ success: true, token: 'token-rear' })
+          .mockResolvedValueOnce({ success: true, token: 'token-third-sec' })
+          .mockResolvedValueOnce({ success: true, token: 'token-front-return' }),
+        validateSession: vi.fn((t: string) => t !== 'invalid'),
+      };
+      const mockBrowser: any = {
+        getDimensions: () => ({ width: 1280, height: 720 }),
+        getState: vi.fn(() => 'running'),
+        getCurrentUrl: () => 'https://www.youtube.com',
+        resume: vi.fn(),
+        pause: vi.fn(),
+        start: vi.fn().mockResolvedValue(undefined),
+        resize: vi.fn().mockResolvedValue(undefined),
+        isChromeAlive: () => true,
+      };
+      const mockEncoder: any = {
+        isRunning: vi.fn(() => true),
+        start: vi.fn(),
+        stop: vi.fn(),
+        restart: vi.fn().mockResolvedValue(undefined),
+        getCachedKeyframe: () => ({ data: Buffer.from([0, 0, 0, 1, 0x65]), pts: 1000n }),
+        isKeyframeStale: () => false,
+        getCachedSpsPps: () => Buffer.from([0, 0, 0, 1, 0x67]),
+        getCachedOpusHead: () => Buffer.from('OpusHead'),
+        on: vi.fn((ev: string, cb: Function) => encoderListeners.set(ev, cb)),
+      };
+      const mockInput: any = { updateDimensions: vi.fn() };
+      const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, {
+        getConfig: () => ({ isSetupCompleted: true }),
+      } as any);
+
+      // 1. Connect front (primary) and rear (secondary)
+      const front = createMockSocket();
+      handler.handleConnection(front.socket);
+      await sendMessage(
+        front,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+      );
+
+      const rear = createMockSocket();
+      handler.handleConnection(rear.socket);
+      await sendMessage(
+        rear,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+      );
+
+      // 2. Front intentionally disconnects via DISCONNECT_SESSION + close(1000)
+      await sendMessage(
+        front,
+        Buffer.concat([
+          Buffer.from([WSS_CHANNEL.COMMAND]),
+          Buffer.from(JSON.stringify({ type: 'DISCONNECT_SESSION' })),
+        ]),
+      );
+      front.listeners.get('close')?.(1000);
+
+      expect(handler.hasPrimaryClients()).toBe(false);
+      expect(handler.hasActingPrimaryClients()).toBe(true);
+      expect(rear.socket.close).not.toHaveBeenCalled();
+      expect(rear.sentControl.find((m) => m.type === 'SESSION_ROLE_CHANGED')).toEqual({
+        type: 'SESSION_ROLE_CHANGED',
+        effectiveRole: 'acting_primary',
+      });
+      // OpusHead config must have been sent to rear upon acting-primary promotion
+      expect(
+        rear.socket.send.mock.calls.some(
+          (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+        ),
+      ).toBe(true);
+
+      // Auto-sleep must NOT stop encoder while acting primary is active
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 100);
+      expect(mockEncoder.stop).not.toHaveBeenCalled();
+      expect(mockBrowser.pause).not.toHaveBeenCalled();
+
+      // Acting primary RESIZE is honored and audio packets are delivered to rear
+      await sendMessage(rear, createResizePacket(1024, 600));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockBrowser.resize).toHaveBeenCalledWith(1024, 600);
+      expect(mockEncoder.restart).toHaveBeenCalledWith(1024, 600);
+
+      const rearAudioBefore = rear.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      encoderListeners.get('audio')?.({
+        flags: 0x01,
+        pts: 2000000n,
+        data: Buffer.from([0xaa, 0xbb]),
+      });
+      const rearAudioAfter = rear.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      expect(rearAudioAfter).toBeGreaterThan(rearAudioBefore);
+
+      // 3. Another browser attempting SECONDARY:<pin> while acting primary is active must be rejected
+      const third = createMockSocket();
+      handler.handleConnection(third.socket);
+      await sendMessage(
+        third,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+      );
+      expect(third.sentControl.find((m) => m.type === 'SESSION_CONFLICT')).toMatchObject({
+        type: 'SESSION_CONFLICT',
+        hasActiveSession: false,
+      });
+      expect(third.socket.close).toHaveBeenCalledWith(
+        4009,
+        'Acting primary active; secondary join rejected',
+      );
+
+      // 4. Primary returns via normal PIN login -> rear is demoted back to secondary (not disconnected),
+      //    primary resolution is applied, and rear audio is muted again
+      rear.sentControl.length = 0;
+      const frontReturn = createMockSocket();
+      handler.handleConnection(frontReturn.socket);
+      await sendMessage(
+        frontReturn,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+      );
+
+      expect(rear.socket.close).not.toHaveBeenCalled();
+      expect(handler.hasPrimaryClients()).toBe(true);
+      expect(handler.hasActingPrimaryClients()).toBe(false);
+      expect(rear.sentControl.find((m) => m.type === 'SESSION_ROLE_CHANGED')).toEqual({
+        type: 'SESSION_ROLE_CHANGED',
+        effectiveRole: 'secondary',
+      });
+      expect(mockEncoder.stop).toHaveBeenCalled();
+      expect(mockEncoder.start).toHaveBeenCalled();
+
+      // Primary resize restores primary resolution
+      mockBrowser.resize.mockClear();
+      mockEncoder.restart.mockClear();
+      await sendMessage(frontReturn, createResizePacket(1280, 720));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockBrowser.resize).toHaveBeenCalledWith(1280, 720);
+      expect(mockEncoder.restart).toHaveBeenCalledWith(1280, 720);
+
+      // Rear resize is ignored again
+      mockBrowser.resize.mockClear();
+      await sendMessage(rear, createResizePacket(800, 480));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockBrowser.resize).not.toHaveBeenCalled();
+
+      // Audio packets go ONLY to frontReturn, NOT to rear
+      const rearAudioMutedBefore = rear.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      const frontAudioBefore = frontReturn.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      encoderListeners.get('audio')?.({
+        flags: 0x01,
+        pts: 3000000n,
+        data: Buffer.from([0xcc, 0xdd]),
+      });
+      const rearAudioMutedAfter = rear.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      const frontAudioAfter = frontReturn.socket.send.mock.calls.filter(
+        (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.AUDIO,
+      ).length;
+      expect(rearAudioMutedAfter).toBe(rearAudioMutedBefore);
+      expect(frontAudioAfter).toBeGreaterThan(frontAudioBefore);
+
+      handler.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
