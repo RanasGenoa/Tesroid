@@ -26,9 +26,22 @@ function setupPinEntryDom() {
   const submitBtn = makeButton('pin-submit-btn', false);
   const secondaryBtn = makeButton('pin-secondary-btn', false);
   const settingsBtn = makeButton('pin-settings-btn', false);
+  const settingsMenu: any = { style: { display: 'none' } };
+  const settingsMenuBackdrop = makeButton('pin-settings-menu-backdrop', false);
+  const rearStandbyBtn = makeButton('pin-menu-rear-standby-btn', false);
+  const rearStandbySub: any = { textContent: '' };
+  const openSettingsMenuBtn = makeButton('pin-menu-open-settings-btn', false);
+  const standbyHintEl: any = { textContent: '', style: { display: 'none' } };
+
   elementsById.set('pin-dots', dotsEl);
   elementsById.set('pin-submit-btn', submitBtn);
   elementsById.set('pin-settings-btn', settingsBtn);
+  elementsById.set('pin-settings-menu', settingsMenu);
+  elementsById.set('pin-settings-menu-backdrop', settingsMenuBackdrop);
+  elementsById.set('pin-menu-rear-standby-btn', rearStandbyBtn);
+  elementsById.set('pin-menu-rear-standby-sub', rearStandbySub);
+  elementsById.set('pin-menu-open-settings-btn', openSettingsMenuBtn);
+  elementsById.set('pin-standby-hint', standbyHintEl);
 
   (globalThis as any).document = {
     getElementById: (id: string) => elementsById.get(id) || null,
@@ -56,7 +69,20 @@ function setupPinEntryDom() {
     btn.click();
   };
 
-  return { container, dotsEl, submitBtn, secondaryBtn, settingsBtn, pressKey };
+  return {
+    container,
+    dotsEl,
+    submitBtn,
+    secondaryBtn,
+    settingsBtn,
+    settingsMenu,
+    settingsMenuBackdrop,
+    rearStandbyBtn,
+    rearStandbySub,
+    openSettingsMenuBtn,
+    standbyHintEl,
+    pressKey,
+  };
 }
 
 describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
@@ -68,17 +94,25 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
   });
 
   it('renderPinEntry enforces 4-to-8 digit bounds, clear/backspace, warning colors, and submit callback', () => {
-    const { container, dotsEl, submitBtn, settingsBtn, pressKey } = setupPinEntryDom();
+    const {
+      container,
+      dotsEl,
+      submitBtn,
+      settingsBtn,
+      settingsMenu,
+      openSettingsMenuBtn,
+      pressKey,
+    } = setupPinEntryDom();
 
     const submittedPins: string[] = [];
-    let settingsOpened = 0;
+    const openedSettingsPins: Array<string | undefined> = [];
 
     // Render with 3 remaining attempts (< 5 triggers red alert styling)
     renderPinEntry(
       container,
       3,
       (pin) => submittedPins.push(pin),
-      () => settingsOpened++,
+      (enteredPin) => openedSettingsPins.push(enteredPin),
     );
 
     expect(container.innerHTML).toContain('#ff3b30'); // Red low-attempts warning
@@ -116,9 +150,63 @@ describe('Client Auth & Security Views (PIN Numpad & Lockout Screen)', () => {
     expect(submitBtn.disabled).toBe(true);
     expect(dotsEl.innerHTML).toContain('PINを入力');
 
-    // Settings button triggers callback
+    // Settings button toggles menu, and menu item triggers onOpenSettings
+    expect(settingsMenu.style.display).toBe('none');
     settingsBtn.click();
-    expect(settingsOpened).toBe(1);
+    expect(settingsMenu.style.display).toBe('flex');
+    openSettingsMenuBtn.click();
+    expect(settingsMenu.style.display).toBe('none');
+    expect(openedSettingsPins).toEqual([undefined]);
+  });
+
+  it('renderPinEntry settings menu connects in rear-seat standby mode when 4-8 digit PIN is entered', () => {
+    const {
+      container,
+      settingsBtn,
+      settingsMenu,
+      rearStandbyBtn,
+      rearStandbySub,
+      openSettingsMenuBtn,
+      standbyHintEl,
+      pressKey,
+    } = setupPinEntryDom();
+
+    const submitted: Array<{ pin: string; isSecondary?: boolean }> = [];
+    const openedSettingsPins: Array<string | undefined> = [];
+
+    renderPinEntry(
+      container,
+      10,
+      (pin, isSecondary) => submitted.push({ pin, isSecondary }),
+      (enteredPin) => openedSettingsPins.push(enteredPin),
+      { hasActiveSession: false },
+    );
+
+    // Attempt standby connection before entering 4 digits -> shows hint and does not submit
+    settingsBtn.click();
+    expect(settingsMenu.style.display).toBe('flex');
+    rearStandbyBtn.click();
+    expect(settingsMenu.style.display).toBe('none');
+    expect(submitted).toEqual([]);
+    expect(standbyHintEl.style.display).toBe('block');
+    expect(standbyHintEl.textContent).toContain('4〜8桁');
+
+    // Enter 4-digit PIN -> hint clears and rear standby triggers onSubmit(pin, true)
+    pressKey('2');
+    pressKey('5');
+    pressKey('8');
+    pressKey('0');
+    expect(standbyHintEl.style.display).toBe('none');
+    expect(rearStandbySub.textContent).toContain('入力中のPINで接続');
+
+    settingsBtn.click();
+    rearStandbyBtn.click();
+    expect(submitted).toEqual([{ pin: '2580', isSecondary: true }]);
+
+    // Opening settings console while PIN is entered passes enteredPin
+    settingsBtn.click();
+    openSettingsMenuBtn.click();
+    expect(openedSettingsPins).toEqual(['2580']);
   });
 
   it('renderPinEntry hides secondary button when hasActiveSession is omitted or false', () => {

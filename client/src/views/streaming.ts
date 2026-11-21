@@ -58,6 +58,7 @@ export function renderStreamingView(
   onOpenSettings: () => void,
   authToken?: string | null,
   sessionRole: 'primary' | 'secondary' = 'primary',
+  options?: { initialPrimaryActive?: boolean },
 ): () => void {
   container.innerHTML = `
     <div id="screen-container">
@@ -243,6 +244,8 @@ export function renderStreamingView(
 
   type BrowserPowerState = 'active' | 'sleeping' | 'waking';
   let browserPowerState: BrowserPowerState = 'active';
+  const isSecondarySession = sessionRole === 'secondary';
+  let isPrimarySessionActive = !isSecondarySession || (options?.initialPrimaryActive ?? true);
 
   let instantRtt = 0;
   let minRtt = Number.POSITIVE_INFINITY;
@@ -876,7 +879,6 @@ export function renderStreamingView(
     updateHudLiveStatus();
   };
 
-  const isSecondarySession = sessionRole === 'secondary';
   let primaryAnchorPtsUs = 0;
   let primaryAnchorLocalMs = 0;
 
@@ -923,6 +925,11 @@ export function renderStreamingView(
   hudLiveBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
     resetHudDimTimer();
+
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showToast('前席モニターからの接続・配信開始を待機しています', 'info');
+      return;
+    }
 
     if (isRestartingEncoder) return;
     isRestartingEncoder = true;
@@ -1014,6 +1021,7 @@ export function renderStreamingView(
   // 5. Connect WebSocket streams
   const handleVideo = (msg: { flags: number; pts: bigint; data: Uint8Array }) => {
     lastPacketReceivedTime = performance.now();
+    if (isSecondarySession && !isPrimarySessionActive) return;
     metricsCollector.recordVideoPacket(msg.data.byteLength);
     jitterController.recordVideoArrival();
     decoder.handlePacket(msg.flags, msg.pts, msg.data);
@@ -1039,6 +1047,25 @@ export function renderStreamingView(
   const hideOverlay = () => {
     statusOverlay.style.display = 'none';
     if (noticeActionBox) noticeActionBox.style.display = 'none';
+    if (noticeActionBtn) noticeActionBtn.style.display = '';
+  };
+
+  const showRearStandbyScreen = () => {
+    showOverlay(
+      '後席モニター待ち受け中',
+      '前席モニターからの接続・配信開始を待機しています...',
+      true,
+    );
+    if (noticeActionBox && noticeActionBtn) {
+      noticeActionBtn.style.display = 'none';
+      noticeActionBox.style.display = 'flex';
+    }
+    if (healthBrowser) {
+      healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> 前席: 待機中`;
+    }
+    if (healthStream) {
+      healthStream.innerHTML = `<span class="status-dot status-idle"></span> 配信: 待機中`;
+    }
   };
 
   const showSleepingScreen = () => {
@@ -1049,6 +1076,7 @@ export function renderStreamingView(
       false,
     );
     if (noticeActionBox && noticeActionBtn) {
+      noticeActionBtn.style.display = '';
       noticeActionBtn.textContent = '再開する (タップで復帰)';
       noticeActionBox.style.display = 'flex';
     }
@@ -1056,6 +1084,10 @@ export function renderStreamingView(
       healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> Browser: 一時停止`;
     }
   };
+
+  if (isSecondarySession && !isPrimarySessionActive) {
+    showRearStandbyScreen();
+  }
 
   const triggerResume = () => {
     browserPowerState = 'waking';
@@ -1170,7 +1202,9 @@ export function renderStreamingView(
     serverBufferMs = 0;
     serverMode = 'LIVE';
     updateHudLiveStatus();
-    if (browserPowerState !== 'sleeping') {
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showRearStandbyScreen();
+    } else if (browserPowerState !== 'sleeping') {
       showOverlay(reasonTitle, reasonDesc, true);
     }
   };
@@ -1275,13 +1309,52 @@ export function renderStreamingView(
       serverBufferMs = 0;
       serverMode = 'LIVE';
       updateHudLiveStatus();
+    } else if (msg.type === 'PRIMARY_SESSION_STATUS') {
+      if (!isSecondarySession) return;
+      const nextActive = Boolean(msg.active);
+      isPrimarySessionActive = nextActive;
+      if (!nextActive) {
+        decoder.reset();
+        if (typeof framePacer.reset === 'function') {
+          framePacer.reset();
+        } else {
+          framePacer.resetFirstFrame();
+        }
+        jitterController.reset();
+        renderer.resetFirstFrame();
+        avSync.reset();
+        lastDecodedPts = 0;
+        lastAckSentPts = -1;
+        primaryAnchorPtsUs = 0;
+        primaryAnchorLocalMs = 0;
+        serverCatchupQueueMs = 0;
+        serverBufferMs = 0;
+        serverMode = 'LIVE';
+        updateHudLiveStatus();
+        showRearStandbyScreen();
+      } else {
+        if (noticeActionBox) noticeActionBox.style.display = 'none';
+        if (noticeActionBtn) noticeActionBtn.style.display = '';
+        if (healthBrowser) {
+          healthBrowser.innerHTML = `<span class="status-dot status-warning"></span> Browser: 準備中...`;
+        }
+        showOverlay(
+          '画面配信準備中...',
+          '前席の配信開始を受信しました。映像を待機しています...',
+          true,
+        );
+      }
     } else if (msg.type === 'STREAM_RESET') {
       resetClientStreamPipeline(
         '配信プロセスを再起動中...',
         'エンコーダとバッファをクリーンに再初期化しています...',
       );
     } else if (msg.type === 'BROWSER_STATUS') {
-      if (healthBrowser) {
+      if (isSecondarySession && !isPrimarySessionActive) {
+        if (msg.state === 'running') {
+          browserPowerState = 'active';
+        }
+      } else if (healthBrowser) {
         if (msg.state === 'paused') {
           healthBrowser.innerHTML = `<span class="status-dot status-idle"></span> Browser: 一時停止`;
           showSleepingScreen();
@@ -1301,7 +1374,7 @@ export function renderStreamingView(
         currentBrowserTitle = msg.title;
       }
     } else if (msg.type === 'SERVER_METRICS') {
-      if (msg.browserState === 'paused') {
+      if (msg.browserState === 'paused' && !(isSecondarySession && !isPrimarySessionActive)) {
         showSleepingScreen();
       }
     } else if (msg.type === 'RESOLUTION_CHANGED') {
@@ -1384,7 +1457,9 @@ export function renderStreamingView(
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
     if (hudConn) hudConn.title = '接続状態: 接続中 (RTT計測待機)';
-    if (browserPowerState === 'sleeping') {
+    if (isSecondarySession && !isPrimarySessionActive) {
+      showRearStandbyScreen();
+    } else if (browserPowerState === 'sleeping') {
       showSleepingScreen();
     } else if (totalBufferedMs <= 0) {
       showOverlay('画面配信準備中...', '映像ストリームを待機しています...', true);
@@ -1713,6 +1788,7 @@ export function renderStreamingView(
   // Tap-to-resume handlers
   let lastResumeTrigger = 0;
   const onOverlayTap = (e: Event) => {
+    if (isSecondarySession && !isPrimarySessionActive) return;
     if (
       (e.target as HTMLElement).id === 'notice-action-btn' ||
       (e.target as HTMLElement).id === 'notice-disconnect-btn'

@@ -601,3 +601,162 @@ describe('WebSocketHandler Multi-Display Secondary Session (Issue #70)', () => {
     handler.close();
   });
 });
+
+describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
+  it('keeps browser/encoder paused when secondary connects without primary and auto-starts when primary connects later', async () => {
+    const mockAuth: any = {
+      verifyPin: vi
+        .fn()
+        .mockResolvedValueOnce({ success: true, token: 'token-rear' })
+        .mockResolvedValueOnce({ success: true, token: 'token-front' }),
+      validateSession: vi.fn(() => true),
+    };
+    const mockBrowser: any = {
+      getDimensions: () => ({ width: 1280, height: 720 }),
+      getState: vi.fn(() => 'paused'),
+      getCurrentUrl: () => 'https://www.youtube.com',
+      resume: vi.fn(),
+      pause: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      resize: vi.fn().mockResolvedValue(undefined),
+      isChromeAlive: () => true,
+    };
+    const mockEncoder: any = {
+      isRunning: vi.fn(() => false),
+      start: vi.fn(),
+      stop: vi.fn(),
+      restart: vi.fn().mockResolvedValue(undefined),
+      getCachedKeyframe: () => null,
+      isKeyframeStale: () => true,
+      getCachedSpsPps: () => null,
+      getCachedOpusHead: () => null,
+      on: vi.fn(),
+    };
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      { updateDimensions: vi.fn() } as any,
+      { getConfig: () => ({ isSetupCompleted: true }) } as any,
+    );
+
+    // 1. Rear monitor connects first in standby mode (no primary connected)
+    const rear = createMockSocket();
+    handler.handleConnection(rear.socket);
+    await sendMessage(
+      rear,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+    );
+
+    expect(rear.sentControl.find((m) => m.type === 'AUTH_SUCCESS')).toEqual({
+      type: 'AUTH_SUCCESS',
+      token: 'token-rear',
+      role: 'secondary',
+    });
+    expect(rear.sentControl.find((m) => m.type === 'PRIMARY_SESSION_STATUS')).toEqual({
+      type: 'PRIMARY_SESSION_STATUS',
+      active: false,
+    });
+    expect(handler.hasPrimaryClients()).toBe(false);
+    expect(handler.hasActiveClients()).toBe(true);
+    expect(mockBrowser.resume).not.toHaveBeenCalled();
+    expect(mockBrowser.start).not.toHaveBeenCalled();
+    expect(mockEncoder.start).not.toHaveBeenCalled();
+
+    // Secondary RESUME_BROWSER command while primary is absent must not wake browser/encoder
+    await sendMessage(
+      rear,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'RESUME_BROWSER' })),
+      ]),
+    );
+    expect(mockBrowser.resume).not.toHaveBeenCalled();
+    expect(mockEncoder.start).not.toHaveBeenCalled();
+
+    // 2. Front monitor logs in as primary -> rear MUST stay connected and receive active: true
+    const front = createMockSocket();
+    handler.handleConnection(front.socket);
+    await sendMessage(front, Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+
+    expect(rear.socket.close).not.toHaveBeenCalled();
+    expect(rear.sentControl.some((m) => m.type === 'SESSION_CONFLICT')).toBe(false);
+    expect(front.sentControl.find((m) => m.type === 'AUTH_SUCCESS')).toEqual({
+      type: 'AUTH_SUCCESS',
+      token: 'token-front',
+      role: 'primary',
+    });
+    expect(handler.hasPrimaryClients()).toBe(true);
+    expect(mockBrowser.resume).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.start).toHaveBeenCalledTimes(1);
+    expect(
+      rear.sentControl.some((m) => m.type === 'PRIMARY_SESSION_STATUS' && m.active === true),
+    ).toBe(true);
+
+    // 3. New primary device supersedes old primary, while rear secondary remains connected
+    mockAuth.verifyPin.mockResolvedValueOnce({ success: true, token: 'token-front-new' });
+    const frontNew = createMockSocket();
+    handler.handleConnection(frontNew.socket);
+    await sendMessage(
+      frontNew,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+
+    expect(front.socket.close).toHaveBeenCalledWith(4009, 'Superseded by new PIN login');
+    expect(rear.socket.close).not.toHaveBeenCalled();
+    expect(frontNew.socket.close).not.toHaveBeenCalled();
+
+    handler.close();
+  });
+
+  it('notifies secondary standby and triggers auto-sleep when primary disconnects leaving only secondary', async () => {
+    vi.useFakeTimers();
+    try {
+      const mockAuth: any = {
+        verifyPin: vi
+          .fn()
+          .mockResolvedValueOnce({ success: true, token: 'token-front' })
+          .mockResolvedValueOnce({ success: true, token: 'token-rear' }),
+        validateSession: vi.fn(() => true),
+      };
+      const { handler, mockBrowser, mockEncoder } = createTestContext(mockAuth);
+
+      const front = createMockSocket();
+      const rear = createMockSocket();
+
+      handler.handleConnection(front.socket);
+      await sendMessage(
+        front,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+      );
+
+      handler.handleConnection(rear.socket);
+      await sendMessage(
+        rear,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+      );
+
+      expect(
+        rear.sentControl.some((m) => m.type === 'PRIMARY_SESSION_STATUS' && m.active === true),
+      ).toBe(true);
+      rear.sentControl.length = 0;
+
+      // Primary disconnects -> secondary receives active: false and auto-sleep starts counting down
+      front.listeners.get('close')?.();
+      expect(handler.hasPrimaryClients()).toBe(false);
+      expect(rear.sentControl.find((m) => m.type === 'PRIMARY_SESSION_STATUS')).toEqual({
+        type: 'PRIMARY_SESSION_STATUS',
+        active: false,
+      });
+
+      // Default autoSleepMinutes is 3 (180s) -> after 3m, encoder stops and browser pauses even though rear is still connected
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 100);
+      expect(mockEncoder.stop).toHaveBeenCalledTimes(1);
+      expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+
+      handler.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

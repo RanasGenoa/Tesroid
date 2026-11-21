@@ -44,7 +44,11 @@ export function registerSetupRoutes(
       hasDri,
       consecutiveFailures: lockoutManager.getConsecutiveFailures(),
       remainingAttempts: lockoutManager.getRemainingAttempts(),
-      hasActiveSession: wsHandler ? wsHandler.hasActiveClients() : false,
+      hasActiveSession: wsHandler
+        ? typeof wsHandler.hasPrimaryClients === 'function'
+          ? wsHandler.hasPrimaryClients()
+          : wsHandler.hasActiveClients()
+        : false,
     };
   });
 
