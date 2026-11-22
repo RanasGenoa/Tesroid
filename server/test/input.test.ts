@@ -343,6 +343,24 @@ describe('X11InputManager & CdpTouchBridge', () => {
     const digitCalls = sentCdp.filter((c) => c.params.code === 'Digit5');
     expect(digitCalls.length).toBe(3);
     expect(digitCalls[0].params.windowsVirtualKeyCode).toBe(53); // '5'.charCodeAt(0)
+
+    // ASCII letter dispatches Key prefix code
+    inputManager.sendKey('a');
+    const letterCalls = sentCdp.filter((c) => c.params.code === 'KeyA');
+    expect(letterCalls.length).toBe(3);
+    expect(letterCalls[0].params.key).toBe('a');
+    expect(letterCalls[0].params.windowsVirtualKeyCode).toBe(65);
+
+    // Non-alphanumeric symbol (e.g. '@') must NOT produce 'Key@'
+    inputManager.sendKey('@');
+    const badSymbolCalls = sentCdp.filter((c) => c.params.code === 'Key@');
+    expect(badSymbolCalls.length).toBe(0);
+    const symbolCalls = sentCdp.filter((c) => c.params.key === '@');
+    expect(symbolCalls.length).toBe(3);
+    expect(symbolCalls[0].params.code).toBe('');
+    expect(symbolCalls[0].params.windowsVirtualKeyCode).toBe(64);
+    expect(symbolCalls[1].params.type).toBe('char');
+    expect(symbolCalls[1].params.text).toBe('@');
   });
 
   it('should sanitize CR/LF and quotes in insertText xdotool fallback when CDP is disconnected', () => {

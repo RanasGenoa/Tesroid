@@ -2,6 +2,7 @@
   if (window._tesroidExtensionLoaded) return;
   window._tesroidExtensionLoaded = true;
 
+  // === TESROID_WEBAUTHN_CORE_START ===
   // WebAuthn / Passkey Dialog Suppressor (Issue #35)
   // Docker/Xvfb環境には物理・プラットフォームFIDO2認証器が存在せず、ChromeネイティブのWebAuthn
   // バブルダイアログ（"No passkeys available"）が表示されると車載タッチ操作（DOM注入）では
@@ -65,6 +66,7 @@
       }
     }
   } catch (e) {}
+  // === TESROID_WEBAUTHN_CORE_END ===
 
   try {
     // Set YouTube Dark Theme & Theater mode cookies

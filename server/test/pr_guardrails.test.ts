@@ -7,6 +7,11 @@ import {
   WSS_CHANNEL as CLIENT_WSS_CHANNEL,
 } from '../../client/src/transport/protocol.js';
 import {
+  buildWebAuthnSuppressorScript,
+  WEBAUTHN_CORE_END_MARKER,
+  WEBAUTHN_CORE_START_MARKER,
+} from '../src/browser/webauthn-script.js';
+import {
   AUDIO_FLAGS as SERVER_AUDIO_FLAGS,
   VIDEO_FLAGS as SERVER_VIDEO_FLAGS,
   WSS_CHANNEL as SERVER_WSS_CHANNEL,
@@ -120,18 +125,28 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
       'utf-8',
     );
 
-    // Extension, manager CDP, and persistent CdpTouchBridge must intercept WebAuthn
-    expect(extContentJs).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(extContentJs).toContain('Passkeys are not supported in this environment');
-    expect(extContentJs).toContain('NotAllowedError');
+    const webauthnScriptTs = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/webauthn-script.ts'),
+      'utf-8',
+    );
+    const suppressorScript = buildWebAuthnSuppressorScript();
 
-    expect(managerSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(managerSrc).toContain('Passkeys are not supported in this environment');
-    expect(managerSrc).toContain('NotAllowedError');
+    // Canonical WebAuthn suppressor lives in content.js and is shared via buildWebAuthnSuppressorScript()
+    expect(extContentJs).toContain(WEBAUTHN_CORE_START_MARKER);
+    expect(extContentJs).toContain(WEBAUTHN_CORE_END_MARKER);
+    expect(webauthnScriptTs).toContain('loadContentScriptSection');
+    expect(webauthnScriptTs).not.toContain('isUserVerifyingPlatformAuthenticatorAvailable');
 
-    expect(xdotoolSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(xdotoolSrc).toContain('Passkeys are not supported in this environment');
-    expect(xdotoolSrc).toContain('NotAllowedError');
+    for (const src of [extContentJs, suppressorScript]) {
+      expect(src).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+      expect(src).toContain('isConditionalMediationAvailable');
+      expect(src).toContain('Passkeys are not supported in this environment');
+      expect(src).toContain('NotAllowedError');
+      expect(src).toContain('_tesroidWebAuthnHooked');
+    }
+
+    expect(managerSrc).toContain('buildWebAuthnSuppressorScript()');
+    expect(xdotoolSrc).toContain('buildWebAuthnSuppressorScript()');
   });
 
   it('preserves Chrome password save and autofill Views Bubble suppression in BrowserManager (Issue #44)', () => {
