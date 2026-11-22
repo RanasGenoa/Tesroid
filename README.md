@@ -265,6 +265,8 @@ TARGET_HOST=<DOCKER_HOST_IP> npm run proxy
    - クライアント切断後、一定時間経過で Chrome プロセスツリーを `SIGSTOP` で自動凍結して CPU/GPU 使用率を 0% に解放。再接続時に `SIGCONT` でミリ秒単位で復帰します。
 6. **フルスクリーン PIN 認証 & 自動ロックアウト**
    - 外部公開時のブルートフォース攻撃を防ぐため、**10回連続で PIN を誤入力した時点でサーバープロセスを即座に緊急停止（`exit 1`）** します。
+7. **ブラウザプロファイルの永続化 (`/data/browser-profile`)**
+   - `/data/browser-profile` は Docker ボリュームとして永続化されるため、コンテナ再起動後もログイン状態や Cookie が保持されます（初期化手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) を参照）。
 
 詳細仕様は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) を参照してください。
 
