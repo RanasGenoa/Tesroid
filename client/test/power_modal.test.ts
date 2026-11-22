@@ -68,6 +68,7 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
     for (const fn of cleanups.splice(0)) {
       fn();
     }
+    vi.useRealTimers();
   });
   let elementRegistry: Map<string, any>;
   let mockContainer: any;
@@ -345,26 +346,42 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(e) 停止モーダルの「セッション切断」で DISCONNECT_SESSION 送信と正常クローズ(1000)が実行される', () => {
-    cleanups.push(
-      renderStreamingView(
-        mockContainer,
-        mockWsClient,
-        mockAudioPlayer,
-        mockAvSync,
-        onOpenSettings,
-        testToken,
-      ),
-    );
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
 
-    elementRegistry.get('hud-stop-btn').click();
-    const disconnectBtn = elementRegistry.get('power-disconnect-btn');
-    expect(disconnectBtn).toBeDefined();
-    disconnectBtn.click();
+      elementRegistry.get('hud-stop-btn').click();
+      const disconnectBtn = elementRegistry.get('power-disconnect-btn');
+      expect(disconnectBtn).toBeDefined();
+      disconnectBtn.click();
 
-    expect(mockWsClient.send).toHaveBeenCalledWith(
-      ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }),
-    );
-    expect(mockWsClient.close).toHaveBeenCalledWith(1000, 'User requested disconnect');
-    expect((globalThis as any).window.location.reload).toHaveBeenCalledTimes(1);
+      expect(mockWsClient.send).toHaveBeenCalledWith(
+        ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }),
+      );
+      expect(mockWsClient.close).toHaveBeenCalledWith(1000, 'User requested disconnect');
+      expect((globalThis as any).window.location.reload).not.toHaveBeenCalled();
+
+      // Repeated taps while disconnecting must be ignored (no duplicate send/close/reload)
+      disconnectBtn.click();
+      expect(mockWsClient.send).toHaveBeenCalledTimes(1);
+      expect(mockWsClient.close).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(50);
+      expect((globalThis as any).window.location.reload).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const fn of cleanups.splice(0)) {
+        fn();
+      }
+      vi.useRealTimers();
+    }
   });
 });

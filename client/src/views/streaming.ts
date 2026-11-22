@@ -1103,7 +1103,11 @@ export function renderStreamingView(
   };
 
   // Intentional Session Disconnect helper
+  let isDisconnecting = false;
+  let disconnectReloadTimer: ReturnType<typeof setTimeout> | null = null;
   const performIntentionalDisconnect = () => {
+    if (isDisconnecting) return;
+    isDisconnecting = true;
     if (wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'DISCONNECT_SESSION' }));
     }
@@ -1112,7 +1116,10 @@ export function renderStreamingView(
       sessionStorage.removeItem('tesroid_role');
     } catch {}
     wsClient.close(1000, 'User requested disconnect');
-    window.location.reload();
+    disconnectReloadTimer = setTimeout(() => {
+      disconnectReloadTimer = null;
+      window.location.reload();
+    }, 50);
   };
 
   // Immediate Stop Action
@@ -1315,7 +1322,7 @@ export function renderStreamingView(
         ) {
           primaryAnchorPtsUs = msg.primaryRenderedPts;
           primaryAnchorLocalMs = now - msg.primaryFeedbackAgeMs - Math.round(rawRtt / 2);
-        } else if (msg.primaryRenderedPts === null) {
+        } else if (msg.primaryRenderedPts == null) {
           primaryAnchorPtsUs = 0;
           primaryAnchorLocalMs = 0;
         }
@@ -1897,6 +1904,9 @@ export function renderStreamingView(
 
   // Cleanup function when navigating away
   return () => {
+    if (disconnectReloadTimer) clearTimeout(disconnectReloadTimer);
+    disconnectReloadTimer = null;
+    isDisconnecting = false;
     if (disconnectSurvivalTimer) clearTimeout(disconnectSurvivalTimer);
     if (encoderRestartTimer) clearTimeout(encoderRestartTimer);
     if (resizeTimer) clearTimeout(resizeTimer);
