@@ -81,6 +81,7 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(dockerfile).toContain('/etc/pulse/tesroid.pa');
     expect(dockerfile).toContain('/tmp/pulse-socket');
     expect(dockerfile).toContain('/etc/libva.conf');
+    expect(dockerfile).toContain('i965-va-driver-shaders');
     expect(dockerfile).toContain('libpci3');
     expect(managerSrc).toContain('unix:/tmp/pulse-socket');
     expect(managerSrc).toContain('virtual_sink');

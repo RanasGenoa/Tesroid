@@ -74,6 +74,7 @@ RUN apt-get update -qq && \
         libva2 \
         libva-drm2 \
         intel-media-va-driver-non-free \
+        i965-va-driver-shaders \
         vainfo && \
     rm -rf /var/lib/apt/lists/* && \
     echo "LIBVA_DRIVER_NAME=iHD" > /etc/libva.conf && \

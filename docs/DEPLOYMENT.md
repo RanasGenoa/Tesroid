@@ -25,6 +25,7 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   | :--- | :--- | :--- | :--- | :--- |
   | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
   | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
+  | **Intel HD Graphics 4600** | Haswell (第4世代 Core i5-4590 等) | `i965` | ✅ 動作確認済み | `.env` で `LIBVA_DRIVER_NAME=i965` を指定して H.264 ハードウェアエンコード動作 |
 - **メモリ**: 2GB 以上推奨（コンテナ内 Google Chrome + FFmpeg + PulseAudio + Node.js が稼働）
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 
@@ -278,7 +279,7 @@ docker compose restart
 ### 3. VAAPI ハードウェアアクセラレーションの動作診断
 コンテナ内部で GPU が正しく認識されているか確認するコマンド：
 ```bash
-docker exec -it tesroid-server vainfo
+docker exec -it tesroid-server vainfo --display drm --device /dev/dri/renderD128
 # 出力に VAProfileH264Main / VAEntrypointEncSlice 等が表示されていれば正常動作
 ```
 
