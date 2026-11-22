@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Readable } from 'node:stream';
+import { resolveLibvaDriverName } from '../utils/vaapi.js';
 
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
@@ -23,6 +24,7 @@ export interface EncoderOptions {
   bitrate?: string; // '4M'
   audioBitrate?: string | number; // e.g. '128k', 128000, '320k' (128k - 320k)
   vaapiDevice?: string; // '/dev/dri/renderD128'
+  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi'
   audioSink?: string; // 'virtual_sink.monitor'
   compressionLevel?: number; // 1 (best quality) - 7 (fastest/lightest)
   lowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
@@ -42,6 +44,7 @@ export class VaapiEncoder extends EventEmitter {
   private bitrate: string;
   private audioBitrate: string;
   private vaapiDevice: string;
+  private libvaDriverName?: string;
   private audioSink: string;
   private compressionLevel: number;
   private lowPower: boolean;
@@ -99,6 +102,7 @@ export class VaapiEncoder extends EventEmitter {
       options.audioBitrate || process.env.AUDIO_BITRATE || '128k',
     );
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
+    this.libvaDriverName = options.libvaDriverName;
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
     const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 7);
     this.compressionLevel = Math.max(1, Math.min(7, Math.round(rawComp)));
@@ -248,6 +252,17 @@ export class VaapiEncoder extends EventEmitter {
     return args;
   }
 
+  /**
+   * Builds the environment variables passed to the Video FFmpeg child process.
+   */
+  public buildVideoEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      DISPLAY: this.displayNum,
+      LIBVA_DRIVER_NAME: resolveLibvaDriverName(this.libvaDriverName),
+    };
+  }
+
   public getCachedSpsPps(): Buffer | null {
     return this.cachedSpsPps;
   }
@@ -309,11 +324,7 @@ export class VaapiEncoder extends EventEmitter {
 
     const proc = spawn('ffmpeg', videoArgs, {
       stdio: ['ignore', 'pipe', 'inherit'],
-      env: {
-        ...process.env,
-        DISPLAY: this.displayNum,
-        LIBVA_DRIVER_NAME: 'iHD',
-      },
+      env: this.buildVideoEnv(),
     });
     this.videoProcess = proc;
 
