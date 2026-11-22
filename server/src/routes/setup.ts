@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AuthService } from '../auth.js';
+import { type AuthService, isValidPin } from '../auth.js';
 import type { BrowserManager } from '../browser/manager.js';
 import { ALLOWED_LOCALES, type ConfigStore } from '../config.js';
 import type { LockoutManager } from '../lockout.js';
@@ -57,8 +57,8 @@ export function registerSetupRoutes(
     }
 
     const { pin, allowedDomains, locale, timezone } = req.body || ({} as Partial<SetupBody>);
-    if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
-      return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
+    if (!isValidPin(pin)) {
+      return reply.status(400).send({ error: 'PIN must be 4 to 8 numeric digits (0-9).' });
     }
 
     // Save PIN

@@ -10,6 +10,11 @@ export interface AuthSession {
 }
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const PIN_REGEX = /^\d{4,8}$/;
+
+export function isValidPin(pin: unknown): pin is string {
+  return typeof pin === 'string' && PIN_REGEX.test(pin);
+}
 
 export class AuthService {
   private configStore: ConfigStore;
@@ -25,8 +30,8 @@ export class AuthService {
   }
 
   public async setPin(pin: string): Promise<void> {
-    if (!pin || pin.length < 4 || pin.length > 8) {
-      throw new Error('PIN must be between 4 and 8 characters/digits long.');
+    if (!isValidPin(pin)) {
+      throw new Error('PIN must be 4 to 8 numeric digits (0-9).');
     }
     const salt = await bcrypt.genSalt(10);
     const pinHash = await bcrypt.hash(pin, salt);

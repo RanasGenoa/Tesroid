@@ -32,12 +32,12 @@ export function renderPinEntry(
   const showPinRequiredNotice = () => {
     const standbyHintEl = document.getElementById('pin-standby-hint');
     if (standbyHintEl) {
-      standbyHintEl.textContent = '先に4〜8桁のPINコードを入力してください';
+      standbyHintEl.textContent = '先に数字4〜8桁のPINコードを入力してください';
       standbyHintEl.style.color = '#ff453a';
       standbyHintEl.style.display = 'block';
     }
     if (typeof document?.createElement === 'function' && document.body) {
-      showToast('先に4〜8桁のPINコードを入力してください', 'error');
+      showToast('先に数字4〜8桁のPINコードを入力してください', 'error');
     }
   };
 
@@ -61,7 +61,7 @@ export function renderPinEntry(
       standbySubEl.textContent =
         pin.length >= 4
           ? '前席の配信開始を待機して映像を受信（入力中のPINで接続）'
-          : '先に4〜8桁のPINコードを入力してからタップ';
+          : '先に数字4〜8桁のPINコードを入力してからタップ';
     }
     const updateButtonState = (btn: HTMLButtonElement | null) => {
       if (!btn) return;
@@ -114,7 +114,7 @@ export function renderPinEntry(
               <span class="pin-menu-icon" style="color: #60a5fa;">${ICONS.cinema}</span>
               <span class="pin-menu-text">
                 <span class="pin-menu-title">後席モニター待ち受けモードで接続</span>
-                <span id="pin-menu-rear-standby-sub" class="pin-menu-sub">先に4〜8桁のPINコードを入力してからタップ</span>
+                <span id="pin-menu-rear-standby-sub" class="pin-menu-sub">先に数字4〜8桁のPINコードを入力してからタップ</span>
               </span>
             </button>
             <button id="pin-menu-open-settings-btn" type="button" class="pin-settings-menu-item">
@@ -137,7 +137,7 @@ export function renderPinEntry(
 
       <!-- Center: PIN Display & Prompt -->
       <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 12px 0;">
-        <p style="font-size: 16px; color: #aaa; margin: 0 0 12px 0; text-align: center;">テスラ車載接続用 PINコードを入力してください</p>
+        <p style="font-size: 16px; color: #aaa; margin: 0 0 12px 0; text-align: center;">テスラ車載接続用 PINコード（数字4〜8桁）を入力してください</p>
         <div id="pin-dots" style="
           font-size: 42px; letter-spacing: 14px; height: 56px;
           display: flex; align-items: center; justify-content: center;

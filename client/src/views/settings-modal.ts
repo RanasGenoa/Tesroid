@@ -12,6 +12,7 @@ import {
   sanitizeFavorites,
   showToast,
 } from './icons.js';
+import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pin-validation.js';
 
 export function openSettingsWithAuth(
   container: HTMLElement,
@@ -105,8 +106,19 @@ async function showSettingsModal(
 
       <!-- Tab Content: General & PIN -->
       <div id="content-general" style="display: none;">
-        <label style="display: block; font-size: 14px; margin-bottom: 6px;">新しいPINコード (4〜8桁 / 空欄で維持)</label>
-        <input type="password" id="cfg-pin" placeholder="変更する場合のみ入力" maxlength="8" />
+        <label style="display: block; font-size: 14px; margin-bottom: 6px;">新しいPINコード (半角数字 4〜8桁 / 空欄で維持)</label>
+        <input
+          type="password"
+          id="cfg-pin"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          autocomplete="new-password"
+          placeholder="変更する場合のみ入力（例: 1234）"
+          maxlength="8"
+          style="margin-bottom: 6px;"
+        />
+        <div id="cfg-pin-error" style="color: var(--danger-color); font-size: 13px; margin-bottom: 6px; display: none;"></div>
+        <p style="font-size: 11px; color: var(--text-muted); margin: 0 0 4px 0;">※ 車載ログイン画面の数字テンキーで入力するため、0〜9 の半角数字のみ設定できます。</p>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">ブラウザ表示拡大率 (文字サイズ・UI拡大)</label>
         <select id="cfg-display-scale">
@@ -1012,9 +1024,21 @@ async function showSettingsModal(
     }
   });
 
+  const cfgPinInput = overlay.querySelector('#cfg-pin') as HTMLInputElement | null;
+  const cfgPinErrorEl = overlay.querySelector('#cfg-pin-error') as HTMLElement | null;
+  bindPinInputValidation(cfgPinInput, cfgPinErrorEl);
+
   // Save settings
   overlay.querySelector('#cfg-save-btn')?.addEventListener('click', async () => {
-    const newPin = (overlay.querySelector('#cfg-pin') as HTMLInputElement).value.trim();
+    const newPin = cfgPinInput?.value ?? '';
+    const pinError = validatePinInput(newPin, { allowEmpty: true });
+    if (pinError) {
+      setPinFieldError(cfgPinInput, cfgPinErrorEl, pinError);
+      showToast(pinError, 'error');
+      cfgPinInput?.focus?.();
+      return;
+    }
+    setPinFieldError(cfgPinInput, cfgPinErrorEl, null);
     const displayScale = Number(
       (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement)?.value || 120,
     );
@@ -1082,6 +1106,9 @@ async function showSettingsModal(
         body: JSON.stringify(body),
       });
       if (res.ok) {
+        if (newPin && cfgPinInput) {
+          cfgPinInput.value = '';
+        }
         window.dispatchEvent(
           new CustomEvent('tesroid:settings-updated', {
             detail: { displayScale, bufferDepth, audioBitrate, stream: body.stream },
@@ -1110,7 +1137,8 @@ async function showSettingsModal(
           showToast('設定を保存しました。', 'success');
         }
       } else {
-        showToast('保存に失敗しました。', 'error');
+        const errData = await res.json().catch(() => null);
+        showToast(errData?.error || '保存に失敗しました。', 'error');
       }
     } catch (err: any) {
       showToast(`エラー: ${err.message}`, 'error');

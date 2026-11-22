@@ -40,7 +40,7 @@ const CAPABILITY_ITEMS: OnboardingCardItem[] = [
     icon: ICONS.lock,
     title: 'PIN 認証 & セキュリティ保護',
     description:
-      '接続時の 4〜8 桁 PIN 認証に加え、10 回連続の誤入力でサーバーを自動緊急停止して不正アクセスを防ぎます。',
+      '接続時の半角数字 4〜8 桁の PIN 認証に加え、10 回連続の誤入力でサーバーを自動緊急停止して不正アクセスを防ぎます。',
   },
 ];
 

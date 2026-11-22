@@ -95,20 +95,15 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     const emptyRes = await app.inject({ method: 'POST', url: '/api/setup' });
     expect(emptyRes.statusCode).toBe(400);
 
-    // 2. Short PIN (<4) and long PIN (>8) rejected with 400
-    const shortRes = await app.inject({
-      method: 'POST',
-      url: '/api/setup',
-      payload: { pin: '123' },
-    });
-    expect(shortRes.statusCode).toBe(400);
-
-    const longRes = await app.inject({
-      method: 'POST',
-      url: '/api/setup',
-      payload: { pin: '123456789' },
-    });
-    expect(longRes.statusCode).toBe(400);
+    // 2. Short PIN (<4), long PIN (>8), and non-numeric PINs rejected with 400
+    for (const invalidPin of ['123', '123456789', 'abcd', '12a4', '１２３４', '12 34', 1234]) {
+      const badRes = await app.inject({
+        method: 'POST',
+        url: '/api/setup',
+        payload: { pin: invalidPin },
+      });
+      expect(badRes.statusCode, `Expected 400 for setup pin=${String(invalidPin)}`).toBe(400);
+    }
 
     // 3. Valid initial setup succeeds
     const okRes = await app.inject({
@@ -282,6 +277,35 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     expect(clampRes.statusCode).toBe(200);
     expect(clampRes.json().settings.displayScale).toBe(250);
     expect(mockBrowser.setDisplayScale).toHaveBeenCalledWith(250);
+
+    // PUT /api/settings enforces numeric 4-8 digit PIN validation when changing PIN, and preserves existing PIN on empty string
+    for (const invalidPin of ['123', '123456789', 'abcd', '12a4', '１２３４', '12 34', 1234]) {
+      const badPinRes = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: authHeaders,
+        payload: { pin: invalidPin },
+      });
+      expect(badPinRes.statusCode, `Expected 400 for settings pin=${String(invalidPin)}`).toBe(400);
+    }
+
+    const emptyPinRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { pin: '' },
+    });
+    expect(emptyPinRes.statusCode).toBe(200);
+    expect((await authService.verifyPin('1234')).success).toBe(true);
+
+    const validPinRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { pin: '0528' },
+    });
+    expect(validPinRes.statusCode).toBe(200);
+    expect((await authService.verifyPin('0528')).success).toBe(true);
 
     // System sleep / resume / restart-browser
     mockEncoder.isRunning.mockReturnValue(false);

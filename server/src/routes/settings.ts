@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AuthService } from '../auth.js';
+import { type AuthService, isValidPin } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import {
   ALLOWED_LOCALES,
@@ -229,9 +229,9 @@ export function registerSettingsRoutes(
         }
       }
 
-      if (pin) {
-        if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8) {
-          return reply.status(400).send({ error: 'PIN must be between 4 and 8 characters long.' });
+      if (pin !== undefined && pin !== '') {
+        if (!isValidPin(pin)) {
+          return reply.status(400).send({ error: 'PIN must be 4 to 8 numeric digits (0-9).' });
         }
         await authService.setPin(pin);
       }
