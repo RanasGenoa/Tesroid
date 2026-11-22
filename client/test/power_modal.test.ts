@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProtocol } from '../src/transport/protocol.js';
 import { renderStreamingView } from '../src/views/streaming.js';
 
@@ -55,11 +55,20 @@ vi.mock('../src/core/metrics.js', () => {
 
 vi.mock('../src/core/latency.js', () => {
   return {
-    DynamicLatencyController: function (this: any) {},
+    DynamicLatencyController: function (this: any) {
+      this.getMode = vi.fn(() => 'PASSIVE_STREAMING');
+    },
   };
 });
 
 describe('Streaming View - Power & Resource Control Quick Modal', () => {
+  const cleanups: Array<() => void> = [];
+
+  afterEach(() => {
+    for (const fn of cleanups.splice(0)) {
+      fn();
+    }
+  });
   let elementRegistry: Map<string, any>;
   let mockContainer: any;
   let mockWsClient: any;
@@ -195,13 +204,15 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(a) hud-stop-btn クリックでモーダルが出る・即停止は起きぬ（wsClient.send が呼ばれぬ）', () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     const stopBtn = elementRegistry.get('hud-stop-btn');
@@ -222,13 +233,15 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(b) 停止モーダルから「⚡再エンコード」が削除され、HUDバッファ状態（hud-live-btn）タップでバッファ破棄と再エンコードが一括実行される', async () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     // HUD 停止ボタンをクリックしてモーダルを開く
@@ -260,13 +273,15 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(c)「ワンタップ停止」で wsClient.send が1回呼ばれる', () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     // HUD 停止ボタンをクリックしてモーダルを開く
@@ -294,13 +309,15 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(d) Issue 33: 停止モーダルから「一時停止」「再開」が削除され、「ワンタップ停止」と「ブラウザ再起動」に集約されていること', () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     // HUD 停止ボタンをクリックしてモーダルを開く
@@ -328,13 +345,15 @@ describe('Streaming View - Power & Resource Control Quick Modal', () => {
   });
 
   it('(e) 停止モーダルの「セッション切断」で DISCONNECT_SESSION 送信と正常クローズ(1000)が実行される', () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     elementRegistry.get('hud-stop-btn').click();
