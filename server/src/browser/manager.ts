@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { findProcessesByName, getProcessTree } from '../utils/processTree.js';
+import { resolveLibvaDriverName } from '../utils/vaapi.js';
 import { buildCarFullscreenScript } from './fullscreen-script.js';
 import { buildWebAuthnSuppressorScript } from './webauthn-script.js';
 
@@ -17,6 +18,7 @@ export interface BrowserManagerOptions {
   profileDir?: string; // e.g. '/data/browser-profile'
   defaultUrl?: string; // e.g. 'https://www.youtube.com'
   vaapiDevice?: string; // e.g. '/dev/dri/renderD128'
+  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi'
   displayScale?: number; // e.g. 120 = 120%
   locale?: string; // e.g. 'ja-JP'
   timezone?: string; // e.g. 'Asia/Tokyo'
@@ -44,6 +46,7 @@ export class BrowserManager {
   private profileDir: string;
   private defaultUrl: string;
   private vaapiDevice: string;
+  private libvaDriverName?: string;
   private displayScale: number;
   private locale: string;
   private timezone: string;
@@ -81,6 +84,7 @@ export class BrowserManager {
       path.join(process.env.DATA_DIR || '/data', 'browser-profile');
     this.defaultUrl = options.defaultUrl || process.env.BROWSER_URL || 'https://www.youtube.com';
     this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
+    this.libvaDriverName = options.libvaDriverName;
     this.displayScale = options.displayScale || Number(process.env.DISPLAY_SCALE) || 120;
     this.locale = options.locale || process.env.LOCALE || 'ja-JP';
     this.timezone = options.timezone || process.env.TZ || 'Asia/Tokyo';
@@ -1070,7 +1074,7 @@ export class BrowserManager {
     return {
       ...process.env,
       DISPLAY: this.displayNum,
-      LIBVA_DRIVER_NAME: 'iHD',
+      LIBVA_DRIVER_NAME: resolveLibvaDriverName(this.libvaDriverName),
       PULSE_SERVER: 'unix:/tmp/pulse-socket',
       PULSE_SINK: 'virtual_sink',
       TZ: this.timezone || 'Asia/Tokyo',
