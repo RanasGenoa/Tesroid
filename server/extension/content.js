@@ -259,6 +259,7 @@
 
     window.tesroidEnterFs = (el) => {
       const nextEl = el || document.getElementById('movie_player') || document.querySelector('video');
+      if (!nextEl) return;
       if (activeFsEl && activeFsEl !== nextEl) {
         activeFsEl.classList?.remove?.('tesroid-generic-fs-target');
       }

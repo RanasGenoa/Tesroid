@@ -787,7 +787,7 @@ export class X11InputManager {
       return;
     }
     // Fallback: xdotool type
-    const sanitized = text.replace(/([\\"])/g, '\\$1');
+    const sanitized = text.replace(/[\r\n]+/g, ' ').replace(/([\\"])/g, '\\$1');
     this.sendCommand(`type --clearmodifiers --delay 0 -- "${sanitized}"`);
   }
 

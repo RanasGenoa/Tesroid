@@ -340,6 +340,7 @@ function requireValue<T>(value: T | null | undefined, label: string): T {
 
 function createRichDomEnv(opts?: {
   withYouTube?: boolean;
+  withVideo?: boolean;
   screenWidth?: number;
   screenHeight?: number;
   outerWidth?: number;
@@ -399,7 +400,7 @@ function createRichDomEnv(opts?: {
     appendTrackedChild(playerEl, fsBtnEl);
     appendTrackedChild(flexyEl, playerEl);
     appendTrackedChild(bodyEl, flexyEl);
-  } else {
+  } else if (opts?.withVideo ?? true) {
     videoEl = createVideoEl('generic-video');
     appendTrackedChild(bodyEl, videoEl);
   }
@@ -968,6 +969,33 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(removeSpy).not.toHaveBeenCalled();
       expect(pointerEventsWrites).toBe(0);
       expect(opacityWrites).toBe(0);
+    });
+
+    it('treats tesroidEnterFs and tesroidToggleFs as a no-op when neither #movie_player nor video exists', () => {
+      const env = createRichDomEnv({ withYouTube: false, withVideo: false });
+      run(env.ctx);
+
+      const tesroidEnterFs = requireValue(env.mockWin.tesroidEnterFs, 'tesroidEnterFs');
+      const tesroidToggleFs = requireValue(env.mockWin.tesroidToggleFs, 'tesroidToggleFs');
+
+      const docFsChanges: string[] = [];
+      const winResizes: number[] = [];
+      env.mockDoc.addEventListener('fullscreenchange', () => docFsChanges.push('fullscreenchange'));
+      env.mockWin.addEventListener('resize', () => winResizes.push(1));
+
+      tesroidEnterFs();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges).toEqual([]);
+      expect(winResizes).toHaveLength(0);
+
+      tesroidToggleFs();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges).toEqual([]);
+      expect(winResizes).toHaveLength(0);
     });
   });
 });

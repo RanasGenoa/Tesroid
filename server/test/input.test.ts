@@ -344,4 +344,20 @@ describe('X11InputManager & CdpTouchBridge', () => {
     expect(digitCalls.length).toBe(3);
     expect(digitCalls[0].params.windowsVirtualKeyCode).toBe(53); // '5'.charCodeAt(0)
   });
+
+  it('should sanitize CR/LF and quotes in insertText xdotool fallback when CDP is disconnected', () => {
+    const cdpBridge = (inputManager as any).cdpBridge;
+    cdpBridge.isConnected = () => false;
+
+    inputManager.insertText('hello\nkey Escape');
+    inputManager.insertText('line1\r\nline2\\with "quotes"');
+
+    expect(sentCommands).toEqual([
+      'type --clearmodifiers --delay 0 -- "hello key Escape"',
+      'type --clearmodifiers --delay 0 -- "line1 line2\\\\with \\"quotes\\""',
+    ]);
+    for (const cmd of sentCommands) {
+      expect(cmd).not.toMatch(/[\r\n]/);
+    }
+  });
 });
