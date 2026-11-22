@@ -3,7 +3,10 @@ services:
     image: ghcr.io/ranasgenoa/tesroid:latest
     container_name: tesroid-server
     init: true
-    # Intel / AMD GPU hardware acceleration (VAAPI)
+    # Intel / AMD GPU hardware acceleration (Linux VAAPI)
+    # Windows (Docker Desktop for Windows) users: use docker-compose.windows.yml instead:
+    #   docker compose -f docker-compose.windows.yml up -d
+    # For CPU-only environments without /dev/dri, comment out `devices:` and use ENCODER_MODE=auto (or software).
     devices:
       - /dev/dri:/dev/dri
     shm_size: 1g
@@ -22,8 +25,9 @@ services:
       - DISPLAY_HEIGHT=${DISPLAY_HEIGHT:-720}
       - FPS=${FPS:-30}
       - VIDEO_BITRATE=${VIDEO_BITRATE:-1000k}
-      - VAAPI_DEVICE=${VAAPI_DEVICE:-/dev/dri/renderD128}
-      - LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-iHD}
+      - ENCODER_MODE=${ENCODER_MODE:-auto}
+      - VAAPI_DEVICE=${VAAPI_DEVICE:-}
+      - LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME:-}
     restart: unless-stopped
 
 volumes:

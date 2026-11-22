@@ -1,6 +1,6 @@
 # かんたん導入ガイド（Docker Compose ＋ Cloudflare Tunnel）
 
-**ビルド不要・ルーターのポート開放不要**で、Tesroid を Linux サーバーで起動し、テスラ車載ブラウザから HTTPS で接続できる状態までセットアップする手順です。
+**ビルド不要・ルーターのポート開放不要**で、Tesroid を Linux サーバーまたは Windows PC（Docker Desktop for Windows）で起動し、テスラ車載ブラウザから HTTPS で接続できる状態までセットアップする手順です。
 
 > [!TIP]
 > 自前のリバースプロキシ（Caddy / Nginx）、DuckDNS、NAS（TrueNAS SCALE 等）、またはローカルビルドを使いたい場合は、[docs/DEPLOYMENT.md](DEPLOYMENT.md) / [docs/NETWORK.md](NETWORK.md) をご覧ください。
@@ -9,28 +9,34 @@
 
 ## 0. 事前に用意するもの
 
-1. **Linux サーバー / ミニ PC**
-   - Intel（第6世代以降）または AMD の GPU を搭載した `x86_64` 環境（Raspberry Pi や ARM 機、GPU のない VPS・Windows WSL2 は非対応）
+1. **サーバー PC（Linux / ミニ PC または Windows PC、`x86_64` 専用）**
+   - **Linux の場合**: Intel（第5世代 Broadwell 以降の `iHD` およびそれ以前の旧世代向け `i965`）または AMD Radeon（`radeonsi`）搭載の `x86_64` 環境（Raspberry Pi や ARM 機は非対応。GPU なし環境でも `ENCODER_MODE=auto` により `libx264` で動作可能ですが 2〜4 vCPU を推奨）
+   - **Windows の場合（第一推奨: Docker Desktop for Windows）**: Windows 10 / 11 (`x86_64`) + **Docker Desktop for Windows**（WSL2 バックエンド有効・既定設定。別途 WSL2 Linux ディストリビューションの導入は不要。`/dev/dxg` + `/usr/lib/wsl` の D3D12 ブリッジ構成で起動し、`d3d12` VAAPI エンコード非対応 GPU 環境では自動的に `libx264` ソフトウェアエンコードへフォールバックして動作します）
    - メモリ 2 GB 以上推奨
-   - Docker Engine 24.0+ / Docker Compose v2.0+（未導入の場合は Step 6 の導入スクリプトで自動インストールもできます）
+   - Docker Engine 24.0+ / Docker Compose v2.0+（Linux で未導入の場合は Step 6 方法 B の導入スクリプトで自動インストールもできます）
 2. **Cloudflare アカウント（無料）と独自ドメイン**
    - DuckDNS などの無料 DDNS は Cloudflare Tunnel で使えないため、独自ドメインを 1 つ用意します（Cloudflare 上で年 \$4〜\$5 前後から購入できます）。
    - ドメイン購入用の支払い方法（クレジットカード等）をご用意ください。
 
 ---
 
-## Step 1: サーバー側の GPU / Docker 権限を確認する
+## Step 1: サーバー側の GPU / Docker 環境を確認する
 
-サーバー上で GPU デバイス（`/dev/dri`）が認識されていること、およびユーザーに必要な権限があることを確認します（[方法 B の導入スクリプト](#方法-b-ワンショット導入スクリプトを使う場合ubuntu--debian-等) を使う場合はこの手順をスキップできます）。
+- **Windows（Docker Desktop for Windows / PowerShell）の場合**:
+  - Docker Desktop が起動しており、WSL2 バックエンド（既定設定）が有効であることを PowerShell で確認します（`/dev/dri` や `usermod` は不要で、別途 WSL2 Linux ディストリビューションを入れる必要もありません）：
+    ```powershell
+    docker info
+    ```
+- **Linux の場合**:
+  - GPU デバイス（`/dev/dri`）が認識されていること、およびユーザーに必要な権限があることを確認します（[方法 B の導入スクリプト](#方法-b-ワンショット導入スクリプトを使う場合linux--副次的な-wsl2-ディストリビューション向け) を使う場合はこの手順をスキップできます）：
+    ```bash
+    # 1. GPU デバイスの確認（card0 や renderD128 等が表示されれば OK）
+    ls -la /dev/dri
 
-```bash
-# 1. GPU デバイスの確認（card0 や renderD128 等が表示されれば OK）
-ls -la /dev/dri
-
-# 2. Docker と GPU へのアクセス権限を付与（未設定の場合）
-sudo usermod -aG render,video,docker "$USER"
-# ※ 反映には一度ログアウト＆再ログインが必要です
-```
+    # 2. Docker と GPU へのアクセス権限を付与（未設定の場合）
+    sudo usermod -aG render,video,docker "$USER"
+    # ※ 反映には一度ログアウト＆再ログインが必要です
+    ```
 
 ---
 
@@ -104,7 +110,41 @@ sudo usermod -aG render,video,docker "$USER"
 
 ## Step 6: Docker Compose で Tesroid を起動する
 
-### 方法 A: `docker-compose.prebuilt.yml` を使う場合（推奨）
+### 方法 A-1: Windows (Docker Desktop / PowerShell — 第一推奨)
+
+Windows では WSL2 Linux ディストリビューションを手動構築せず、PowerShell（または CMD）から直接 [`docker-compose.windows.yml`](../docker-compose.windows.yml) を起動します。
+
+> [!NOTE]
+> - Windows PowerShell 5.1 では `curl` が `Invoke-WebRequest` のエイリアスのため、必ず **`curl.exe`** を使用してください。
+> - Docker Desktop 既定の VM では `/dev/dri` (`vgem`) が露出されない場合や、一部 GPU の WSL D3D12 UMD 制限（例: AMD Radeon RX 9070 XT 等）により `d3d12` VAAPI エンコードが利用できない場合がありますが、`ENCODER_MODE=auto` により自動的に **`libx264` ソフトウェアエンコード** へ切り替わりそのまま動作します。
+
+1. PowerShell で作業用フォルダを作成し、[`docker-compose.windows.yml`](../docker-compose.windows.yml) をダウンロードします：
+   ```powershell
+   mkdir tesroid
+   cd tesroid
+   curl.exe -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/docker-compose.windows.yml -o docker-compose.windows.yml
+   ```
+2. 同じフォルダに `.env` ファイルを作成し、Step 4 でコピーした **`TUNNEL_TOKEN`** を貼り付けます（BOM なし ASCII で作成するため `Set-Content -Encoding Ascii` を使用します）：
+   ```powershell
+   @"
+   TESROID_PORT=9001
+   ENCODER_MODE=auto
+   LIBVA_DRIVER_NAME=d3d12
+   TUNNEL_TOKEN=eyJh...ここにコピーしたトークンを貼り付け
+   "@ | Set-Content -Encoding Ascii .env
+   ```
+3. コンテナを起動します：
+   ```powershell
+   docker compose -f docker-compose.windows.yml up -d
+   ```
+4. 起動ログおよび動作モードを確認します（初回起動時のみ Google Chrome を自動取得するため、数十秒〜1〜2分かかります）：
+   ```powershell
+   docker compose -f docker-compose.windows.yml logs -f
+   curl.exe -s http://127.0.0.1:9001/api/health
+   ```
+   `Tesroid v2 Browser Server running at http://0.0.0.0:8080` が表示されたら起動完了です（`/api/health` の `encoder.backend` で `vaapi` / `software` のどちらが動作中か確認できます）。
+
+### 方法 A-2: Linux / NAS (`docker-compose.prebuilt.yml` を使う場合)
 
 1. サーバー上で作業用フォルダを作成し、[`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml) をダウンロードします：
    ```bash
@@ -115,10 +155,13 @@ sudo usermod -aG render,video,docker "$USER"
    ```bash
    cat <<'EOF' > .env
    TESROID_PORT=9001
+   ENCODER_MODE=auto
    TUNNEL_TOKEN=eyJh...ここにコピーしたトークンを貼り付け
    EOF
    chmod 600 .env
    ```
+   > [!TIP]
+   > `LIBVA_DRIVER_NAME` と `VAAPI_DEVICE` は未指定のままでコンテナ起動時に自動判定されます（Intel Broadwell 以降: `iHD`、旧世代 Intel: `i965`、AMD Radeon: `radeonsi`、NVIDIA のみの環境等は `libx264` へフォールバック）。手動固定したい場合のみ `.env` に `LIBVA_DRIVER_NAME=radeonsi` 等を追記してください。
 3. コンテナを起動します：
    ```bash
    docker compose -f docker-compose.prebuilt.yml up -d
@@ -129,9 +172,9 @@ sudo usermod -aG render,video,docker "$USER"
    ```
    `Tesroid v2 Browser Server running at http://0.0.0.0:8080` が表示されたら起動完了です（ヘルスチェック例: `curl -s http://127.0.0.1:9001/api/health`）。
 
-### 方法 B: ワンショット導入スクリプトを使う場合（Ubuntu / Debian 等）
+### 方法 B: ワンショット導入スクリプトを使う場合（Linux / 副次的な WSL2 ディストリビューション向け）
 
-Docker 未導入の環境や、設定ファイル作成まで対話形式で自動化したい場合は以下を実行し、プロンプトで `TUNNEL_TOKEN` を貼り付けてください：
+Ubuntu / Debian 等の Linux 環境で Docker 導入から設定ファイル生成まで対話形式で自動化したい場合（および副次的に WSL2 Linux ディストリビューション内で構築したい場合）は以下を実行し、プロンプトで `TUNNEL_TOKEN` を貼り付けてください（※ Windows 環境の第一推奨は上記の **方法 A-1: PowerShell + `docker-compose.windows.yml`** です）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
@@ -154,13 +197,18 @@ bash install.sh
 以下を実行すると、ログイン状態や PIN 設定を保持したまま最新イメージに更新できます：
 
 ```bash
-cd ~/tesroid
+# Windows (PowerShell / docker-compose.windows.yml を使っている場合)
+cd tesroid
+docker compose -f docker-compose.windows.yml pull
+docker compose -f docker-compose.windows.yml up -d
 
-# docker-compose.prebuilt.yml を使っている場合
+# Linux (docker-compose.prebuilt.yml を使っている場合)
+cd ~/tesroid
 docker compose -f docker-compose.prebuilt.yml pull
 docker compose -f docker-compose.prebuilt.yml up -d
 
 # scripts/install.sh で生成した docker-compose.yml を使っている場合
+cd ~/tesroid
 docker compose pull
 docker compose up -d
 ```

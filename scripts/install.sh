@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# Tesroid ワンショット導入スクリプト (Intel / AMD x86_64 Linux 向け)
+# Tesroid ワンショット導入スクリプト (x86_64 Linux / 副次 WSL2 向け)
 # ==============================================================================
 
 readonly IMAGE_NAME="ghcr.io/ranasgenoa/tesroid:latest"
@@ -47,11 +47,18 @@ readonly DEFAULT_INSTALL_DIR="${TARGET_HOME}/tesroid"
 
 # 状態保持用変数
 NEED_RELOGIN=false
+ADDED_GROUP_LIST=""
+IS_WSL=false
+HAS_DXG=false
+HAS_WSL_DIR=false
+HAS_DRI_DIR=false
+ONLY_NVIDIA_DRI=false
 INSTALL_DIR=""
 TESROID_PORT=""
 TUNNEL_TOKEN=""
-VAAPI_DEVICE="/dev/dri/renderD128"
-LIBVA_DRIVER_NAME="iHD"
+ENCODER_MODE="auto"
+VAAPI_DEVICE=""
+LIBVA_DRIVER_NAME=""
 COMPOSE_FILE=""
 ENV_FILE=""
 
@@ -98,28 +105,102 @@ confirm() {
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
-# GPU ベンダー ID から推奨 VAAPI ドライバ名を判定するヘルパー
-detect_default_libva_driver() {
-  local dev_name
-  dev_name="$(basename "$VAAPI_DEVICE")"
-  local vendor_file="/sys/class/drm/${dev_name}/device/vendor"
+# 文字列を小文字へ変換するヘルパー (Bash 3.2+ 互換)
+to_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
 
-  if [[ -r "$vendor_file" ]]; then
-    local vendor_id
-    vendor_id="$(tr '[:upper:]' '[:lower:]' < "$vendor_file" 2>/dev/null | tr -d '[:space:]')"
-    case "$vendor_id" in
-      0x1002)
-        echo "radeonsi"
-        return
-        ;;
-      0x8086)
-        echo "iHD"
-        return
-        ;;
-    esac
+# /dev/dri/renderD* から VAAPI 向けレンダーノードを優先順位付きで検出する
+# (Intel 0x8086 / AMD 0x1002 > その他非 NVIDIA > NVIDIA 0x10de)
+detect_vaapi_device() {
+  VAAPI_DEVICE=""
+  ONLY_NVIDIA_DRI=false
+
+  local candidates=()
+  local candidate
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" && -e "$candidate" ]] && candidates+=("$candidate")
+  done < <(
+    for p in /dev/dri/renderD*; do
+      [[ -e "$p" ]] && printf '%s\n' "$p"
+    done | sort -tD -k2,2n
+  )
+
+  if (( ${#candidates[@]} == 0 )); then
+    return 0
   fi
 
-  echo "iHD"
+  local first_non_nvidia=""
+  local first_any="${candidates[0]}"
+  local dev_name vendor_file vendor_id
+
+  for candidate in "${candidates[@]}"; do
+    dev_name="$(basename "$candidate")"
+    vendor_file="/sys/class/drm/${dev_name}/device/vendor"
+    vendor_id=""
+    if [[ -r "$vendor_file" ]]; then
+      vendor_id="$(tr '[:upper:]' '[:lower:]' < "$vendor_file" 2>/dev/null | tr -d '[:space:]')"
+    fi
+
+    if [[ "$vendor_id" == "0x8086" || "$vendor_id" == "0x1002" ]]; then
+      VAAPI_DEVICE="$candidate"
+      return 0
+    fi
+
+    if [[ "$vendor_id" != "0x10de" && -z "$first_non_nvidia" ]]; then
+      first_non_nvidia="$candidate"
+    fi
+  done
+
+  if [[ -n "$first_non_nvidia" ]]; then
+    VAAPI_DEVICE="$first_non_nvidia"
+    return 0
+  fi
+
+  VAAPI_DEVICE="$first_any"
+  if [[ -n "$VAAPI_DEVICE" ]]; then
+    local chosen_name chosen_vendor_file chosen_vendor
+    chosen_name="$(basename "$VAAPI_DEVICE")"
+    chosen_vendor_file="/sys/class/drm/${chosen_name}/device/vendor"
+    if [[ -r "$chosen_vendor_file" ]]; then
+      chosen_vendor="$(tr '[:upper:]' '[:lower:]' < "$chosen_vendor_file" 2>/dev/null | tr -d '[:space:]')"
+      if [[ "$chosen_vendor" == "0x10de" ]]; then
+        ONLY_NVIDIA_DRI=true
+      fi
+    fi
+  fi
+}
+
+# GPU ベンダー ID / WSL2 環境から推奨 VAAPI ドライバ名を判定するヘルパー
+detect_default_libva_driver() {
+  if [[ -n "$VAAPI_DEVICE" ]]; then
+    local dev_name
+    dev_name="$(basename "$VAAPI_DEVICE")"
+    local vendor_file="/sys/class/drm/${dev_name}/device/vendor"
+
+    if [[ -r "$vendor_file" ]]; then
+      local vendor_id
+      vendor_id="$(tr '[:upper:]' '[:lower:]' < "$vendor_file" 2>/dev/null | tr -d '[:space:]')"
+      case "$vendor_id" in
+        0x1002)
+          echo "radeonsi"
+          return
+          ;;
+        0x8086)
+          # Intel Broadwell 以降は iHD、Haswell 以前は i965 のためコンテナ起動時に自動判定
+          echo "auto"
+          return
+          ;;
+      esac
+    fi
+  fi
+
+  if [[ "$HAS_DXG" == true ]]; then
+    echo "d3d12"
+    return
+  fi
+
+  echo "auto"
 }
 
 # sudo 実行ラッパー
@@ -135,7 +216,7 @@ run_sudo() {
 }
 
 # ------------------------------------------------------------------------------
-# 1. 事前環境チェックと非対応環境の明示的ブロック
+# 1. 事前環境チェックとデバイス自動検出
 # ------------------------------------------------------------------------------
 check_environment() {
   info "1/5 動作環境の事前チェックを実行しています..."
@@ -144,7 +225,8 @@ check_environment() {
   os_name="$(uname -s)"
   if [[ "$os_name" != "Linux" ]]; then
     error "非対応の OS です (${os_name})。"
-    error "Tesroid サーバーは Intel / AMD VAAPI を利用するため、Linux 環境専用です。"
+    error "このスクリプトは x86_64 Linux / WSL2 環境向けです。"
+    error "Windows ホストから直接導入する場合は、PowerShell / CMD で docker-compose.windows.yml をご使用ください（docs/QUICKSTART.md 参照）。"
     exit 1
   fi
 
@@ -158,31 +240,48 @@ check_environment() {
   fi
   ok "CPU アーキテクチャ: ${arch}"
 
-  if [[ -e /dev/dri/renderD128 ]]; then
-    VAAPI_DEVICE="/dev/dri/renderD128"
-    ok "VAAPI デバイスを確認: ${VAAPI_DEVICE}"
-  else
-    local fallback_render=""
-    local candidate
-    for candidate in /dev/dri/renderD*; do
-      if [[ -e "$candidate" ]]; then
-        fallback_render="$candidate"
-        break
-      fi
-    done
+  if [[ -e /dev/dxg ]] || grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
+    IS_WSL=true
+  fi
+  [[ -e /dev/dxg ]] && HAS_DXG=true
+  [[ -d /usr/lib/wsl ]] && HAS_WSL_DIR=true
+  [[ -d /dev/dri ]] && HAS_DRI_DIR=true
 
-    if [[ -n "$fallback_render" ]]; then
-      VAAPI_DEVICE="$fallback_render"
-      warn "/dev/dri/renderD128 が見つからないため、検出された ${VAAPI_DEVICE} を VAAPI デバイスとして使用します。"
+  detect_vaapi_device
+
+  if [[ -n "$VAAPI_DEVICE" ]]; then
+    if [[ "$ONLY_NVIDIA_DRI" == true ]]; then
+      warn "検出された GPU デバイス (${VAAPI_DEVICE}) は NVIDIA (0x10de) であり、Linux ネイティブ VAAPI (h264_vaapi) に非対応です。"
+      warn "このまま進めると ENCODER_MODE=auto により CPU ソフトウェアエンコード (libx264) へフォールバックします（高 CPU 負荷）。"
+      if ! confirm "ソフトウェアエンコードフォールバック前提で続行しますか？ [y/N]: " "N"; then
+        info "導入をキャンセルしました。"
+        exit 1
+      fi
+    elif [[ "$VAAPI_DEVICE" != "/dev/dri/renderD128" ]]; then
+      ok "VAAPI デバイスを検出: ${VAAPI_DEVICE}（非 VAAPI デバイス等をスキップして選択）"
     else
-      error "/dev/dri/renderD* が見つかりません。"
-      error "Tesroid は映像エンコードに Intel / AMD GPU の VAAPI (h264_vaapi) が必須です。"
-      error "以下の環境では動作しないため、導入を中止します:"
-      error "  - 格安 VPS / GPU なしのクラウド VM"
-      error "  - Windows PC (Docker Desktop / WSL2)"
-      error "  - Linux ホストで iGPU が無効化 (BIOS 設定等) されている環境"
+      ok "VAAPI デバイスを確認: ${VAAPI_DEVICE}"
+    fi
+  elif [[ "$HAS_DXG" == true ]]; then
+    ok "WSL2 GPU デバイス (/dev/dxg) を検出しました。"
+    info "【ご案内】Windows 環境では PowerShell / CMD から Docker Desktop for Windows + docker-compose.windows.yml を直接使う方法が第一推奨です（別途 WSL2 ディストリの操作は不要）。"
+    info "このまま現在の WSL2 環境向けにセットアップを続行します（D3D12 VAAPI エンコード非対応 GPU では ENCODER_MODE=auto により自動で libx264 へフォールバックします）。"
+    if [[ "$HAS_WSL_DIR" == false ]]; then
+      warn "/usr/lib/wsl が見つかりません。WSL2 D3D12 ライブラリをマウントできない場合、自動で libx264 ソフトウェアエンコードへフォールバックします。"
+    fi
+  else
+    warn "/dev/dri/renderD* が見つかりません。"
+    if [[ "$IS_WSL" == true ]]; then
+      warn "この WSL2 ディストリビューションでは /dev/dxg も認識されていません。"
+      info "Windows 上で Docker Desktop for Windows をお使いの場合は、WSL2 ディストリ内ではなく Windows PowerShell から docker-compose.windows.yml を実行する方法が推奨です。"
+    else
+      warn "ハードウェア VAAPI デバイスがない環境（GPU なし VPS / BIOS で iGPU 無効等）では CPU ソフトウェアエンコード (libx264) が使用され、2〜4 vCPU 相当の高い CPU 負荷が発生します。"
+    fi
+    if ! confirm "ハードウェア VAAPI なしでソフトウェアエンコード (libx264 / CPU) モードとして続行しますか？ [y/N]: " "N"; then
+      info "導入をキャンセルしました。"
       exit 1
     fi
+    ENCODER_MODE="software"
   fi
 
   if [[ -r /proc/meminfo ]]; then
@@ -214,6 +313,9 @@ ensure_docker() {
 
   if ! command -v docker >/dev/null 2>&1; then
     warn "Docker がインストールされていません。"
+    if [[ "$IS_WSL" == true ]]; then
+      info "WSL2 環境で Windows の Docker Desktop を使用する場合は、Docker Desktop の Settings -> Resources -> WSL Integration を有効にするか、Windows PowerShell から docker-compose.windows.yml を直接起動してください。"
+    fi
     if confirm "公式スクリプト (https://get.docker.com) を使用して Docker を自動インストールしますか？ [Y/n]: " "Y"; then
       if ! command -v curl >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
@@ -239,7 +341,7 @@ ensure_docker() {
         run_sudo sh "$tmp_script"
       )
 
-      if command -v systemctl >/dev/null 2>&1; then
+      if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         run_sudo systemctl enable --now docker || true
       fi
       ok "Docker Engine のインストールが完了しました。"
@@ -272,12 +374,12 @@ ensure_docker() {
   fi
 
   if ! docker info >/dev/null 2>&1 && ! run_sudo docker info >/dev/null 2>&1; then
-    if command -v systemctl >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
       info "Docker デーモンを起動しています..."
-      run_sudo systemctl start docker
+      run_sudo systemctl start docker || true
     fi
     if ! docker info >/dev/null 2>&1 && ! run_sudo docker info >/dev/null 2>&1; then
-      error "Docker デーモンに接続できません。Docker サービスの状態を確認してください。"
+      error "Docker デーモンに接続できません。Docker サービス（または Docker Desktop）の起動状態を確認してください。"
       exit 1
     fi
   fi
@@ -292,10 +394,14 @@ configure_permissions() {
   info "3/5 GPU および Docker のユーザー権限を設定しています..."
 
   local groups_to_add=()
+  local target_groups=("docker")
+  if [[ -n "$VAAPI_DEVICE" || "$HAS_DRI_DIR" == true ]]; then
+    target_groups=("render" "video" "docker")
+  fi
 
   if [[ "$TARGET_USER" != "root" ]]; then
     local grp
-    for grp in render video docker; do
+    for grp in "${target_groups[@]}"; do
       if getent group "$grp" >/dev/null 2>&1; then
         if ! id -nG "$TARGET_USER" | tr ' ' '\n' | grep -qx "$grp"; then
           groups_to_add+=("$grp")
@@ -309,9 +415,10 @@ configure_permissions() {
       info "ユーザー '${TARGET_USER}' をグループ (${group_list}) に追加します..."
       run_sudo usermod -aG "$group_list" "$TARGET_USER"
       NEED_RELOGIN=true
+      ADDED_GROUP_LIST="${groups_to_add[*]}"
       ok "グループ追加完了: ${group_list}"
     else
-      ok "ユーザー '${TARGET_USER}' は必要なグループ (render/video/docker) に所属済みです。"
+      ok "ユーザー '${TARGET_USER}' は必要なグループ (${target_groups[*]}) に所属済みです。"
     fi
   else
     ok "root ユーザーで実行中のためグループ追加はスキップします。"
@@ -396,21 +503,44 @@ prompt_configuration() {
     break
   done
 
-  # VAAPI ドライバ名の確認 (GPU ベンダーから自動判定した値を既定値として提示)
+  # VAAPI ドライバ名の確認 (GPU ベンダー / WSL2 環境から自動判定した値を既定値として提示)
+  if [[ "$ENCODER_MODE" == "software" ]]; then
+    LIBVA_DRIVER_NAME=""
+    echo ""
+    info "ソフトウェアエンコードモード (ENCODER_MODE=software / libx264) で構成します。"
+    return 0
+  fi
+
   local default_driver
   default_driver="$(detect_default_libva_driver)"
   echo ""
-  info "VAAPI ドライバ名を指定してください（通常は自動判定された既定値のまま Enter で問題ありません）。"
-  info "（Intel 第6世代以降: iHD / 旧世代 Intel: i965 / AMD Radeon: radeonsi）"
+  info "VAAPI ドライバ名を指定してください（通常は既定値 [${default_driver}] のまま Enter で問題ありません）。"
+  info "（空欄または auto: コンテナ起動時に自動判定 / Intel Broadwell 以降: iHD / 旧世代 Intel: i965 / AMD Radeon: radeonsi / WSL2: d3d12）"
   local input_driver=""
+  local lower_driver=""
   while true; do
-    read_input "LIBVA_DRIVER_NAME [${default_driver}]: " input_driver
+    read_input "LIBVA_DRIVER_NAME [${default_driver}] (空欄または auto で自動判定): " input_driver
     input_driver="$(trim_whitespace "$input_driver")"
-    LIBVA_DRIVER_NAME="${input_driver:-$default_driver}"
-    if [[ "$LIBVA_DRIVER_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    if [[ -z "$input_driver" ]]; then
+      if [[ "$default_driver" == "auto" ]]; then
+        LIBVA_DRIVER_NAME=""
+      else
+        LIBVA_DRIVER_NAME="$default_driver"
+      fi
       break
     fi
-    warn "英数字・ハイフン・アンダースコアのみで入力してください（例: iHD, i965, radeonsi）。"
+
+    lower_driver="$(to_lower "$input_driver")"
+    if [[ "$lower_driver" == "auto" ]]; then
+      LIBVA_DRIVER_NAME=""
+      break
+    fi
+
+    if [[ "$input_driver" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      LIBVA_DRIVER_NAME="$input_driver"
+      break
+    fi
+    warn "空欄 / auto、または英数字・ハイフン・アンダースコアのみで入力してください（例: auto, iHD, i965, radeonsi, d3d12）。"
   done
 }
 
@@ -443,6 +573,7 @@ DISPLAY_WIDTH=1280
 DISPLAY_HEIGHT=720
 FPS=30
 VIDEO_BITRATE=1000k
+ENCODER_MODE="${ENCODER_MODE}"
 VAAPI_DEVICE="${VAAPI_DEVICE}"
 LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME}"
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
@@ -450,20 +581,37 @@ EOF
   )
   chmod 600 "$ENV_FILE"
 
+  local devices_block=""
+  local extra_volumes_block=""
+  local extra_env_block=""
+  local default_driver_expr="\${LIBVA_DRIVER_NAME:-}"
+
+  if [[ "$HAS_DXG" == true && "$ENCODER_MODE" != "software" ]]; then
+    devices_block=$'    devices:\n      - /dev/dxg:/dev/dxg\n'
+    if [[ "$HAS_DRI_DIR" == true ]]; then
+      devices_block+=$'      - /dev/dri:/dev/dri\n'
+    fi
+    if [[ "$HAS_WSL_DIR" == true ]]; then
+      extra_volumes_block=$'      - /usr/lib/wsl:/usr/lib/wsl:ro\n'
+    fi
+    extra_env_block=$'      - LD_LIBRARY_PATH=/usr/lib/wsl/lib\n'
+    default_driver_expr="\${LIBVA_DRIVER_NAME:-d3d12}"
+  elif [[ -n "$VAAPI_DEVICE" || "$HAS_DRI_DIR" == true ]] && [[ "$ENCODER_MODE" != "software" ]]; then
+    devices_block=$'    devices:\n      - /dev/dri:/dev/dri\n'
+  fi
+
   cat > "$COMPOSE_FILE" <<EOF
 services:
   tesroid:
     image: ${IMAGE_NAME}
     container_name: tesroid-server
     init: true
-    devices:
-      - /dev/dri:/dev/dri
-    shm_size: 1g
+${devices_block}    shm_size: 1g
     ports:
       - "\${TESROID_PORT:-9001}:8080"
     volumes:
       - tesroid-data:/data
-    environment:
+${extra_volumes_block}    environment:
       - PORT=8080
       - DATA_DIR=/data
       - NODE_ENV=production
@@ -472,9 +620,10 @@ services:
       - DISPLAY_HEIGHT=\${DISPLAY_HEIGHT:-720}
       - FPS=\${FPS:-30}
       - VIDEO_BITRATE=\${VIDEO_BITRATE:-1000k}
-      - VAAPI_DEVICE=\${VAAPI_DEVICE:-/dev/dri/renderD128}
-      - LIBVA_DRIVER_NAME=\${LIBVA_DRIVER_NAME:-iHD}
-      - TUNNEL_TOKEN=\${TUNNEL_TOKEN:-}
+      - ENCODER_MODE=\${ENCODER_MODE:-${ENCODER_MODE}}
+      - VAAPI_DEVICE=\${VAAPI_DEVICE:-}
+      - LIBVA_DRIVER_NAME=${default_driver_expr}
+${extra_env_block}      - TUNNEL_TOKEN=\${TUNNEL_TOKEN:-}
     restart: unless-stopped
 
 volumes:
@@ -540,7 +689,7 @@ print_summary() {
 
   if [[ "$NEED_RELOGIN" == true ]]; then
     echo -e "${YELLOW}■ グループ権限反映のお願い:${NC}"
-    echo "  ユーザー '${TARGET_USER}' を render / video / docker グループに追加しました。"
+    echo "  ユーザー '${TARGET_USER}' をグループ (${ADDED_GROUP_LIST:-docker}) に追加しました。"
     echo "  今後 sudo なしで docker コマンドを使うには、一度ログアウト＆再ログインするか、"
     echo "  以下を実行してください:"
     echo "    newgrp docker"
@@ -551,11 +700,20 @@ print_summary() {
   echo "  # 起動ログの確認 (エラー発生時はこちらを確認してください)"
   echo "  cd \"${INSTALL_DIR}\" && docker compose logs -f --tail 50"
   echo ""
-  echo "  # ヘルスチェック"
+  echo "  # ヘルスチェック (アクティブなエンコーダバックエンド: vaapi / software も確認できます)"
   echo "  curl -s http://127.0.0.1:${TESROID_PORT}/api/health"
   echo ""
-  echo "  # コンテナ内 VAAPI ハードウェアアクセラレーション診断"
-  echo "  docker exec -it tesroid-server vainfo"
+  if [[ -n "$VAAPI_DEVICE" ]]; then
+    echo "  # コンテナ内 VAAPI ハードウェアアクセラレーション診断"
+    echo "  docker exec -it tesroid-server vainfo --display drm --device \"${VAAPI_DEVICE}\""
+  elif [[ "$HAS_DXG" == true ]]; then
+    echo "  # WSL2 環境のエンコーダ動作診断 (起動ログの [entrypoint] VAAPI config と /api/health を確認)"
+    echo "  # ※ /dev/dri/renderD* (vgem) や対応 WSL D3D12 UMD がない場合、自動で software (libx264) が使用されます"
+    echo "  cd \"${INSTALL_DIR}\" && docker compose logs --tail 50"
+  else
+    echo "  # ソフトウェアエンコード (libx264) 起動ログの確認"
+    echo "  cd \"${INSTALL_DIR}\" && docker compose logs --tail 50"
+  fi
   echo ""
 }
 

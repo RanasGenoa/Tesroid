@@ -24,15 +24,15 @@ Tesroid は、一般的なリモートデスクトップ（VNC/RDP）や WebRTC 
   │      - Input.dispatchTouchEvent (Blinkネイティブタッチ注入: 慣性スクロール, フリック, タップ)
   │
   ├── 3. Google Chrome (Standalone App Mode: --app=https://www.youtube.com)
-  │      - 映像再生: Intel VAAPI QuickSync ハードウェアデコード (/dev/dri/renderD128)
+  │      - 映像再生: VAAPI ハードウェアデコード (Intel iHD/i965, AMD radeonsi via $VAAPI_DEVICE; DRI不在時は自動SWデコード)
   │      - 2D DOM描画: Chromeネイティブ SIMD 高速CPUラスター (Mesa llvmpipe競合回避)
   │
   ├── 4. Virtual Display & Audio
   │      - Xvfb (:99, 1920x1080x24) + Openbox (枠なし: decor=no)
   │      - PulseAudio (virtual_sink: 48kHz stereo s16le, 20ms lowdelay)
   │
-  ├── 5. FFmpeg VAAPI Dual Encoders
-  │      - Video: x11grab -> nv12 hwupload -> h264_vaapi (2500kbps, 60fps, GOP 30, B-frame 0)
+  ├── 5. FFmpeg Dual Encoders (ENCODER_MODE=auto|vaapi|software)
+  │      - Video: x11grab -> (hwupload,scale_vaapi=format=nv12 / format=nv12,hwupload -> h264_vaapi) or libx264 fallback (ultrafast, zerolatency, B-frame 0)
   │      - Audio: pulse -> libopus (128kbps〜320kbps 可変・設定調整可能, 20ms frame, lowdelay)
   │
   └── 6. WebSocket Backpressure Controller
@@ -57,7 +57,7 @@ Chrome をヘッドレス・仮想ディスプレイ（Xvfb）環境で動作さ
 Xvfb にはハードウェア DRM/KMS 画面合成や DRI3 ページフリップ機構が存在せず、OpenGL は **Mesa llvmpipe（CPU ソフトウェアエミュレーション）** で提供されます。
 この環境下で：
 1. `--enable-gpu-rasterization` を有効化すると、Chrome の Skia 2D エンジンは全 HTML/CSS/文字描画を llvmpipe のソフトウェア GL シェーダーに送ります（これで GPU プロセスが CPU 35% を消費）。
-2. 同時に動画デコードは Intel VAAPI (`/dev/dri/renderD128`) でハードウェア処理されます。
+2. 同時に動画デコードは VAAPI (`${VAAPI_DEVICE}`, 例: `/dev/dri/renderD128`) でハードウェア処理されます（DRI デバイスが存在しない環境では Chrome が自動的にソフトウェアデコードへフォールバックします）。
 3. `--enable-zero-copy`（ゼロコピー GpuMemoryBuffer）が Xvfb の共有メモリと VAAPI サーフェス間でバッファ共有を試みますが、DMA-BUF 互換性がなく同期ロック待機でストールします。
 4. `--disable-gpu-vsync` により VSync タイマーが消失し、Chrome の **Viz ディスプレイコンポジタスレッドがデッドロック**。
 5. 結果として、動画クワッド（オーバーレイ）のみが一度描画された後、X11 への `SwapBuffers` / `PostSubBuffer` が停止し、動画外の領域が再描画されず黒いまま固まりました。
@@ -67,12 +67,12 @@ Xvfb にはハードウェア DRM/KMS 画面合成や DRI3 ページフリップ
 
 | 描画対象 | 処理担当 | 使用技術 / フラグ |
 | :--- | :--- | :--- |
-| **動画デコード** (YouTube VP9/H.264) | **Intel GPU シリコン** | `--enable-features=VaapiVideoDecoder,VaapiVideoEncoder,VaapiIgnoreDriverChecks` |
+| **動画デコード** (YouTube VP9/H.264) | **GPU VAAPI (Intel/AMD・不可時は自動SW)** | `--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks` + `--render-node-override=${this.vaapiDevice}` |
 | **2D DOM / テキスト / レイアウト** | **Chrome 高速 CPU ラスター** | デフォルト Skia CPU（AVX2/SIMD 最適化） |
-| **AV1 ソフトウェアデコード** | **無効化 (ハードウェア優先)** | `--disable-features=Av1Decoder` |
+| **AV1 ソフトウェアデコード** | **無効化 (ハードウェア優先)** | `--disable-features=Av1Decoder,AudioServiceSandbox,Translate` |
 
 ```typescript
-// server/src/browser/manager.ts - 黄金の安定起動フラグ構成
+// server/src/browser/manager.ts - 黄金の安定起動フラグ構成 (Chrome 131+ / Ubuntu 24.04)
 const args = [
   '--no-sandbox',
   '--test-type',
@@ -85,13 +85,16 @@ const args = [
   '--hide-crash-restore-bubble',
   '--disable-infobars',
   '--disable-notifications',
+  '--password-store=basic',
   '--autoplay-policy=no-user-gesture-required',
   '--disable-gpu-sandbox',
   '--ignore-gpu-blocklist',
-  // Hardware video decode via Intel VAAPI (UHD 630 QuickSync)
-  '--enable-features=VaapiVideoDecoder,VaapiVideoEncoder,VaapiIgnoreDriverChecks',
+  // Hardware video decode via VAAPI (Intel iHD/i965, AMD radeonsi) with graceful SW fallback when DRI absent
+  '--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks',
+  `--render-node-override=${this.vaapiDevice}`,
   // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
-  '--disable-features=Av1Decoder',
+  '--disable-features=Av1Decoder,AudioServiceSandbox,Translate',
+  '--disable-translate',
   '--touch-events=enabled',
   '--force-dark-mode',
   '--remote-debugging-port=9222',
@@ -99,6 +102,11 @@ const args = [
   `--app=${url}`,
 ];
 ```
+
+> [!NOTE]
+> **マルチ GPU / `/etc/libva.conf` / Windows D3D12 (`GALLIUM_DRIVER`) に関する重要事項**:
+> - `libva` は環境変数 `LIBVA_DRIVER_NAME` より `/etc/libva.conf` を優先するため、`/etc/libva.conf` には `LIBVA_DRIVER_NAME` を直書きせずコメントのみを維持します（`Ubuntu 24.04` ベースイメージ上で `iHD` / `i965` / `radeonsi` / `d3d12` を動的に切り替え可能にするため）。
+> - Windows Docker Desktop / WSL2 環境では `GALLIUM_DRIVER=d3d12` を Chrome プロセスへグローバル付与しません（Chrome は Xvfb 上で安定した CPU Skia + `llvmpipe` を維持し、DRI 不在時は自動的にソフトウェアデコードへフォールバックします）。`GALLIUM_DRIVER=d3d12` は FFmpeg の `d3d12` VAAPI プローブ・起動時のみにスコープし、`VAProfileH264` + `VAEntrypointEncSlice` 非対応時は `ENCODER_MODE=auto` で `libx264`（`-preset ultrafast -tune zerolatency -bf 0`）へ自動フォールバックします。
 
 **【効果】**
 - GPU プロセス CPU 使用率: **35% ➔ 4% 未満** に激減。
@@ -455,8 +463,9 @@ ssh "${SERVER_USER}@${SERVER_HOST}" \
     })();
   \""
 
-# 4. ワンコマンド再デプロイ
-./scripts/deploy.sh --skip-test
+# 4. VAAPI 診断 & エンコーダバックエンド確認
+ssh "${SERVER_USER}@${SERVER_HOST}" \
+  "curl -s http://127.0.0.1:9001/api/health && echo '' && docker exec tesroid-server vainfo --display drm --device \${VAAPI_DEVICE:-/dev/dri/renderD128}"
 ```
 
 ---

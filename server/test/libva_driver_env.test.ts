@@ -80,6 +80,12 @@ describe('LIBVA_DRIVER_NAME inheritance & fallback (Issue #81)', () => {
 
     expect(resolveLibvaDriverName('d3d12')).toBe('d3d12');
     expect(resolveLibvaDriverName('  ')).toBe('i965');
+
+    process.env.LIBVA_DRIVER_NAME = 'auto';
+    expect(resolveLibvaDriverName()).toBe('iHD');
+    process.env.LIBVA_DRIVER_NAME = 'AUTO';
+    expect(resolveLibvaDriverName()).toBe('iHD');
+    expect(resolveLibvaDriverName('Auto')).toBe('iHD');
   });
 
   it('BrowserManager.buildChromeEnv() defaults LIBVA_DRIVER_NAME to iHD when unset or empty', () => {

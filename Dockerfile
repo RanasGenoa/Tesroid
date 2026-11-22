@@ -19,9 +19,9 @@ COPY server/ ./
 RUN npm run build
 
 # ==============================================================================
-# Stage 3: Production Runtime (Ubuntu 22.04 LTS + Intel VAAPI + Google Chrome)
+# Stage 3: Production Runtime (Ubuntu 24.04 LTS + Multi-GPU VAAPI + Google Chrome)
 # ==============================================================================
-FROM ubuntu:22.04 AS runner
+FROM ubuntu:24.04 AS runner
 WORKDIR /app
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -34,8 +34,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY_HEIGHT=720 \
     FPS=30 \
     VIDEO_BITRATE=1000k \
-    VAAPI_DEVICE=/dev/dri/renderD128 \
-    LIBVA_DRIVER_NAME=iHD \
+    VAAPI_DEVICE="" \
+    LIBVA_DRIVER_NAME="" \
+    ENCODER_MODE=auto \
     PULSE_SERVER=unix:/tmp/pulse-socket \
     PULSE_SINK=virtual_sink \
     PUBLIC_DIR=/app/server/public \
@@ -44,8 +45,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANGUAGE=ja_JP:ja \
     LC_ALL=ja_JP.UTF-8
 
-# 1. Install system utilities, Intel GPU repositories (VA-API 1.22+ for Chrome 131+), and dependencies
-RUN apt-get update -qq && \
+# 1. Install system utilities, Multi-GPU VA-API drivers (Intel iHD/i965, AMD radeonsi, WSL2 d3d12), and dependencies
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i -E '/^Components:/ { /universe/! s/$/ universe/; /multiverse/! s/$/ multiverse/; }' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
         curl \
         gnupg \
@@ -64,19 +68,17 @@ RUN apt-get update -qq && \
         pciutils \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
-        procps && \
-    locale-gen ja_JP.UTF-8 en_US.UTF-8 && \
-    mkdir -p /usr/share/keyrings && \
-    curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy client" > /etc/apt/sources.list.d/intel-gpu-jammy.list && \
-    apt-get update -qq && \
-    apt-get install -qq -y --no-install-recommends \
+        procps \
         libva2 \
         libva-drm2 \
         intel-media-va-driver-non-free \
+        i965-va-driver-shaders \
+        mesa-va-drivers \
+        libdrm-amdgpu1 \
         vainfo && \
+    locale-gen ja_JP.UTF-8 en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/* && \
-    echo "LIBVA_DRIVER_NAME=iHD" > /etc/libva.conf && \
+    printf '# Tesroid: driver selection is controlled at runtime via LIBVA_DRIVER_NAME env\n' > /etc/libva.conf && \
     sed -i 's|</applications>|  <application class="*">\n    <decor>no</decor>\n    <position force="yes">\n      <x>0</x>\n      <y>0</y>\n    </position>\n    <fullscreen>no</fullscreen>\n    <maximized>no</maximized>\n  </application>\n</applications>|' /etc/xdg/openbox/rc.xml
 
 # 2. Install Node.js 20 LTS

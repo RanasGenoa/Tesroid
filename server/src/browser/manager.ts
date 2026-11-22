@@ -4,7 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { findProcessesByName, getProcessTree } from '../utils/processTree.js';
-import { resolveLibvaDriverName } from '../utils/vaapi.js';
+import {
+  DEFAULT_VAAPI_DEVICE,
+  normalizeVaapiOverride,
+  resolveLibvaDriverName,
+} from '../utils/vaapi.js';
 import { buildCarFullscreenScript } from './fullscreen-script.js';
 import { buildWebAuthnSuppressorScript } from './webauthn-script.js';
 
@@ -18,7 +22,7 @@ export interface BrowserManagerOptions {
   profileDir?: string; // e.g. '/data/browser-profile'
   defaultUrl?: string; // e.g. 'https://www.youtube.com'
   vaapiDevice?: string; // e.g. '/dev/dri/renderD128'
-  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi'
+  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi', 'd3d12'
   displayScale?: number; // e.g. 120 = 120%
   locale?: string; // e.g. 'ja-JP'
   timezone?: string; // e.g. 'Asia/Tokyo'
@@ -83,7 +87,12 @@ export class BrowserManager {
       process.env.BROWSER_PROFILE_DIR ||
       path.join(process.env.DATA_DIR || '/data', 'browser-profile');
     this.defaultUrl = options.defaultUrl || process.env.BROWSER_URL || 'https://www.youtube.com';
-    this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
+    const rawOptionDevice = options.vaapiDevice?.trim();
+    const envVaapiDevice = normalizeVaapiOverride(process.env.VAAPI_DEVICE);
+    this.vaapiDevice =
+      options.vaapiDevice !== undefined && rawOptionDevice?.toLowerCase() !== 'auto'
+        ? rawOptionDevice || ''
+        : envVaapiDevice || DEFAULT_VAAPI_DEVICE;
     this.libvaDriverName = options.libvaDriverName;
     this.displayScale = options.displayScale || Number(process.env.DISPLAY_SCALE) || 120;
     this.locale = options.locale || process.env.LOCALE || 'ja-JP';
@@ -1033,7 +1042,9 @@ export class BrowserManager {
       // In headless Xvfb environments, ANGLE reports llvmpipe software rasterizer, which causes Chrome to reject
       // DRI render nodes during pre-sandbox PCI device filtering. --render-node-override forces VAAPI VADisplay binding.
       '--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks',
-      `--render-node-override=${this.vaapiDevice}`,
+      ...(this.vaapiDevice && this.vaapiDevice !== 'none'
+        ? [`--render-node-override=${this.vaapiDevice}`]
+        : []),
       // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
       // (Pre-11th Gen Intel iGPUs lack AV1 hardware decode but have full silicon VP9/H.264 decode).
       // Disable AudioServiceSandbox so Chrome AudioService can seamlessly access PulseAudio UNIX socket in container.
@@ -1095,11 +1106,15 @@ export class BrowserManager {
 
     const chromeBin = this.detectChromeBinary();
 
-    console.log(`[BrowserManager] VAAPI render node: ${this.vaapiDevice}`);
-    if (!fs.existsSync(this.vaapiDevice)) {
-      console.warn(
-        `[BrowserManager] VAAPI render node not found at ${this.vaapiDevice}; Chrome may fall back to software decoding.`,
-      );
+    if (this.vaapiDevice && this.vaapiDevice !== 'none') {
+      console.log(`[BrowserManager] VAAPI render node: ${this.vaapiDevice}`);
+      if (!fs.existsSync(this.vaapiDevice)) {
+        console.warn(
+          `[BrowserManager] VAAPI render node not found at ${this.vaapiDevice}; Chrome may fall back to software decoding.`,
+        );
+      }
+    } else {
+      console.log('[BrowserManager] VAAPI render node override omitted (no DRI device / none).');
     }
 
     // Clean any stale Singleton locks from previous crashes/restarts to avoid exit code 21

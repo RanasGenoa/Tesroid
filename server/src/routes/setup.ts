@@ -1,9 +1,9 @@
-import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { type AuthService, isValidPin } from '../auth.js';
 import type { BrowserManager } from '../browser/manager.js';
 import { ALLOWED_LOCALES, type ConfigStore } from '../config.js';
 import type { LockoutManager } from '../lockout.js';
+import { hasHardwareVideoDevice } from '../utils/vaapi.js';
 import type { WebSocketHandler } from '../ws/handler.js';
 
 interface SetupBody {
@@ -33,7 +33,7 @@ export function registerSetupRoutes(
 ) {
   // Public status check
   app.get('/api/status', async (_req: FastifyRequest, _reply: FastifyReply) => {
-    const hasDri = fs.existsSync('/dev/dri/renderD128') || fs.existsSync('/dev/dri/card0');
+    const hasDri = hasHardwareVideoDevice();
 
     return {
       isSetupCompleted: configStore.isSetupCompleted(),
