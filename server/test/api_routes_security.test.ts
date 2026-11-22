@@ -54,12 +54,13 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     mockWsHandler = {
       restartStream: vi.fn(async () => {}),
       hasActiveClients: vi.fn(() => false),
+      broadcastStreamSettings: vi.fn(),
     };
 
     app = Fastify();
     registerHealthRoutes(app);
     registerSetupRoutes(app, configStore, authService, lockoutManager, mockBrowser, mockWsHandler);
-    registerSettingsRoutes(app, configStore, authService, mockBrowser, mockEncoder);
+    registerSettingsRoutes(app, configStore, authService, mockBrowser, mockEncoder, mockWsHandler);
     registerBrowserRoutes(app, mockBrowser, authService, mockEncoder, mockWsHandler);
     registerMetricsRoutes(app, authService);
     registerSoundRoutes(app, authService);
@@ -308,6 +309,51 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
       ).statusCode,
     ).toBe(200);
     expect(mockBrowser.restartChrome).toHaveBeenCalled();
+  });
+
+  it('PUT /api/settings broadcasts { maxFps, bitrate } via wsHandler.broadcastStreamSettings only when stream is updated', async () => {
+    await authService.setPin('1234');
+    const { token } = await authService.verifyPin('1234');
+    const authHeaders = { authorization: `Bearer ${token}` };
+
+    // Updating non-stream settings must NOT call broadcastStreamSettings
+    const nonStreamRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { displayScale: 130 },
+    });
+    expect(nonStreamRes.statusCode).toBe(200);
+    expect(mockWsHandler.broadcastStreamSettings).not.toHaveBeenCalled();
+
+    // Updating stream settings calls broadcastStreamSettings with updated { maxFps, bitrate }
+    const streamRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { stream: { maxFps: 45, bitrate: 3_500_000 } },
+    });
+    expect(streamRes.statusCode).toBe(200);
+    expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledTimes(1);
+    expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledWith({
+      maxFps: 45,
+      bitrate: 3_500_000,
+    });
+
+    // Partial/out-of-bounds stream update broadcasts clamped maxFps and persisted bitrate
+    mockWsHandler.broadcastStreamSettings.mockClear();
+    const clampedStreamRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: authHeaders,
+      payload: { stream: { maxFps: 120 } },
+    });
+    expect(clampedStreamRes.statusCode).toBe(200);
+    expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledTimes(1);
+    expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledWith({
+      maxFps: 60,
+      bitrate: 3_500_000,
+    });
   });
 
   it('GET /api/status reflects wsHandler.hasPrimaryClients() (with fallback to hasActiveClients) and defaults to false when omitted', async () => {
