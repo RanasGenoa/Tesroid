@@ -16,7 +16,7 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 
 function walkWorkspaceFiles(dir: string, out: string[] = []): string[] {
   const ignoredDirs = new Set(['.git', 'node_modules', 'dist', '.cache', 'data']);
-  const ignoredFiles = new Set(['.env', 'PRIVATE_ENVIRONMENT.md', 'package-lock.json']);
+  const ignoredFiles = new Set(['.git', '.env', 'PRIVATE_ENVIRONMENT.md', 'package-lock.json']);
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
@@ -193,5 +193,28 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(aiReviewWorkflow).toMatch(
       /group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.event_name\s*\}\}-\$\{\{\s*github\.event\.pull_request\.number\s*\|\|\s*github\.ref\s*\}\}/,
     );
+  });
+
+  it('enforces touch-only / no physical keyboard or mouse assumption guardrail in AGENTS.md and AI review workflow', () => {
+    const agentsMd = fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf-8');
+    const aiReviewWorkflow = fs.readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/ai-review.yml'),
+      'utf-8',
+    );
+    const optimizationKnowledge = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs/OPTIMIZATION_KNOWLEDGE.md'),
+      'utf-8',
+    );
+
+    expect(agentsMd).toMatch(/タッチオンリー/);
+    expect(agentsMd).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
+    expect(agentsMd).toContain('Escape');
+
+    expect(aiReviewWorkflow).toMatch(/タッチオンリー/);
+    expect(aiReviewWorkflow).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
+    expect(aiReviewWorkflow).toContain('Escape');
+
+    expect(optimizationKnowledge).toMatch(/タッチオンリー/);
+    expect(optimizationKnowledge).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
   });
 });
