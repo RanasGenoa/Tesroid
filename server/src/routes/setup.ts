@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthService } from '../auth.js';
 import type { BrowserManager } from '../browser/manager.js';
-import type { ConfigStore } from '../config.js';
+import { ALLOWED_LOCALES, type ConfigStore } from '../config.js';
 import type { LockoutManager } from '../lockout.js';
 import type { WebSocketHandler } from '../ws/handler.js';
 
@@ -12,8 +12,6 @@ interface SetupBody {
   locale?: string;
   timezone?: string;
 }
-
-const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
 
 export function isValidTimezone(tz: string): boolean {
   if (typeof tz !== 'string' || tz.length === 0 || tz.length > 64) return false;

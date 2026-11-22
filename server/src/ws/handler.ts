@@ -558,8 +558,8 @@ export class WebSocketHandler {
     if (cachedKeyframe) {
       if (typeof this.encoder.isKeyframeStale === 'function') {
         isStale = this.encoder.isKeyframeStale(2000000n);
-      } else if (typeof (this.encoder as any).getCurrentPts === 'function') {
-        const currentPts = (this.encoder as any).getCurrentPts();
+      } else if (typeof this.encoder.getCurrentPts === 'function') {
+        const currentPts = this.encoder.getCurrentPts();
         isStale = currentPts - cachedKeyframe.pts >= 2000000n;
       }
     } else {
@@ -941,8 +941,8 @@ export class WebSocketHandler {
       });
       const primarySession = this.getPrimarySession();
       const latestPts =
-        typeof (this.encoder as any).getCurrentPts === 'function'
-          ? BigInt((this.encoder as any).getCurrentPts())
+        typeof this.encoder.getCurrentPts === 'function'
+          ? BigInt(this.encoder.getCurrentPts())
           : 0n;
       const primaryAckPts = primarySession?.lastAckPts ?? null;
       const primaryBehindUs =
@@ -1049,8 +1049,8 @@ export class WebSocketHandler {
     if (cachedKeyframe) {
       if (typeof this.encoder.isKeyframeStale === 'function') {
         isStale = this.encoder.isKeyframeStale(2000000n);
-      } else if (typeof (this.encoder as any).getCurrentPts === 'function') {
-        const currentPts = (this.encoder as any).getCurrentPts();
+      } else if (typeof this.encoder.getCurrentPts === 'function') {
+        const currentPts = this.encoder.getCurrentPts();
         isStale = currentPts - cachedKeyframe.pts >= 2000000n;
       }
     } else {
@@ -1531,8 +1531,8 @@ export class WebSocketHandler {
         case 'PING': {
           const session = this.clientSessions.get(socket);
           const latestPts =
-            typeof (this.encoder as any).getCurrentPts === 'function'
-              ? Number((this.encoder as any).getCurrentPts())
+            typeof this.encoder.getCurrentPts === 'function'
+              ? Number(this.encoder.getCurrentPts())
               : 0;
           // 1. サーバー側送出待ちキューの秒数
           let catchupQueueMs = 0;

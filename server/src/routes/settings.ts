@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthService } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import {
+  ALLOWED_LOCALES,
   type AppConfig,
   type ConfigStore,
   DEFAULT_FAVORITES,
@@ -42,8 +43,6 @@ interface UpdateSettingsBody {
     vaapiGpuColorConversion?: boolean;
   };
 }
-
-const ALLOWED_LOCALES = ['ja-JP', 'en-US'];
 
 export function registerSettingsRoutes(
   app: FastifyInstance,

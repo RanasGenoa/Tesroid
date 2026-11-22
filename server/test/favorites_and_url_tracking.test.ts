@@ -11,6 +11,7 @@ import {
   DEFAULT_FAVORITES,
   DEFAULT_HOME_FAVORITE_ID,
   type FavoriteItem,
+  pinHomeFavoriteFirst,
   resolveHomeUrl,
 } from '../src/config.js';
 import { LockoutManager } from '../src/lockout.js';
@@ -228,6 +229,38 @@ describe('Favorites, Home Presets & Real-Time URL/Title Tracking (Issue #49)', (
         'youtube',
       ]);
       expect(resolveHomeUrl(store.getConfig())).toBe('https://abema.tv');
+    });
+
+    it('pinHomeFavoriteFirst clones each FavoriteItem so mutating the output does not mutate caller objects', () => {
+      const input: FavoriteItem[] = [
+        { id: 'tver', title: 'TVer', url: 'https://tver.jp' },
+        { id: 'abema', title: 'ABEMA', url: 'https://abema.tv' },
+        { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com' },
+      ];
+
+      // Case 1: home item moved from idx > 0 to index 0
+      const pinned = pinHomeFavoriteFirst(input, 'abema');
+      expect(pinned.map((f) => f.id)).toEqual(['abema', 'tver', 'youtube']);
+      for (let i = 0; i < pinned.length; i++) {
+        expect(input.includes(pinned[i])).toBe(false);
+      }
+      pinned[0].title = 'Mutated ABEMA';
+      pinned[1].title = 'Mutated TVer';
+      expect(input[1].title).toBe('ABEMA');
+      expect(input[0].title).toBe('TVer');
+
+      // Case 2: idx <= 0 (already first or missing) still returns cloned item objects
+      const unchanged = pinHomeFavoriteFirst(input, 'tver');
+      expect(unchanged.map((f) => f.id)).toEqual(['tver', 'abema', 'youtube']);
+      expect(unchanged[0]).not.toBe(input[0]);
+      unchanged[0].title = 'Mutated First';
+      expect(input[0].title).toBe('TVer');
+
+      const missing = pinHomeFavoriteFirst(input, 'nonexistent');
+      expect(missing.map((f) => f.id)).toEqual(['tver', 'abema', 'youtube']);
+      expect(missing[2]).not.toBe(input[2]);
+      missing[2].title = 'Mutated Missing';
+      expect(input[2].title).toBe('YouTube');
     });
   });
 
