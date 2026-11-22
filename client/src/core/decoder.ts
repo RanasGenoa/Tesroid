@@ -127,7 +127,7 @@ export class VideoStreamDecoder {
    * (~185ms cushion = ~11 frames + hw decode queue) has sufficient headroom without starving FramePacer.
    */
   public setTargetFps(fps: number): void {
-    this.targetFps = fps > 0 ? fps : 30;
+    this.targetFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
     this.maxActiveFrames =
       this.targetFps > 30 ? Math.min(24, Math.max(14, Math.round(this.targetFps / 3))) : 14;
     if (this.pendingPackets.length > 0 && this.hasCapacityForDecode()) {

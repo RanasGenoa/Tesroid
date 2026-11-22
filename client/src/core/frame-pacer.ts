@@ -238,11 +238,7 @@ export class FramePacer {
     // Standard microsecond PTS difference (up to 250ms).
     // Include sub-5ms microsecond intervals (251..4999us, or <=250us once in microsecond PTS scale)
     // so batched 60fps frames are not inflated to a full nominal frame interval.
-    if (
-      (diffUs >= 5000 && diffUs <= 250000) ||
-      (diffUs > 250 && diffUs < 5000) ||
-      (diffUs > 0 && diffUs <= 250 && prevPtsUs >= 10000)
-    ) {
+    if ((diffUs > 250 && diffUs <= 250000) || (diffUs > 0 && diffUs <= 250 && prevPtsUs >= 10000)) {
       return diffUs / 1000;
     }
     // Millisecond-scale test mock timestamps (between 8 and 250)
@@ -644,7 +640,7 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
-            // Anchor negative catchup bound to `now` (the frame just rendered at line 578),
+            // Anchor negative catchup bound to `now` (the frame just rendered via renderFrameInternal),
             // NOT `this.lastScheduledTimeMs` (which points to the tail of `this.frameQueue`).
             const earliestHeadTime = Math.max(now + 8, now + minCatchupIntervalMs);
             const maxNegativeShiftAllowed = Math.min(0, earliestHeadTime - currentHeadSchedule);
