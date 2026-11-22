@@ -144,7 +144,7 @@ bash install.sh
 
 1. Cloudflare Zero Trust の **Tunnels** 一覧で、トンネルのステータスが **「正常（HEALTHY）」** になったことを確認します。
 2. Step 5 で設定した URL（例: `https://example.stream` または `https://tesroid.example.stream`）をブラウザで開きます。
-3. 初回セットアップ画面が表示されるので、**4〜8 桁の PIN コード** を設定します。
+3. 初回セットアップ画面が表示されるので、**半角数字 4〜8 桁の PIN コード（0〜9 の数字のみ）** を設定します。
 4. テスラ車載ブラウザで同じ URL を開き、PIN を入力すれば完了です。
 
 ---

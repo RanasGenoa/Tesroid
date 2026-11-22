@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthService } from '../src/auth.js';
+import { AuthService, isValidPin } from '../src/auth.js';
 import { ConfigStore } from '../src/config.js';
 import { LockoutManager } from '../src/lockout.js';
 
@@ -34,10 +34,26 @@ describe('AuthService, ConfigStore & LockoutManager', () => {
     expect(res.remainingAttempts).toBe(10);
   });
 
-  it('should enforce PIN length bounds (4 to 8 chars) in setPin', async () => {
+  it('should enforce 4 to 8 ASCII numeric digits in isValidPin and setPin', async () => {
+    expect(isValidPin('0000')).toBe(true);
+    expect(isValidPin('1234')).toBe(true);
+    expect(isValidPin('12345678')).toBe(true);
+    expect(isValidPin('')).toBe(false);
+    expect(isValidPin('123')).toBe(false);
+    expect(isValidPin('123456789')).toBe(false);
+    expect(isValidPin('abcd')).toBe(false);
+    expect(isValidPin('12a4')).toBe(false);
+    expect(isValidPin('１２３４')).toBe(false);
+    expect(isValidPin('12 34')).toBe(false);
+    expect(isValidPin(1234)).toBe(false);
+
     await expect(authService.setPin('')).rejects.toThrow();
     await expect(authService.setPin('123')).rejects.toThrow();
     await expect(authService.setPin('123456789')).rejects.toThrow();
+    await expect(authService.setPin('abcd')).rejects.toThrow();
+    await expect(authService.setPin('12a4')).rejects.toThrow();
+    await expect(authService.setPin('１２３４')).rejects.toThrow();
+    await expect(authService.setPin('12 34')).rejects.toThrow();
   });
 
   it('should set and verify PIN, expire sessions after 24h TTL, and support revokeSession', async () => {

@@ -1,4 +1,5 @@
 import { renderOnboardingGuide } from './onboarding.js';
+import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pin-validation.js';
 
 export function renderSetupWizard(container: HTMLElement, onCompleted: () => void): void {
   let step = 1;
@@ -20,11 +21,25 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
         <h2>Tesroid 初期セットアップ</h2>
         <p>外部公開と車載アクセスのための初期パラメータを設定します。</p>
 
-        <form id="setup-form">
+        <form id="setup-form" novalidate>
           <label style="display: block; font-size: 14px; margin-bottom: 6px;">
-            認証PINコード (4〜8桁の数字・文字) <span style="color: var(--danger-color)">*必須</span>
+            認証PINコード (半角数字 4〜8桁) <span style="color: var(--danger-color)">*必須</span>
           </label>
-          <input type="password" id="setup-pin" placeholder="例: 1234" maxlength="8" required />
+          <input
+            type="password"
+            id="setup-pin"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            autocomplete="new-password"
+            placeholder="例: 1234（半角数字4〜8桁）"
+            maxlength="8"
+            required
+            style="margin-bottom: 6px;"
+          />
+          <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 8px 0;">
+            ※ 車載ログイン画面の数字テンキーで入力するため、0〜9 の半角数字のみで 4〜8 桁を設定してください。
+          </p>
+          <div id="setup-pin-error" style="color: var(--danger-color); font-size: 13px; margin-bottom: 12px; display: none;"></div>
 
           <label style="display: block; font-size: 14px; margin-bottom: 6px;">
             接続用独自ドメイン (任意・カンマ区切り)
@@ -61,18 +76,36 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
     `;
 
     const form = document.getElementById('setup-form') as HTMLFormElement;
+    const pinInput = document.getElementById('setup-pin') as HTMLInputElement | null;
+    const pinErrorEl = document.getElementById('setup-pin-error') as HTMLElement | null;
+    bindPinInputValidation(pinInput, pinErrorEl);
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const pin = (document.getElementById('setup-pin') as HTMLInputElement).value.trim();
-      const domain = (document.getElementById('setup-domain') as HTMLInputElement).value.trim();
-      const tz = (document.getElementById('setup-tz') as HTMLSelectElement).value;
-      const locale = (document.getElementById('setup-locale') as HTMLSelectElement).value;
-      const errDiv = document.getElementById('setup-error')!;
+      const pin = pinInput?.value ?? '';
+      const domain = (
+        (document.getElementById('setup-domain') as HTMLInputElement | null)?.value ?? ''
+      ).trim();
+      const tz =
+        (document.getElementById('setup-tz') as HTMLSelectElement | null)?.value || 'Asia/Tokyo';
+      const locale =
+        (document.getElementById('setup-locale') as HTMLSelectElement | null)?.value || 'ja-JP';
+      const errDiv = document.getElementById('setup-error') as HTMLElement | null;
 
-      if (!pin || pin.length < 4 || pin.length > 8) {
-        errDiv.textContent = 'PINコードは4〜8桁で入力してください。';
-        errDiv.style.display = 'block';
+      const pinError = validatePinInput(pin);
+      if (pinError) {
+        setPinFieldError(pinInput, pinErrorEl, pinError);
+        if (errDiv) {
+          errDiv.textContent = pinError;
+          errDiv.style.display = 'block';
+        }
+        pinInput?.focus?.();
         return;
+      }
+      setPinFieldError(pinInput, pinErrorEl, null);
+      if (errDiv) {
+        errDiv.textContent = '';
+        errDiv.style.display = 'none';
       }
 
       const allowedDomains = domain
@@ -97,13 +130,15 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
         const data = await res.json();
         if (res.ok && data.success) {
           onCompleted();
-        } else {
+        } else if (errDiv) {
           errDiv.textContent = data.error || 'セットアップに失敗しました。';
           errDiv.style.display = 'block';
         }
-      } catch (err) {
-        errDiv.textContent = 'サーバーとの通信に失敗しました。';
-        errDiv.style.display = 'block';
+      } catch {
+        if (errDiv) {
+          errDiv.textContent = 'サーバーとの通信に失敗しました。';
+          errDiv.style.display = 'block';
+        }
       }
     });
   };

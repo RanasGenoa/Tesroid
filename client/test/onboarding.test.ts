@@ -3,7 +3,7 @@ import { openOnboardingGuideModal, renderOnboardingGuide } from '../src/views/on
 import { renderSetupWizard } from '../src/views/setup-wizard.js';
 
 function setupMockDom() {
-  const listeners = new Map<string, () => void>();
+  const listeners = new Map<string, (e?: any) => void>();
   const elementsById = new Map<string, any>();
   const appendedOverlays: any[] = [];
 
@@ -12,8 +12,26 @@ function setupMockDom() {
     click: () => listeners.get('guide-next-btn:click')?.(),
   };
 
+  const makeFieldElement = (id: string, initialValue = '') => {
+    const fieldListeners = new Map<string, (e?: any) => void>();
+    return {
+      id,
+      value: initialValue,
+      textContent: '',
+      style: {} as Record<string, string>,
+      focus: vi.fn(),
+      addEventListener: (ev: string, fn: (e?: any) => void) => fieldListeners.set(ev, fn),
+      triggerInput: (val: string) => {
+        const el = elementsById.get(id);
+        el.value = val;
+        fieldListeners.get('input')?.({ target: el });
+      },
+    };
+  };
+
   const setupForm = {
-    addEventListener: (ev: string, fn: () => void) => listeners.set(`setup-form:${ev}`, fn),
+    addEventListener: (ev: string, fn: (e?: any) => void) => listeners.set(`setup-form:${ev}`, fn),
+    submit: () => listeners.get('setup-form:submit')?.({ preventDefault: vi.fn() }),
   };
 
   const makeOverlayElement = () => {
@@ -81,18 +99,26 @@ function setupMockDom() {
       }
       if (html.includes('id="setup-form"')) {
         elementsById.set('setup-form', setupForm);
+        elementsById.set('setup-pin', makeFieldElement('setup-pin'));
+        elementsById.set('setup-pin-error', makeFieldElement('setup-pin-error'));
+        elementsById.set('setup-domain', makeFieldElement('setup-domain'));
+        elementsById.set('setup-tz', makeFieldElement('setup-tz', 'Asia/Tokyo'));
+        elementsById.set('setup-locale', makeFieldElement('setup-locale', 'ja-JP'));
+        elementsById.set('setup-error', makeFieldElement('setup-error'));
       }
     },
   });
 
-  return { container, nextBtn, appendedOverlays };
+  return { container, nextBtn, appendedOverlays, elementsById, setupForm };
 }
 
 describe('Onboarding Guide & Setup Wizard', () => {
   const originalDocument = (globalThis as any).document;
+  const originalFetch = (globalThis as any).fetch;
 
   afterEach(() => {
     (globalThis as any).document = originalDocument;
+    (globalThis as any).fetch = originalFetch;
     vi.restoreAllMocks();
   });
 
@@ -134,6 +160,63 @@ describe('Onboarding Guide & Setup Wizard', () => {
     nextBtn.click();
     expect(container.innerHTML).toContain('Tesroid 初期セットアップ');
     expect(container.innerHTML).toContain('id="setup-form"');
+    expect(container.innerHTML).toContain('半角数字 4〜8桁');
+    expect(container.innerHTML).toContain('inputmode="numeric"');
+    expect(container.innerHTML).toContain('pattern="[0-9]*"');
+  });
+
+  it('validates numeric-only 4-8 digit PIN in setup wizard on input and submit', async () => {
+    const { container, nextBtn, elementsById, setupForm } = setupMockDom();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    });
+    (globalThis as any).fetch = fetchMock;
+    const onCompleted = vi.fn();
+
+    renderSetupWizard(container, onCompleted);
+    nextBtn.click();
+
+    const pinEl = elementsById.get('setup-pin');
+    const pinErrEl = elementsById.get('setup-pin-error');
+
+    // Non-numeric character during typing immediately highlights error
+    pinEl.triggerInput('12a');
+    expect(pinErrEl.style.display).toBe('block');
+    expect(pinErrEl.textContent).toContain('半角数字');
+    expect(pinEl.style.borderColor).toBe('var(--danger-color)');
+
+    // Digits-only clears character error
+    pinEl.triggerInput('123');
+    expect(pinErrEl.style.display).toBe('none');
+    expect(pinEl.style.borderColor).toBe('');
+
+    // Submitting invalid PINs (empty, <4 digits, >8 digits, alpha, fullwidth, whitespace) blocks fetch
+    for (const invalidPin of ['', '123', '123456789', 'abcd', '12a4', '１２３４', '12 34']) {
+      pinEl.value = invalidPin;
+      await setupForm.submit();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(pinErrEl.style.display).toBe('block');
+      expect(pinEl.focus).toHaveBeenCalled();
+    }
+
+    // Valid 4-digit PIN (including leading zero) submits to /api/setup and invokes onCompleted
+    pinEl.value = '0528';
+    await setupForm.submit();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/setup',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          pin: '0528',
+          allowedDomains: [],
+          timezone: 'Asia/Tokyo',
+          locale: 'ja-JP',
+        }),
+      }),
+    );
+    expect(onCompleted).toHaveBeenCalledTimes(1);
   });
 
   it('opens onboarding guide modal overlay and closes via header close button, footer button, or backdrop', () => {

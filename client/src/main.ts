@@ -142,7 +142,7 @@ class AppRouter {
         const pin =
           prefilledPin && prefilledPin.length >= 4
             ? prefilledPin
-            : prompt('設定にアクセスするにはPINコードを入力してください:');
+            : prompt('設定にアクセスするにはPINコード（半角数字4〜8桁）を入力してください:');
         if (pin) {
           fetch('/api/auth/verify', {
             method: 'POST',
