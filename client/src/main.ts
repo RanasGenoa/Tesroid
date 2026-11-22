@@ -1,6 +1,6 @@
 import { AudioPlayer } from './core/audio-player.js';
 import { AvSyncController } from './core/av-sync.js';
-import { ClientProtocol } from './transport/protocol.js';
+import { ClientProtocol, WS_CLOSE_CODE } from './transport/protocol.js';
 import { WsClient } from './transport/ws-client.js';
 import { showToast } from './views/icons.js';
 import { renderLockoutView } from './views/lockout.js';
@@ -236,7 +236,7 @@ class AppRouter {
     });
 
     this.wsClient.on('close', (ev) => {
-      if (ev.code === 1008) {
+      if (ev.code === WS_CLOSE_CODE.POLICY_VIOLATION) {
         // Policy violation / lockout
         try {
           sessionStorage.removeItem('tesroid_token');
@@ -245,7 +245,10 @@ class AppRouter {
         this.authToken = null;
         this.sessionRole = 'primary';
         this.showLockout();
-      } else if (ev.code === 4009 || ev.code === 4000) {
+      } else if (
+        ev.code === WS_CLOSE_CODE.SESSION_CONFLICT ||
+        ev.code === WS_CLOSE_CODE.REPLACED_BY_RECONNECT
+      ) {
         this.handleSessionConflict(undefined, this.hasActiveSession);
       }
     });
