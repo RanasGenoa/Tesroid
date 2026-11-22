@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { findProcessesByName, getProcessTree } from '../utils/processTree.js';
 import { buildCarFullscreenScript } from './fullscreen-script.js';
+import { buildWebAuthnSuppressorScript } from './webauthn-script.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -812,69 +813,7 @@ export class BrowserManager {
         const script = `
 (() => {
   try {
-    // WebAuthn / Passkey Dialog Suppressor (Issue #35)
-    // Docker/Xvfb環境には物理・プラットフォームFIDO2認証器が存在せず、ChromeネイティブのWebAuthn
-    // バブルダイアログ（"No passkeys available"）が表示されると車載タッチ操作（DOM注入）では
-    // 閉じられず操作不能になるため、WebAuthn API呼び出しをインターセプトして安全に拒否・無効化する。
-    try {
-      if (typeof window.PublicKeyCredential !== 'undefined') {
-        try {
-          window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
-        } catch {
-          Object.defineProperty(window.PublicKeyCredential, 'isUserVerifyingPlatformAuthenticatorAvailable', {
-            value: () => Promise.resolve(false),
-            configurable: true,
-            writable: true,
-          });
-        }
-        if (typeof window.PublicKeyCredential.isConditionalMediationAvailable === 'function') {
-          try {
-            window.PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
-          } catch {
-            Object.defineProperty(window.PublicKeyCredential, 'isConditionalMediationAvailable', {
-              value: () => Promise.resolve(false),
-              configurable: true,
-              writable: true,
-            });
-          }
-        }
-      }
-    } catch (e) {}
-
-    try {
-      if (typeof navigator !== 'undefined' && navigator.credentials && !navigator.credentials._tesroidWebAuthnHooked) {
-        navigator.credentials._tesroidWebAuthnHooked = true;
-
-        const createNotAllowedError = (msg) => {
-          if (typeof DOMException !== 'undefined') {
-            return new DOMException(msg, 'NotAllowedError');
-          }
-          const err = new Error(msg);
-          err.name = 'NotAllowedError';
-          return err;
-        };
-
-        if (typeof navigator.credentials.get === 'function') {
-          const origGet = navigator.credentials.get.bind(navigator.credentials);
-          navigator.credentials.get = async function(options) {
-            if (options && options.publicKey) {
-              throw createNotAllowedError('Passkeys are not supported in this environment.');
-            }
-            return origGet(options);
-          };
-        }
-
-        if (typeof navigator.credentials.create === 'function') {
-          const origCreate = navigator.credentials.create.bind(navigator.credentials);
-          navigator.credentials.create = async function(options) {
-            if (options && options.publicKey) {
-              throw createNotAllowedError('Passkeys are not supported in this environment.');
-            }
-            return origCreate(options);
-          };
-        }
-      }
-    } catch (e) {}
+    ${buildWebAuthnSuppressorScript()}
 
     // Set YouTube Dark Theme & Theater mode cookies natively (no DOM hacks)
     document.cookie = "PREF=f6=400&wide=1; domain=.youtube.com; path=/; max-age=31536000";
@@ -1090,7 +1029,7 @@ export class BrowserManager {
       // In headless Xvfb environments, ANGLE reports llvmpipe software rasterizer, which causes Chrome to reject
       // DRI render nodes during pre-sandbox PCI device filtering. --render-node-override forces VAAPI VADisplay binding.
       '--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiIgnoreDriverChecks',
-      `--render-node-override=${process.env.VAAPI_DEVICE || '/dev/dri/renderD128'}`,
+      `--render-node-override=${this.vaapiDevice}`,
       // CRITICAL: Disable AV1 software decode so YouTube automatically serves hardware-accelerated VP9/H.264
       // (Pre-11th Gen Intel iGPUs lack AV1 hardware decode but have full silicon VP9/H.264 decode).
       // Disable AudioServiceSandbox so Chrome AudioService can seamlessly access PulseAudio UNIX socket in container.
@@ -1136,7 +1075,7 @@ export class BrowserManager {
       PULSE_SINK: 'virtual_sink',
       TZ: this.timezone || 'Asia/Tokyo',
       LANG: linuxLocale,
-      LANGUAGE: lang.startsWith('ja') ? 'ja_JP:ja' : linuxLocale,
+      LANGUAGE: lang.startsWith('ja') ? 'ja_JP:ja' : lang === 'en-US' ? 'en_US:en' : 'ja_JP:ja',
       LC_ALL: linuxLocale,
     };
   }
@@ -1151,6 +1090,13 @@ export class BrowserManager {
     this.isStartingChrome = true;
 
     const chromeBin = this.detectChromeBinary();
+
+    console.log(`[BrowserManager] VAAPI render node: ${this.vaapiDevice}`);
+    if (!fs.existsSync(this.vaapiDevice)) {
+      console.warn(
+        `[BrowserManager] VAAPI render node not found at ${this.vaapiDevice}; Chrome may fall back to software decoding.`,
+      );
+    }
 
     // Clean any stale Singleton locks from previous crashes/restarts to avoid exit code 21
     this.cleanProfileLocks();

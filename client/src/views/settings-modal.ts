@@ -163,7 +163,7 @@ async function showSettingsModal(
           <div id="cfg-perf-custom-panel" style="display: none; margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color);">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div>
-                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大横解像度</label>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限)</label>
                 <select id="cfg-max-size">
                   <option value="960">960px (軽量・qHD)</option>
                   <option value="1280" selected>1280px (標準・HD)</option>

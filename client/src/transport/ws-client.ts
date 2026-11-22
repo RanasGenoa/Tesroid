@@ -1,4 +1,4 @@
-import { WSS_CHANNEL } from './protocol.js';
+import { WS_CLOSE_CODE, WSS_CHANNEL } from './protocol.js';
 
 export interface VideoMessage {
   flags: number;
@@ -78,7 +78,10 @@ export class WsClient {
         if (this.ws !== ws) return;
         console.log(`[WsClient] Disconnected (code: ${ev.code}, reason: ${ev.reason})`);
         this.emit('close', ev);
-        const isTerminalClose = ev.code === 1008 || ev.code === 4000 || ev.code === 4009;
+        const isTerminalClose =
+          ev.code === WS_CLOSE_CODE.POLICY_VIOLATION ||
+          ev.code === WS_CLOSE_CODE.REPLACED_BY_RECONNECT ||
+          ev.code === WS_CLOSE_CODE.SESSION_CONFLICT;
         if (!this.isExplicitlyClosed && !isTerminalClose) {
           this.scheduleReconnect();
         }

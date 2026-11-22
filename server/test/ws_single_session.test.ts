@@ -1109,4 +1109,252 @@ describe('WebSocketHandler Rear-Seat Standby Mode (Issue #72)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('returns explicit primaryRenderedPts: null and primaryFeedbackAgeMs: null in PONG when primary is disconnected during grace window', async () => {
+    vi.useFakeTimers();
+    try {
+      const mockAuth: any = {
+        verifyPin: vi
+          .fn()
+          .mockResolvedValueOnce({ success: true, token: 'token-front' })
+          .mockResolvedValueOnce({ success: true, token: 'token-rear' }),
+        validateSession: vi.fn(() => true),
+      };
+      const { handler } = createTestContext(mockAuth);
+
+      const front = createMockSocket();
+      handler.handleConnection(front.socket);
+      await sendMessage(
+        front,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+      );
+
+      const rear = createMockSocket();
+      handler.handleConnection(rear.socket);
+      await sendMessage(
+        rear,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+      );
+
+      // Front sends BUFFER_FEEDBACK so primaryRenderedPts is populated while connected
+      await sendMessage(
+        front,
+        Buffer.concat([
+          Buffer.from([WSS_CHANNEL.COMMAND]),
+          Buffer.from(
+            JSON.stringify({
+              type: 'BUFFER_FEEDBACK',
+              bufferedMs: 80,
+              targetBufferMs: 100,
+              lastRenderedPts: 2500000,
+            }),
+          ),
+        ]),
+      );
+
+      // Primary drops transiently (enters 3-minute grace window)
+      front.listeners.get('close')?.();
+      expect(handler.hasPrimaryClients()).toBe(false);
+      expect(handler.hasActingPrimaryClients()).toBe(false);
+
+      rear.sentControl.length = 0;
+      await sendMessage(
+        rear,
+        Buffer.concat([
+          Buffer.from([WSS_CHANNEL.COMMAND]),
+          Buffer.from(JSON.stringify({ type: 'PING', id: 201, clientTime: 5000 })),
+        ]),
+      );
+
+      const pong = rear.sentControl.find((m) => m.type === 'PONG' && m.id === 201);
+      expect(pong).toBeDefined();
+      expect(Object.hasOwn(pong, 'primaryRenderedPts')).toBe(true);
+      expect(Object.hasOwn(pong, 'primaryFeedbackAgeMs')).toBe(true);
+      expect(pong.primaryRenderedPts).toBeNull();
+      expect(pong.primaryFeedbackAgeMs).toBeNull();
+
+      handler.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes token from authorizedSessions on explicit DISCONNECT_SESSION + close(1000) of acting_primary and secondary', async () => {
+    const mockAuth: any = {
+      verifyPin: vi
+        .fn()
+        .mockResolvedValueOnce({ success: true, token: 'token-front-1' })
+        .mockResolvedValueOnce({ success: true, token: 'token-rear-1' })
+        .mockResolvedValueOnce({ success: true, token: 'token-rear-2' })
+        .mockResolvedValueOnce({ success: true, token: 'token-front-2' }),
+      validateSession: vi.fn(() => true),
+    };
+    const handler = createHandler(mockAuth);
+
+    // 1. Secondary explicitly disconnects while primary is active -> TOKEN reconnect rejected
+    const front1 = createMockSocket();
+    handler.handleConnection(front1.socket);
+    await sendMessage(
+      front1,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+
+    const rear1 = createMockSocket();
+    handler.handleConnection(rear1.socket);
+    await sendMessage(
+      rear1,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+    );
+
+    await sendMessage(
+      rear1,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'DISCONNECT_SESSION' })),
+      ]),
+    );
+    rear1.listeners.get('close')?.(1000);
+
+    const rear1Retry = createMockSocket();
+    handler.handleConnection(rear1Retry.socket);
+    await sendMessage(
+      rear1Retry,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('TOKEN:token-rear-1')]),
+    );
+    expect(rear1Retry.sentControl.some((m) => m.type === 'SESSION_CONFLICT')).toBe(true);
+    expect(rear1Retry.socket.close).toHaveBeenCalledWith(4009, 'Another session is active');
+
+    // 2. Acting primary explicitly disconnects, then new primary logs in -> old acting_primary TOKEN rejected
+    const rear2 = createMockSocket();
+    handler.handleConnection(rear2.socket);
+    await sendMessage(
+      rear2,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+    );
+
+    // Promote rear2 to acting_primary via intentional primary disconnect
+    await sendMessage(
+      front1,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'DISCONNECT_SESSION' })),
+      ]),
+    );
+    front1.listeners.get('close')?.(1000);
+    expect(handler.hasActingPrimaryClients()).toBe(true);
+
+    // Acting primary explicitly disconnects
+    await sendMessage(
+      rear2,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'DISCONNECT_SESSION' })),
+      ]),
+    );
+    rear2.listeners.get('close')?.(1000);
+    expect(handler.hasActingPrimaryClients()).toBe(false);
+
+    // New primary connects
+    const front2 = createMockSocket();
+    handler.handleConnection(front2.socket);
+    await sendMessage(
+      front2,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]),
+    );
+
+    // Old acting_primary tries stale TOKEN auto-reconnect while front2 is active -> rejected
+    const rear2Retry = createMockSocket();
+    handler.handleConnection(rear2Retry.socket);
+    await sendMessage(
+      rear2Retry,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('TOKEN:token-rear-2')]),
+    );
+    expect(rear2Retry.sentControl.some((m) => m.type === 'SESSION_CONFLICT')).toBe(true);
+    expect(rear2Retry.socket.close).toHaveBeenCalledWith(4009, 'Another session is active');
+
+    handler.close();
+  });
+
+  it('ignores TOUCH and nav/input commands from standby secondaries while preserving PING and non-standby secondary input', async () => {
+    const mockAuth: any = {
+      verifyPin: vi
+        .fn()
+        .mockResolvedValueOnce({ success: true, token: 'token-rear' })
+        .mockResolvedValueOnce({ success: true, token: 'token-front' }),
+      validateSession: vi.fn(() => true),
+    };
+    const { handler, mockBrowser, mockInput } = createTestContext(mockAuth);
+    mockBrowser.getState = () => 'paused';
+    mockBrowser.navigate = vi.fn().mockResolvedValue(undefined);
+    mockInput.handleTouchEvent = vi.fn();
+    mockInput.navigateBack = vi.fn();
+    mockInput.sendKey = vi.fn();
+    mockInput.insertText = vi.fn();
+
+    // Connect secondary while no primary is active -> enters standby
+    const rear = createMockSocket();
+    handler.handleConnection(rear.socket);
+    await sendMessage(
+      rear,
+      Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('SECONDARY:1234')]),
+    );
+    expect(handler.getClientSession(rear.socket)?.isStandby).toBe(true);
+
+    const touchBuf = Buffer.alloc(33);
+    touchBuf[0] = WSS_CHANNEL.TOUCH;
+    touchBuf.writeUInt8(0, 2);
+    touchBuf.writeBigInt64BE(1n, 3);
+    touchBuf.writeInt32BE(100, 11);
+    touchBuf.writeInt32BE(200, 15);
+    touchBuf.writeUInt16BE(1280, 19);
+    touchBuf.writeUInt16BE(720, 21);
+
+    await sendMessage(rear, touchBuf);
+    for (const cmd of [
+      { type: 'NAVIGATE', url: 'https://example.com' },
+      { type: 'NAVIGATE_BACK' },
+      { type: 'KEY', key: 'Escape' },
+      { type: 'TYPE_TEXT', text: 'hello' },
+    ]) {
+      await sendMessage(
+        rear,
+        Buffer.concat([Buffer.from([WSS_CHANNEL.COMMAND]), Buffer.from(JSON.stringify(cmd))]),
+      );
+    }
+
+    expect(mockInput.handleTouchEvent).not.toHaveBeenCalled();
+    expect(mockBrowser.navigate).not.toHaveBeenCalled();
+    expect(mockInput.navigateBack).not.toHaveBeenCalled();
+    expect(mockInput.sendKey).not.toHaveBeenCalled();
+    expect(mockInput.insertText).not.toHaveBeenCalled();
+
+    // PING must still be answered while in standby
+    await sendMessage(
+      rear,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'PING', id: 301, clientTime: 7000 })),
+      ]),
+    );
+    expect(rear.sentControl.some((m) => m.type === 'PONG' && m.id === 301)).toBe(true);
+
+    // Once primary connects, secondary leaves standby and TOUCH / NAVIGATE are honored
+    const front = createMockSocket();
+    handler.handleConnection(front.socket);
+    await sendMessage(front, Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    expect(handler.getClientSession(rear.socket)?.isStandby).toBe(false);
+
+    await sendMessage(rear, touchBuf);
+    await sendMessage(
+      rear,
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'NAVIGATE', url: 'https://example.com' })),
+      ]),
+    );
+    expect(mockInput.handleTouchEvent).toHaveBeenCalledTimes(1);
+    expect(mockBrowser.navigate).toHaveBeenCalledWith('https://example.com');
+
+    handler.close();
+  });
 });

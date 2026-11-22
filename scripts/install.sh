@@ -228,16 +228,16 @@ ensure_docker() {
       fi
 
       info "Docker Engine インストーラーを取得しています..."
-      local tmp_script
-      tmp_script="$(mktemp)"
-      if ! curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 -fsSL https://get.docker.com -o "$tmp_script"; then
-        rm -f "$tmp_script"
-        error "Docker インストールスクリプトの取得に失敗しました。"
-        exit 1
-      fi
-      info "Docker Engine をインストールしています..."
-      run_sudo sh "$tmp_script"
-      rm -f "$tmp_script"
+      (
+        tmp_script="$(mktemp)"
+        trap 'rm -f "$tmp_script"' EXIT
+        if ! curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 -fsSL https://get.docker.com -o "$tmp_script"; then
+          error "Docker インストールスクリプトの取得に失敗しました。"
+          exit 1
+        fi
+        info "Docker Engine をインストールしています..."
+        run_sudo sh "$tmp_script"
+      )
 
       if command -v systemctl >/dev/null 2>&1; then
         run_sudo systemctl enable --now docker || true

@@ -214,6 +214,43 @@ describe('Issue 25: Audio volume attenuation prevention under network jitter and
     player.close();
   });
 
+  it('syncWithVideo counts packets split across overflowQueue and bufferQueue and marks initial playback started', async () => {
+    const env = setupMockAudioEnvironment();
+    const avSync = new AvSyncController();
+    const player = new AudioPlayer(avSync);
+    await player.unlock();
+
+    player.handleAudioPacket(AUDIO_FLAGS.CONFIG, 0n, new Uint8Array(19));
+
+    // Initial buffering before any overflow: 3 packets (60ms) in bufferQueue (< 160ms initial cushion)
+    for (let i = 0; i < 3; i++) {
+      player.handleAudioPacket(0, BigInt(1_000_000 + i * 20_000), new Uint8Array(100));
+    }
+    player.syncWithVideo();
+    expect(env.scheduledSources.length).toBe(0);
+
+    // Video enters buffering: 1 more packet (20ms) goes into overflowQueue
+    // Total across bufferQueue (60ms) + overflowQueue (20ms) = 80ms (REBUFFER_CUSHION_SEC)
+    avSync.setVideoBuffering(true);
+    player.handleAudioPacket(0, 1_060_000n, new Uint8Array(100));
+    expect(env.scheduledSources.length).toBe(0);
+
+    // Video exits buffering and syncWithVideo resumes playout using combined cushion
+    avSync.setVideoBuffering(false);
+    player.syncWithVideo();
+    expect(env.scheduledSources.length).toBe(4);
+
+    // Verify syncWithVideo marked hasInitialPlaybackStarted = true:
+    // After an underrun, 4 packets (80ms) in bufferQueue alone must resume playback without waiting for 160ms
+    env.setCtxTime(1.5);
+    for (let i = 0; i < 4; i++) {
+      player.handleAudioPacket(0, BigInt(1_080_000 + i * 20_000), new Uint8Array(100));
+    }
+    expect(env.scheduledSources.length).toBe(8);
+
+    player.close();
+  });
+
   it('maintains continuous 100% duty-cycle and constant MasterGain volume across varying packet arrival jitter', async () => {
     const env = setupMockAudioEnvironment();
     const avSync = new AvSyncController();

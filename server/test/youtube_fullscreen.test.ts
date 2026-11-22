@@ -340,6 +340,7 @@ function requireValue<T>(value: T | null | undefined, label: string): T {
 
 function createRichDomEnv(opts?: {
   withYouTube?: boolean;
+  withVideo?: boolean;
   screenWidth?: number;
   screenHeight?: number;
   outerWidth?: number;
@@ -399,7 +400,7 @@ function createRichDomEnv(opts?: {
     appendTrackedChild(playerEl, fsBtnEl);
     appendTrackedChild(flexyEl, playerEl);
     appendTrackedChild(bodyEl, flexyEl);
-  } else {
+  } else if (opts?.withVideo ?? true) {
     videoEl = createVideoEl('generic-video');
     appendTrackedChild(bodyEl, videoEl);
   }
@@ -877,6 +878,95 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(env.mockScreen.height).toBe(1080);
     });
 
+    it('reads native dimensions via Screen.prototype getters in readOrig and falls back when a getter throws', () => {
+      const env = createRichDomEnv({
+        outerWidth: 1256,
+        outerHeight: 658,
+        innerWidth: 1256,
+        innerHeight: 626,
+      });
+
+      let nativeWidth = 1920;
+      let nativeHeight = 1080;
+      let nativeAvailWidth = 1920;
+      let nativeAvailHeight = 1040;
+      let shouldThrow = false;
+      const getterCalls: Array<{ prop: string; isSelf: boolean }> = [];
+
+      class ProtoScreen implements MockScreen {
+        declare width: number;
+        declare height: number;
+        declare availWidth: number;
+        declare availHeight: number;
+      }
+
+      const protoScreen = new ProtoScreen();
+      const defineProtoGetter = (prop: keyof MockScreen, readValue: () => number) => {
+        Object.defineProperty(ProtoScreen.prototype, prop, {
+          get(this: unknown) {
+            getterCalls.push({ prop, isSelf: this === protoScreen });
+            if (shouldThrow) {
+              throw new Error(`Screen.${prop} getter failed`);
+            }
+            return readValue();
+          },
+          configurable: true,
+        });
+      };
+
+      defineProtoGetter('width', () => nativeWidth);
+      defineProtoGetter('height', () => nativeHeight);
+      defineProtoGetter('availWidth', () => nativeAvailWidth);
+      defineProtoGetter('availHeight', () => nativeAvailHeight);
+
+      env.mockWin.screen = protoScreen;
+      (env.ctx as Record<string, unknown>).Screen = ProtoScreen;
+
+      run(env.ctx);
+
+      const tesroidEnterFs = requireValue(env.mockWin.tesroidEnterFs, 'tesroidEnterFs');
+      const tesroidExitFs = requireValue(env.mockWin.tesroidExitFs, 'tesroidExitFs');
+
+      // Mutate native Screen.prototype values after init to verify readOrig delegates to prototype getters
+      getterCalls.length = 0;
+      nativeWidth = 2560;
+      nativeHeight = 1440;
+      nativeAvailWidth = 2560;
+      nativeAvailHeight = 1400;
+
+      expect(protoScreen.width).toBe(2560);
+      expect(protoScreen.height).toBe(1440);
+      expect(protoScreen.availWidth).toBe(2560);
+      expect(protoScreen.availHeight).toBe(1400);
+      expect(getterCalls).toEqual([
+        { prop: 'width', isSelf: true },
+        { prop: 'height', isSelf: true },
+        { prop: 'availWidth', isSelf: true },
+        { prop: 'availHeight', isSelf: true },
+      ]);
+
+      // Fullscreen overrides screen dimensions with window dimensions
+      tesroidEnterFs();
+      expect(protoScreen.width).toBe(1256);
+      expect(protoScreen.height).toBe(658);
+      expect(protoScreen.availWidth).toBe(1256);
+      expect(protoScreen.availHeight).toBe(658);
+
+      // Exiting fullscreen restores reading from Screen.prototype getters
+      tesroidExitFs();
+      expect(protoScreen.width).toBe(2560);
+      expect(protoScreen.height).toBe(1440);
+      expect(protoScreen.availWidth).toBe(2560);
+      expect(protoScreen.availHeight).toBe(1400);
+
+      // Throwing Screen.prototype getters fall back cleanly to captured initial dimensions
+      shouldThrow = true;
+      expect(protoScreen.width).toBe(1920);
+      expect(protoScreen.height).toBe(1080);
+      expect(protoScreen.availWidth).toBe(1920);
+      expect(protoScreen.availHeight).toBe(1040);
+    });
+
     it('supports non-YouTube generic video and container fullscreen cleanly', async () => {
       const env = createRichDomEnv({ withYouTube: false });
       run(env.ctx);
@@ -968,6 +1058,33 @@ describe('YouTube Web Fullscreen & Car Optimization Scripts (Issue #67)', () => 
       expect(removeSpy).not.toHaveBeenCalled();
       expect(pointerEventsWrites).toBe(0);
       expect(opacityWrites).toBe(0);
+    });
+
+    it('treats tesroidEnterFs and tesroidToggleFs as a no-op when neither #movie_player nor video exists', () => {
+      const env = createRichDomEnv({ withYouTube: false, withVideo: false });
+      run(env.ctx);
+
+      const tesroidEnterFs = requireValue(env.mockWin.tesroidEnterFs, 'tesroidEnterFs');
+      const tesroidToggleFs = requireValue(env.mockWin.tesroidToggleFs, 'tesroidToggleFs');
+
+      const docFsChanges: string[] = [];
+      const winResizes: number[] = [];
+      env.mockDoc.addEventListener('fullscreenchange', () => docFsChanges.push('fullscreenchange'));
+      env.mockWin.addEventListener('resize', () => winResizes.push(1));
+
+      tesroidEnterFs();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges).toEqual([]);
+      expect(winResizes).toHaveLength(0);
+
+      tesroidToggleFs();
+      expect(env.htmlEl.classList.contains('tesroid-web-fs-root')).toBe(false);
+      expect(env.bodyEl.classList.contains('tesroid-web-fs-active')).toBe(false);
+      expect(env.mockDoc.fullscreenElement).toBeNull();
+      expect(docFsChanges).toEqual([]);
+      expect(winResizes).toHaveLength(0);
     });
   });
 });

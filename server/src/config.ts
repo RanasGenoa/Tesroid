@@ -51,6 +51,8 @@ export interface FavoriteItem {
   url: string;
 }
 
+export const ALLOWED_LOCALES: readonly string[] = ['ja-JP', 'en-US'];
+
 export const DEFAULT_HOME_FAVORITE_ID = 'youtube';
 
 export const DEFAULT_FAVORITES: FavoriteItem[] = [
@@ -100,11 +102,12 @@ export function pinHomeFavoriteFirst(
   favorites: FavoriteItem[],
   homeFavoriteId: string,
 ): FavoriteItem[] {
-  const idx = favorites.findIndex((f) => f.id === homeFavoriteId);
+  const cloned = favorites.map((f) => ({ ...f }));
+  const idx = cloned.findIndex((f) => f.id === homeFavoriteId);
   if (idx <= 0) {
-    return [...favorites];
+    return cloned;
   }
-  return [favorites[idx], ...favorites.slice(0, idx), ...favorites.slice(idx + 1)];
+  return [cloned[idx], ...cloned.slice(0, idx), ...cloned.slice(idx + 1)];
 }
 
 export function resolveHomeUrl(config: Pick<AppConfig, 'favorites' | 'homeFavoriteId'>): string {

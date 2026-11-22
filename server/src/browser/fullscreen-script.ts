@@ -8,9 +8,9 @@ const __dirname = path.dirname(__filename);
 export const FULLSCREEN_CORE_START_MARKER = '// === TESROID_FULLSCREEN_CORE_START ===';
 export const FULLSCREEN_CORE_END_MARKER = '// === TESROID_FULLSCREEN_CORE_END ===';
 
-let cachedFullscreenCoreScript: string | null = null;
+const cachedSections = new Map<string, string>();
 
-function resolveContentScriptPath(): string {
+export function resolveContentScriptPath(): string {
   const candidates = [
     path.resolve(__dirname, '../../extension/content.js'),
     path.resolve(__dirname, '../extension/content.js'),
@@ -20,10 +20,47 @@ function resolveContentScriptPath(): string {
   const found = candidates.find((candidate) => fs.existsSync(candidate));
   if (!found) {
     throw new Error(
-      `[fullscreen-script] Could not locate server/extension/content.js in candidates: ${candidates.join(', ')}`,
+      `[content-script-loader] Could not locate server/extension/content.js in candidates: ${candidates.join(', ')}`,
     );
   }
   return found;
+}
+
+/**
+ * Extracts and caches a marker-delimited section from `server/extension/content.js`
+ * so BrowserManager, CdpTouchBridge, and the Chrome MV3 extension share one Single Source of Truth.
+ */
+export function loadContentScriptSection(
+  startMarker: string,
+  endMarker: string,
+  sectionLabel = 'section',
+): string {
+  const cacheKey = `${startMarker}\0${endMarker}`;
+  const cached = cachedSections.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const contentScriptPath = resolveContentScriptPath();
+  const source = fs.readFileSync(contentScriptPath, 'utf-8');
+  const startIdx = source.indexOf(startMarker);
+  if (startIdx === -1) {
+    throw new Error(`[${sectionLabel}] Missing ${startMarker} marker in ${contentScriptPath}`);
+  }
+
+  const bodyStart = startIdx + startMarker.length;
+  const endIdx = source.indexOf(endMarker, bodyStart);
+  if (endIdx === -1) {
+    throw new Error(`[${sectionLabel}] Missing ${endMarker} marker in ${contentScriptPath}`);
+  }
+
+  const extracted = source.slice(bodyStart, endIdx).trim();
+  if (!extracted) {
+    throw new Error(`[${sectionLabel}] Empty block between markers in ${contentScriptPath}`);
+  }
+
+  cachedSections.set(cacheKey, extracted);
+  return extracted;
 }
 
 /**
@@ -31,36 +68,11 @@ function resolveContentScriptPath(): string {
  * so BrowserManager, CdpTouchBridge, and the Chrome MV3 extension share one Single Source of Truth.
  */
 export function loadFullscreenCoreScript(): string {
-  if (cachedFullscreenCoreScript !== null) {
-    return cachedFullscreenCoreScript;
-  }
-
-  const contentScriptPath = resolveContentScriptPath();
-  const source = fs.readFileSync(contentScriptPath, 'utf-8');
-  const startIdx = source.indexOf(FULLSCREEN_CORE_START_MARKER);
-  if (startIdx === -1) {
-    throw new Error(
-      `[fullscreen-script] Missing ${FULLSCREEN_CORE_START_MARKER} marker in ${contentScriptPath}`,
-    );
-  }
-
-  const bodyStart = startIdx + FULLSCREEN_CORE_START_MARKER.length;
-  const endIdx = source.indexOf(FULLSCREEN_CORE_END_MARKER, bodyStart);
-  if (endIdx === -1) {
-    throw new Error(
-      `[fullscreen-script] Missing ${FULLSCREEN_CORE_END_MARKER} marker in ${contentScriptPath}`,
-    );
-  }
-
-  const extracted = source.slice(bodyStart, endIdx).trim();
-  if (!extracted) {
-    throw new Error(
-      `[fullscreen-script] Empty fullscreen core block between markers in ${contentScriptPath}`,
-    );
-  }
-
-  cachedFullscreenCoreScript = extracted;
-  return extracted;
+  return loadContentScriptSection(
+    FULLSCREEN_CORE_START_MARKER,
+    FULLSCREEN_CORE_END_MARKER,
+    'fullscreen-script',
+  );
 }
 
 export function clampDisplayScale(scalePercent: unknown): number {

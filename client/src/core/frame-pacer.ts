@@ -74,9 +74,12 @@ export class FramePacer {
 
     if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
       const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
-      const desiredShift = Math.max(-FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS, syncErrorMs * 0.15);
+      const desiredShift = Math.max(
+        -FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
+        syncErrorMs * FramePacer.AV_SYNC_LARGE_SHIFT_KP,
+      );
       return syncErrorMs > 0
-        ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+        ? Math.min(maxPositiveShift, syncErrorMs * FramePacer.AV_SYNC_LARGE_SHIFT_KP)
         : Math.max(maxNegativeShiftAllowed, desiredShift);
     } else if (Math.abs(syncErrorMs) >= FramePacer.AV_SYNC_DEADBAND_MS) {
       const errorMagnitude = Math.min(FramePacer.AV_SYNC_MAX_ERROR_MS, Math.abs(syncErrorMs));
@@ -97,6 +100,8 @@ export class FramePacer {
   // Maximum shift (ms) applied per frame during large A/V desync (> 150ms).
   // Slew-rate clamped to ±2.0ms/frame to preserve smooth pacing (~28.5 - 31.5 FPS at 30fps) and eliminate stutter.
   private static readonly AV_SYNC_LARGE_SHIFT_MAX_MS = 2.0;
+  // Proportional gain Kp for large A/V desync (> 150ms) before clamping to ±AV_SYNC_LARGE_SHIFT_MAX_MS
+  private static readonly AV_SYNC_LARGE_SHIFT_KP = 0.15;
   // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
   private static readonly AV_SYNC_KP =
     FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
@@ -653,11 +658,11 @@ export class FramePacer {
               const maxPositiveShift = FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS;
               const desiredShift = Math.max(
                 -FramePacer.AV_SYNC_LARGE_SHIFT_MAX_MS,
-                syncErrorMs * 0.15,
+                syncErrorMs * FramePacer.AV_SYNC_LARGE_SHIFT_KP,
               );
               const pllShift =
                 syncErrorMs > 0
-                  ? Math.min(maxPositiveShift, syncErrorMs * 0.15)
+                  ? Math.min(maxPositiveShift, syncErrorMs * FramePacer.AV_SYNC_LARGE_SHIFT_KP)
                   : Math.max(maxNegativeShiftAllowed, desiredShift);
 
               if (this.telemetry?.isEnabled()) {

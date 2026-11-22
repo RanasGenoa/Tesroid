@@ -411,6 +411,8 @@ Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄�
     - `AudioPlayer` は Web Audio API の音途切れ防止のため 160ms のジッターバッファを持っています。`FramePacer` でキューが空の際に到着時刻 `now` に即時描画して `lastScheduledTimeMs = now` で時刻をリセットすると、PLL 補正が一切蓄積されず、映像が音より恒常的に ~160ms 先行する固定音ズレが発生します。キューが空であっても音声再生 PTS との差分から PLL シフトを算出し、`lastScheduledTimeMs = scheduledRenderTime` を維持してスケジュールを累積収束させてください。
 12. ❌ **Chrome のパスワード保存・自動入力 Views Bubble 抑止設定 (`applyChromePreferences` / `--password-store=basic`) を削除すること (Issue #44)**
     - パスワード保存確認（「Save password?」）、自動サインイン、漏洩検知、自動入力の各バブルはすべて Chrome ネイティブ UI（Views Bubble）であり、`CdpTouchBridge` による DOM タッチ入力ではタップして閉じられません。`applyChromePreferences()` での `credentials_enable_service` / `credentials_enable_autosignin` / `profile.password_manager_enabled` / `profile.password_manager_leak_detection` / `autofill.profile_enabled` / `autofill.credit_card_enabled` の無効化、および `--password-store=basic` を必ず維持してください（あわせて `cleanProfileLocks()` が設定する `profile.exit_type` / `exited_cleanly` を上書き破壊しないこと）。
+13. ❌ **クライアント側 (`client/`) で物理キーボードやマウス操作を前提とした機能・UI を実装すること**
+    - テスラ車載ディスプレイは完全タッチオンリー環境であり、物理キーボードやマウスは接続・操作できません。`Escape` キーによるモーダル閉じ、キーボードショートカット、`keydown` リスナーへの依存、`hover` 前提 UI、右クリックメニュー、マウスポインタ前提ドラッグなどを `client/` に実装してはなりません。リモート文字・キー入力はすべてタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入で完結させてください。
 
 ---
 

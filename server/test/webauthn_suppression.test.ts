@@ -3,6 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  buildWebAuthnSuppressorScript,
+  loadWebAuthnCoreScript,
+  WEBAUTHN_CORE_END_MARKER,
+  WEBAUTHN_CORE_START_MARKER,
+} from '../src/browser/webauthn-script.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,37 +213,67 @@ describe('WebAuthn / Passkey Suppression (Issue #35)', () => {
     });
   });
 
-  it('extracts and validates CDP injection script from BrowserManager.ts to ensure consistency', async () => {
+  it('validates BrowserManager uses buildWebAuthnSuppressorScript() and executes all invariants in vm', async () => {
     const managerSource = fs.readFileSync(
       path.resolve(__dirname, '../src/browser/manager.ts'),
       'utf-8',
     );
+    const coreScript = loadWebAuthnCoreScript();
+    const suppressorScript = buildWebAuthnSuppressorScript();
 
-    // Ensure manager.ts includes WebAuthn interceptor logic
-    expect(managerSource).toContain('WebAuthn / Passkey Dialog Suppressor (Issue #35)');
-    expect(managerSource).toContain(
+    expect(extContentJs).toContain(WEBAUTHN_CORE_START_MARKER);
+    expect(extContentJs).toContain(WEBAUTHN_CORE_END_MARKER);
+    expect(extContentJs).toContain(coreScript);
+    expect(suppressorScript).toContain(coreScript);
+    expect(suppressorScript).toContain(
       'isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false)',
     );
-    expect(managerSource).toContain(
+    expect(suppressorScript).toContain(
       "createNotAllowedError('Passkeys are not supported in this environment.')",
     );
+    expect(managerSource).toContain('buildWebAuthnSuppressorScript()');
+    expect(managerSource).toContain('Page.addScriptToEvaluateOnNewDocument');
+
+    // Verify the generated script itself executes and enforces all WebAuthn invariants in vm
+    const { ctx, mockWin, mockNavigator, origGet, origCreate } = createMockEnvironment();
+    vm.runInContext(`(() => { ${suppressorScript} })()`, ctx);
+
+    expect(await mockWin.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()).toBe(
+      false,
+    );
+    expect(await mockWin.PublicKeyCredential.isConditionalMediationAvailable()).toBe(false);
+    await expect(mockNavigator.credentials.get({ publicKey: {} })).rejects.toMatchObject({
+      name: 'NotAllowedError',
+    });
+    await expect(mockNavigator.credentials.create({ publicKey: {} })).rejects.toMatchObject({
+      name: 'NotAllowedError',
+    });
+    expect(origGet).not.toHaveBeenCalled();
+    expect(origCreate).not.toHaveBeenCalled();
+
+    // Double-execution via buildWebAuthnSuppressorScript() stays idempotent
+    vm.runInContext(`(() => { ${suppressorScript} })()`, ctx);
+    await mockNavigator.credentials.get({ password: true } as any);
+    expect(origGet).toHaveBeenCalledTimes(1);
   });
 
-  it('validates CdpTouchBridge in xdotool.ts maintains continuous WebAuthn suppression and setAutoAttach', async () => {
+  it('validates CdpTouchBridge in xdotool.ts delegates to buildWebAuthnSuppressorScript() and keeps setAutoAttach', async () => {
     const xdotoolSource = fs.readFileSync(
       path.resolve(__dirname, '../src/input/xdotool.ts'),
       'utf-8',
     );
+    const suppressorScript = buildWebAuthnSuppressorScript();
 
     // CdpTouchBridge holds the persistent WebSocket connection across navigations
-    expect(xdotoolSource).toContain('WebAuthn / Passkey Dialog Suppressor (Issue #35)');
-    expect(xdotoolSource).toContain(
+    expect(xdotoolSource).toContain('buildWebAuthnSuppressorScript()');
+    expect(xdotoolSource).toContain('Target.setAutoAttach');
+    expect(xdotoolSource).toContain('Page.addScriptToEvaluateOnNewDocument');
+    expect(suppressorScript).toContain(
       'isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false)',
     );
-    expect(xdotoolSource).toContain(
+    expect(suppressorScript).toContain(
       "createNotAllowedError('Passkeys are not supported in this environment.')",
     );
-    expect(xdotoolSource).toContain('Target.setAutoAttach');
   });
 
   it('validates manifest.json specifies host_permissions <all_urls> for cross-origin navigation', () => {

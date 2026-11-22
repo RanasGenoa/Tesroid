@@ -156,6 +156,23 @@ describe('Locale Setting & Chrome Translation / Password Bubble Suppression', ()
     expect(env.LANG).toBe('ja_JP.UTF-8');
     expect(env.LANGUAGE).toBe('ja_JP:ja');
     expect(env.LC_ALL).toBe('ja_JP.UTF-8');
+
+    // Verify en-US LANGUAGE and VAAPI render node override
+    const bmEn = new BrowserManager({
+      profileDir,
+      locale: 'en-US',
+      timezone: 'America/New_York',
+      vaapiDevice: '/dev/dri/renderD129',
+    });
+    const enArgs = bmEn.buildChromeArgs('https://www.youtube.com');
+    const enEnv = bmEn.buildChromeEnv();
+    expect(enArgs).toContain('--lang=en-US');
+    expect(enArgs).toContain('--accept-lang=en-US,en-US,en');
+    expect(enArgs).toContain('--render-node-override=/dev/dri/renderD129');
+    expect(enEnv.TZ).toBe('America/New_York');
+    expect(enEnv.LANG).toBe('en_US.UTF-8');
+    expect(enEnv.LANGUAGE).toBe('en_US:en');
+    expect(enEnv.LC_ALL).toBe('en_US.UTF-8');
   });
 
   it('POST /api/setup persists custom locale and timezone into ConfigStore and updates BrowserManager', async () => {

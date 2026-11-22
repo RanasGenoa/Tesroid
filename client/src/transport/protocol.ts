@@ -10,6 +10,13 @@ export const WSS_CHANNEL = {
   TELEMETRY: 0x15,
 } as const;
 
+/** Terminal WebSocket close codes that suppress client auto-reconnect. */
+export const WS_CLOSE_CODE = {
+  POLICY_VIOLATION: 1008,
+  REPLACED_BY_RECONNECT: 4000,
+  SESSION_CONFLICT: 4009,
+} as const;
+
 export interface TelemetryEvent {
   timestamp: number;
   type: 'av_sync' | 'buffering' | 'decoder' | 'pacer' | 'audio' | 'log';

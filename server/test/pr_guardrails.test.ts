@@ -7,6 +7,11 @@ import {
   WSS_CHANNEL as CLIENT_WSS_CHANNEL,
 } from '../../client/src/transport/protocol.js';
 import {
+  buildWebAuthnSuppressorScript,
+  WEBAUTHN_CORE_END_MARKER,
+  WEBAUTHN_CORE_START_MARKER,
+} from '../src/browser/webauthn-script.js';
+import {
   AUDIO_FLAGS as SERVER_AUDIO_FLAGS,
   VIDEO_FLAGS as SERVER_VIDEO_FLAGS,
   WSS_CHANNEL as SERVER_WSS_CHANNEL,
@@ -16,7 +21,7 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 
 function walkWorkspaceFiles(dir: string, out: string[] = []): string[] {
   const ignoredDirs = new Set(['.git', 'node_modules', 'dist', '.cache', 'data']);
-  const ignoredFiles = new Set(['.env', 'PRIVATE_ENVIRONMENT.md', 'package-lock.json']);
+  const ignoredFiles = new Set(['.git', '.env', 'PRIVATE_ENVIRONMENT.md', 'package-lock.json']);
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
@@ -120,18 +125,28 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
       'utf-8',
     );
 
-    // Extension, manager CDP, and persistent CdpTouchBridge must intercept WebAuthn
-    expect(extContentJs).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(extContentJs).toContain('Passkeys are not supported in this environment');
-    expect(extContentJs).toContain('NotAllowedError');
+    const webauthnScriptTs = fs.readFileSync(
+      path.join(REPO_ROOT, 'server/src/browser/webauthn-script.ts'),
+      'utf-8',
+    );
+    const suppressorScript = buildWebAuthnSuppressorScript();
 
-    expect(managerSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(managerSrc).toContain('Passkeys are not supported in this environment');
-    expect(managerSrc).toContain('NotAllowedError');
+    // Canonical WebAuthn suppressor lives in content.js and is shared via buildWebAuthnSuppressorScript()
+    expect(extContentJs).toContain(WEBAUTHN_CORE_START_MARKER);
+    expect(extContentJs).toContain(WEBAUTHN_CORE_END_MARKER);
+    expect(webauthnScriptTs).toContain('loadContentScriptSection');
+    expect(webauthnScriptTs).not.toContain('isUserVerifyingPlatformAuthenticatorAvailable');
 
-    expect(xdotoolSrc).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
-    expect(xdotoolSrc).toContain('Passkeys are not supported in this environment');
-    expect(xdotoolSrc).toContain('NotAllowedError');
+    for (const src of [extContentJs, suppressorScript]) {
+      expect(src).toContain('isUserVerifyingPlatformAuthenticatorAvailable');
+      expect(src).toContain('isConditionalMediationAvailable');
+      expect(src).toContain('Passkeys are not supported in this environment');
+      expect(src).toContain('NotAllowedError');
+      expect(src).toContain('_tesroidWebAuthnHooked');
+    }
+
+    expect(managerSrc).toContain('buildWebAuthnSuppressorScript()');
+    expect(xdotoolSrc).toContain('buildWebAuthnSuppressorScript()');
   });
 
   it('preserves Chrome password save and autofill Views Bubble suppression in BrowserManager (Issue #44)', () => {
@@ -193,5 +208,28 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     expect(aiReviewWorkflow).toMatch(
       /group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.event_name\s*\}\}-\$\{\{\s*github\.event\.pull_request\.number\s*\|\|\s*github\.ref\s*\}\}/,
     );
+  });
+
+  it('enforces touch-only / no physical keyboard or mouse assumption guardrail in AGENTS.md and AI review workflow', () => {
+    const agentsMd = fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf-8');
+    const aiReviewWorkflow = fs.readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/ai-review.yml'),
+      'utf-8',
+    );
+    const optimizationKnowledge = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs/OPTIMIZATION_KNOWLEDGE.md'),
+      'utf-8',
+    );
+
+    expect(agentsMd).toMatch(/タッチオンリー/);
+    expect(agentsMd).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
+    expect(agentsMd).toContain('Escape');
+
+    expect(aiReviewWorkflow).toMatch(/タッチオンリー/);
+    expect(aiReviewWorkflow).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
+    expect(aiReviewWorkflow).toContain('Escape');
+
+    expect(optimizationKnowledge).toMatch(/タッチオンリー/);
+    expect(optimizationKnowledge).toMatch(/物理キーボード.*マウス|マウス.*物理キーボード/);
   });
 });

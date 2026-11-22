@@ -15,6 +15,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  AI_REVIEW_MODEL: gemini-4-neon-medium
+
 jobs:
   review:
     name: Code Review (Antigravity)
@@ -109,6 +112,7 @@ jobs:
           4. 【通信制約】WebSocket バックプレッシャーが単一閾値でフレームドロップされていないか？（High: 768KB, Low: 128KB のヒステリシスを保つこと）
           5. 【セキュリティ】平文パスワード、SSH鍵、固定IP、ホスト固有パスがハードコードされていないか？
           6. 【品質】TypeScript 型安全性、Promise 未処理、リソース解放漏れがないか？
+          7. 【タッチオンリー制約】クライアント側 (client/) で物理キーボード操作（Escape キーでのモーダル閉じ、キーボードショートカット、keydown リスナー依存）やマウス操作（hover 専用 UI、右クリックメニュー、マウスドラッグ）を必須・前提とする実装が含まれていないか？（テスラ車載画面は完全タッチオンリーであり、リモート文字・キー入力もタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入のみで行うこと。なお、レビュアー自身も Escape キー閉じ等の物理キーボードショートカットやマウス専用操作の追加を提案してはならない）
 
           ## 出力フォーマット (Markdown 形式)
           ### 1. 総合判定
@@ -145,7 +149,7 @@ jobs:
           chmod a-w ~/.bashrc ~/.profile ~/.bash_profile 2>/dev/null || true
 
           # 3. Antigravity CLI をテキスト生成専用モードで実行 (OS引数長制限を回避するため標準入力からストリーム入力)
-          if ! agy --model gemini-4-neon-medium < "$WORKDIR/prompt.txt" > "$WORKDIR/review_comment.md"; then
+          if ! agy --model "$AI_REVIEW_MODEL" < "$WORKDIR/prompt.txt" > "$WORKDIR/review_comment.md"; then
             echo "::error::Antigravity review generation failed."
             exit 1
           fi
@@ -179,11 +183,7 @@ jobs:
           <!-- antigravity-pr-review -->
           EOF
           cat "$WORKDIR/review_comment.md" >> "$WORKDIR/final_comment.md"
-          cat << 'EOF' >> "$WORKDIR/final_comment.md"
-
-          ---
-          *🤖 Reviewed by **Antigravity** (`gemini-4-neon-medium`)*
-          EOF
+          printf '\n---\n*🤖 Reviewed by **Antigravity** (`%s`)*\n' "$AI_REVIEW_MODEL" >> "$WORKDIR/final_comment.md"
 
           # 既存のレビューコメントが存在するか検索 (マーカー一致、全ページ走査、最新を対象)
           EXISTING_COMMENT_ID=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \

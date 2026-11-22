@@ -382,4 +382,59 @@ describe('Streaming View - Rear-Seat Standby Mode (Issue #72)', () => {
     elementRegistry.get('power-browser-restart-btn').click();
     expect(mockWsClient.send).not.toHaveBeenCalled();
   });
+
+  it('clears external master PTS anchor immediately when PONG omits primaryRenderedPts or sets it to null', () => {
+    let externalMasterPtsProvider: (() => number | null) | undefined;
+    mockAvSync.setExternalMasterPtsProvider = vi.fn((provider?: () => number | null) => {
+      externalMasterPtsProvider = provider;
+    });
+
+    vi.spyOn(performance, 'now').mockReturnValue(10_000);
+
+    cleanupView = renderStreamingView(
+      mockContainer,
+      mockWsClient,
+      mockAudioPlayer,
+      mockAvSync,
+      vi.fn(),
+      'token-rear',
+      'secondary',
+      { initialPrimaryActive: true },
+    );
+
+    expect(externalMasterPtsProvider).toBeDefined();
+    expect(externalMasterPtsProvider?.()).toBeNull();
+
+    // Establish an active external master PTS anchor via PONG
+    emitWs('control', {
+      type: 'PONG',
+      clientTime: 9_980,
+      primaryRenderedPts: 1_000_000,
+      primaryFeedbackAgeMs: 50,
+    });
+    expect(externalMasterPtsProvider?.()).toBe(1_060_000);
+
+    // PONG omitting primaryRenderedPts (undefined) must clear anchor immediately
+    emitWs('control', {
+      type: 'PONG',
+      clientTime: 9_990,
+    });
+    expect(externalMasterPtsProvider?.()).toBeNull();
+
+    // Re-establish anchor, then clear with explicit null
+    emitWs('control', {
+      type: 'PONG',
+      clientTime: 9_980,
+      primaryRenderedPts: 2_000_000,
+      primaryFeedbackAgeMs: 50,
+    });
+    expect(externalMasterPtsProvider?.()).toBe(2_060_000);
+
+    emitWs('control', {
+      type: 'PONG',
+      clientTime: 9_990,
+      primaryRenderedPts: null,
+    });
+    expect(externalMasterPtsProvider?.()).toBeNull();
+  });
 });

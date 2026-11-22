@@ -374,6 +374,24 @@ export class AudioPlayer {
     return Math.round((scheduledAheadSec + queuedSec + this.totalOverflowDurationSec) * 1000);
   }
 
+  private hasSufficientResumeCushion(): boolean {
+    let queuedSec = 0;
+    for (const item of this.bufferQueue) {
+      queuedSec += item.buffer.duration;
+    }
+    for (const item of this.overflowQueue) {
+      queuedSec += item.buffer.duration;
+    }
+
+    // Differentiate initial playout cushion (160ms + additionalDelaySec) from fast underrun recovery (REBUFFER_CUSHION_SEC = 80ms)
+    const requiredCushion =
+      this.overflowQueue.length > 0 || this.hasInitialPlaybackStarted
+        ? AudioPlayer.REBUFFER_CUSHION_SEC
+        : AudioPlayer.JITTER_BUFFER_TARGET_SEC + this.additionalDelaySec;
+
+    return queuedSec >= requiredCushion;
+  }
+
   /**
    * Enqueue buffer into the jitter/catchup buffer and schedule contiguous zero-gap 1x hardware playback.
    * Never drops chunks during burst catchup so audio stays smoothly synchronized with 1x video catchup.
@@ -382,7 +400,6 @@ export class AudioPlayer {
     if (!this.ctx || this.ctx.state !== 'running') return;
 
     const now = this.ctx.currentTime;
-    const targetBufferSec = AudioPlayer.JITTER_BUFFER_TARGET_SEC + this.additionalDelaySec;
     const isVideoBuffering =
       typeof this.avSync.isVideoBuffering === 'function' ? this.avSync.isVideoBuffering() : false;
 
@@ -416,21 +433,8 @@ export class AudioPlayer {
     // 1. Initial buffering or recovering from an underrun:
     if (!this.isPlaying) {
       this.bufferQueue.push({ buffer, ptsUs });
-      let queuedSec = 0;
-      for (const item of this.bufferQueue) {
-        queuedSec += item.buffer.duration;
-      }
-      for (const item of this.overflowQueue) {
-        queuedSec += item.buffer.duration;
-      }
 
-      // Differentiate initial playout cushion (targetBufferSec = 160ms) from fast underrun recovery (REBUFFER_CUSHION_SEC = 80ms)
-      const requiredCushion =
-        this.overflowQueue.length > 0 || this.hasInitialPlaybackStarted
-          ? AudioPlayer.REBUFFER_CUSHION_SEC
-          : targetBufferSec;
-
-      if (queuedSec >= requiredCushion) {
+      if (this.hasSufficientResumeCushion()) {
         this.isPlaying = true;
         this.hasInitialPlaybackStarted = true;
         this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
@@ -512,13 +516,10 @@ export class AudioPlayer {
 
     const now = this.ctx.currentTime;
 
-    // バッファリング明け等で停止していた場合、十分なクッション（REBUFFER_CUSHION_SEC以上）があれば即座に再生再開
-    if (
-      !this.isPlaying &&
-      (this.totalOverflowDurationSec >= AudioPlayer.REBUFFER_CUSHION_SEC ||
-        this.overflowQueue.length >= 4)
-    ) {
+    // バッファリング明け等で停止していた場合、十分なクッション（初期160ms / 再開80ms以上）があれば即座に再生再開
+    if (!this.isPlaying && this.hasSufficientResumeCushion()) {
       this.isPlaying = true;
+      this.hasInitialPlaybackStarted = true;
       this.nextPlayTime = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
       if (this.bufferQueue.length > 0) {
         for (const item of this.bufferQueue) {
