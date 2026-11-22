@@ -343,6 +343,9 @@ export class WebSocketHandler {
 
         // 2. Touch Channel (0x10) - User Input
         if (channel === WSS_CHANNEL.TOUCH) {
+          if (this.clientSessions.get(socket)?.isStandby) {
+            return;
+          }
           this.recordInputActivity(socket);
           this.handleTouchMessage(buf);
           return;
@@ -405,6 +408,9 @@ export class WebSocketHandler {
         }
         this.clientSessions.delete(socket);
       }
+      if (isExplicitDisconnect && closedAuthToken) {
+        this.authorizedSessions.delete(closedAuthToken);
+      }
 
       console.log(
         `[WebSocketHandler] Client disconnected (code=${code ?? 'unknown'}). Remaining auth: ${this.authenticatedClients.size}, total: ${this.allClients.size}`,
@@ -412,9 +418,6 @@ export class WebSocketHandler {
 
       if (wasPrimary && !this.hasPrimaryClients()) {
         if (isExplicitDisconnect) {
-          if (closedAuthToken) {
-            this.authorizedSessions.delete(closedAuthToken);
-          }
           if (this.promoteSecondaryToActingPrimary()) {
             return;
           }
@@ -1589,14 +1592,19 @@ export class WebSocketHandler {
               catchupQueueMs,
               serverBufferMs,
               serverLagMs,
-              ...(primarySession
-                ? {
-                    primaryRenderedPts,
-                    primaryFeedbackAgeMs,
-                    primaryTargetBufferMs:
-                      primarySession.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS,
-                    primaryMode: primarySession.mode,
-                  }
+              ...(session?.role === 'secondary' && !session.isActingPrimary
+                ? primarySession
+                  ? {
+                      primaryRenderedPts,
+                      primaryFeedbackAgeMs,
+                      primaryTargetBufferMs:
+                        primarySession.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS,
+                      primaryMode: primarySession.mode,
+                    }
+                  : {
+                      primaryRenderedPts: null,
+                      primaryFeedbackAgeMs: null,
+                    }
                 : {}),
             }),
           );
@@ -1631,6 +1639,9 @@ export class WebSocketHandler {
         }
 
         case 'SET_ZOOM': {
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           if (cmd.displayScale !== undefined) {
             const scale = Number(cmd.displayScale);
@@ -1650,6 +1661,9 @@ export class WebSocketHandler {
           break;
 
         case 'NAVIGATE': {
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           const rawUrl = typeof cmd.url === 'string' ? cmd.url.trim() : '';
           if (!rawUrl || !isSafeHttpUrl(rawUrl)) {
@@ -1681,6 +1695,9 @@ export class WebSocketHandler {
         }
 
         case 'NAVIGATE_BACK':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           this.playbackBuffer.clear();
           for (const s of this.clientSessions.values()) {
@@ -1692,6 +1709,9 @@ export class WebSocketHandler {
           break;
 
         case 'NAVIGATE_FORWARD':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           this.playbackBuffer.clear();
           for (const s of this.clientSessions.values()) {
@@ -1703,6 +1723,9 @@ export class WebSocketHandler {
           break;
 
         case 'RELOAD':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           this.playbackBuffer.clear();
           for (const s of this.clientSessions.values()) {
@@ -1715,12 +1738,18 @@ export class WebSocketHandler {
 
         case 'TOGGLE_FULLSCREEN':
         case 'TOGGLE_CINEMA':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           this.inputManager.toggleVideoFullscreen();
           break;
 
         case 'KEY':
         case 'SEND_KEY':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           if (cmd.key) {
             this.inputManager.sendKey(cmd.key);
@@ -1728,6 +1757,9 @@ export class WebSocketHandler {
           break;
 
         case 'TYPE_TEXT':
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
           this.recordInputActivity(socket);
           if (cmd.text) {
             if (typeof this.inputManager.insertText === 'function') {
