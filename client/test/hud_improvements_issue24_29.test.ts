@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProtocol } from '../src/transport/protocol.js';
 import { openSettingsWithAuth } from '../src/views/settings-modal.js';
 import { renderStreamingView } from '../src/views/streaming.js';
@@ -78,6 +78,7 @@ vi.mock('../src/core/latency.js', () => {
 });
 
 describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
+  const cleanups: Array<() => void> = [];
   let elementRegistry: Map<string, any>;
   let mockContainer: any;
   let mockWsClient: any;
@@ -230,6 +231,12 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
     onOpenSettings = vi.fn();
   });
 
+  afterEach(() => {
+    for (const fn of cleanups.splice(0)) {
+      fn();
+    }
+  });
+
   it('Issue 29 & Issue 33: 設定メニュー（settings-modal）内に再エンコードボタンおよび電源管理ボタンが存在しないこと（HUD停止メニューへ集約）', () => {
     openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
 
@@ -244,13 +251,15 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
   });
 
   it('Issue 29: HUDバッファ状態（hud-live-btn）連打時に再エンコードAPIが重複実行されないこと（連打ガード）', async () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
     );
 
     const hudLiveBtn = elementRegistry.get('hud-live-btn');
@@ -285,65 +294,74 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
   });
 
   it('Issue 24: CATCHUPモードやキュー遅延発生時にrawRttが跳ね上がっても、HUDの瞬間RTTが肥大化しないこと', () => {
-    renderStreamingView(
-      mockContainer,
-      mockWsClient,
-      mockAudioPlayer,
-      mockAvSync,
-      onOpenSettings,
-      testToken,
-    );
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
 
-    const controlHandler = eventListeners['control']?.[0];
-    expect(controlHandler).toBeDefined();
+      const controlHandler = eventListeners['control']?.[0];
+      expect(controlHandler).toBeDefined();
 
-    const connText = elementRegistry.get('hud-conn-text');
-    const connDot = elementRegistry.get('hud-conn-dot');
-    expect(connText).toBeDefined();
-    expect(connDot).toBeDefined();
+      const connText = elementRegistry.get('hud-conn-text');
+      const connDot = elementRegistry.get('hud-conn-dot');
+      expect(connText).toBeDefined();
+      expect(connDot).toBeDefined();
 
-    // 1. LIVE通常通信時の安定したPing/Pong (RTT 35ms)
-    const now1 = performance.now();
-    controlHandler({
-      type: 'PONG',
-      id: 1,
-      clientTime: now1 - 35,
-      serverTime: now1,
-      serverMode: 'LIVE',
-      catchupQueueMs: 0,
-      serverBufferMs: 0,
-    });
+      // 1. LIVE通常通信時の安定したPing/Pong (RTT 35ms)
+      const now1 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 1,
+        clientTime: now1 - 35,
+        serverTime: now1,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
 
-    expect(connText.textContent).toBe('35ms');
-    expect(connDot.className).toBe('status-dot status-online');
+      expect(connText.textContent).toBe('35ms');
+      expect(connDot.className).toBe('status-dot status-online');
 
-    // 2. CATCHUPモードに遷移し、キュー遅延によってPONGが2500ms後に届いた場合
-    const now2 = performance.now();
-    controlHandler({
-      type: 'PONG',
-      id: 2,
-      clientTime: now2 - 2500,
-      serverTime: now2,
-      serverMode: 'CATCHUP',
-      catchupQueueMs: 2500,
-      serverBufferMs: 5000,
-    });
+      // 2. CATCHUPモードに遷移し、キュー遅延によってPONGが2500ms後に届いた場合
+      const now2 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 2,
+        clientTime: now2 - 2500,
+        serverTime: now2,
+        serverMode: 'CATCHUP',
+        catchupQueueMs: 2500,
+        serverBufferMs: 5000,
+      });
 
-    // 送信キュー滞留による2500msに引きずられず、直近の安定した瞬間RTT (35ms) を維持していること
-    expect(connText.textContent).toBe('35ms');
-    expect(connDot.className).toBe('status-dot status-online');
+      // 送信キュー滞留による2500msに引きずられず、直近の安定した瞬間RTT (35ms) を維持していること
+      expect(connText.textContent).toBe('35ms');
+      expect(connDot.className).toBe('status-dot status-online');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('Issue 24: パケット未着時間が1.2秒を超えた場合、通信状態インジケーターが瞬断警告（赤）へ連動すること', () => {
     vi.useFakeTimers();
     try {
-      renderStreamingView(
-        mockContainer,
-        mockWsClient,
-        mockAudioPlayer,
-        mockAvSync,
-        onOpenSettings,
-        testToken,
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
       );
 
       const controlHandler = eventListeners['control']?.[0];

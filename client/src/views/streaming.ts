@@ -330,6 +330,15 @@ export function renderStreamingView(
 
   const renderer = new CanvasRenderer(canvas);
   const framePacer = new FramePacer(renderer, targetFps, avSync);
+  let activeDecoder: VideoStreamDecoder | null = null;
+  const applyTargetFps = (fps: number) => {
+    currentFps = fps;
+    targetFps = fps;
+    framePacer.setTargetFps(fps);
+    if (activeDecoder && typeof activeDecoder.setTargetFps === 'function') {
+      activeDecoder.setTargetFps(fps);
+    }
+  };
 
   // 1.1. Adaptive Jitter Buffer Controller for LTE Jitter & Spikes
   const jitterController = new AdaptiveJitterController({
@@ -509,9 +518,7 @@ export function renderStreamingView(
       .then((data) => {
         if (!data) return;
         if (data?.stream?.maxFps) {
-          currentFps = Number(data.stream.maxFps);
-          targetFps = currentFps;
-          framePacer.setTargetFps(targetFps);
+          applyTargetFps(Number(data.stream.maxFps));
         }
         if (data?.stream?.bitrate) {
           currentBitrate = Number(data.stream.bitrate);
@@ -585,9 +592,7 @@ export function renderStreamingView(
   fpsToggleBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     const nextIdx = (fpsOptions.indexOf(currentFps) + 1) % fpsOptions.length;
-    currentFps = fpsOptions[nextIdx];
-    targetFps = currentFps;
-    framePacer.setTargetFps(targetFps);
+    applyTargetFps(fpsOptions[nextIdx]);
     updateToggleButtons();
     triggerSaveSettings();
   });
@@ -606,9 +611,7 @@ export function renderStreamingView(
     let changed = false;
     let favoritesChanged = false;
     if (e.detail?.stream?.maxFps) {
-      currentFps = Number(e.detail.stream.maxFps);
-      targetFps = currentFps;
-      framePacer.setTargetFps(targetFps);
+      applyTargetFps(Number(e.detail.stream.maxFps));
       changed = true;
     }
     if (e.detail?.stream?.bitrate) {
@@ -687,10 +690,12 @@ export function renderStreamingView(
       lastDecodedPts = ptsUs;
     },
   );
+  activeDecoder = decoder;
 
   if (typeof decoder.setBufferDepth === 'function') {
     decoder.setBufferDepth({ targetDurationMs: targetBufferMs });
   }
+  applyTargetFps(targetFps);
 
   const syncTelemetryAttachment = (enabled: boolean) => {
     const activeCollector = enabled ? telemetryCollector : undefined;
@@ -1325,9 +1330,7 @@ export function renderStreamingView(
       if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
         const nextFps = Number(msg.stream.maxFps);
         if (nextFps !== currentFps) {
-          currentFps = nextFps;
-          targetFps = currentFps;
-          framePacer.setTargetFps(targetFps);
+          applyTargetFps(nextFps);
           streamSettingsChanged = true;
         }
       }

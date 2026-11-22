@@ -479,4 +479,38 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(decoder.getPendingBufferedMs()).toBe(30000);
     expect(decoder.getPendingPacketsCount()).toBe(31);
   });
+
+  it('scales maxActiveFrames for 60 FPS via setTargetFps while keeping 14 as default for 30 FPS', async () => {
+    let downstreamQueueSize = 0;
+    const decoder = new VideoStreamDecoder({
+      queueFrame: () => {
+        downstreamQueueSize++;
+      },
+      getQueueLength: () => downstreamQueueSize,
+    });
+
+    const spsPpsKey = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
+    ]);
+    const deltaPkt = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a, 0x12, 0x34]);
+
+    // Switch to 60 FPS: must decode more than 14 active frames (e.g. 18 frames = 300ms @ 60fps) without stalling into pendingPackets
+    decoder.setTargetFps(60);
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1_000_000n, spsPpsKey);
+    await new Promise((r) => setTimeout(r, 15));
+
+    for (let i = 1; i <= 17; i++) {
+      await decoder.handlePacket(0, BigInt(1_000_000 + i * 16_667), deltaPkt);
+    }
+
+    expect(downstreamQueueSize).toBe(18);
+    expect(decoder.getPendingPacketsCount()).toBe(0);
+
+    // Switching back to 30 FPS restores 14-frame cap
+    decoder.setTargetFps(30);
+    await decoder.handlePacket(0, 2_000_000n, deltaPkt);
+    expect(downstreamQueueSize).toBe(18);
+    expect(decoder.getPendingPacketsCount()).toBe(1);
+  });
 });

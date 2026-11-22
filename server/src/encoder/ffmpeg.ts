@@ -238,6 +238,8 @@ export class VaapiEncoder extends EventEmitter {
       '0',
       '-bsf:v',
       'h264_metadata=aud=insert',
+      '-flush_packets',
+      '1',
       '-f',
       'h264',
       'pipe:1',
@@ -826,10 +828,15 @@ export class VaapiEncoder extends EventEmitter {
     }
 
     const nowUs = BigInt(Math.round(performance.now() * 1000));
-    this.videoPts =
+    const candidatePts =
       this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
         ? nowUs - this.streamStartTimeUs
         : this.videoPts + this.videoFrameDurationUs;
+    // Keep PTS strictly monotonic when multiple AUs are parsed within the same microsecond
+    this.videoPts =
+      this.framesInCurrentProcess > 0 && candidatePts <= this.videoPts
+        ? this.videoPts + 1n
+        : candidatePts;
 
     // 1. Emit/update parameter sets (SPS / PPS)
     if (this.currentAuHasConfig && this.currentAuConfigNals.length > 0) {
