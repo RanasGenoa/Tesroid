@@ -47,6 +47,7 @@ export class FramePacer {
   private lastArrivalTimeMs: number = -1;
   private lastArrivalPtsUs: number = -1;
   private lastRenderedPtsUs: number = 0;
+  private lastRenderedTimeMs: number = -Infinity;
   private hasRenderedAny: boolean = false;
   private telemetry?: TelemetryCollector;
   private lastPllNudgeLogTimeMs: number = -Infinity;
@@ -234,8 +235,14 @@ export class FramePacer {
       return nominalMs;
     }
     const diffUs = currentPtsUs - prevPtsUs;
-    // Standard microsecond PTS difference (between 5ms and 250ms)
-    if (diffUs >= 5000 && diffUs <= 250000) {
+    // Standard microsecond PTS difference (up to 250ms).
+    // Include sub-5ms microsecond intervals (251..4999us, or <=250us once in microsecond PTS scale)
+    // so batched 60fps frames are not inflated to a full nominal frame interval.
+    if (
+      (diffUs >= 5000 && diffUs <= 250000) ||
+      (diffUs > 250 && diffUs < 5000) ||
+      (diffUs > 0 && diffUs <= 250 && prevPtsUs >= 10000)
+    ) {
       return diffUs / 1000;
     }
     // Millisecond-scale test mock timestamps (between 8 and 250)
@@ -363,14 +370,21 @@ export class FramePacer {
         this.additionalDelayMs > 0
           ? Math.max(now + this.additionalDelayMs, earliestNextSlot)
           : earliestNextSlot;
-      scheduledRenderTime = Math.max(now, targetRealtimeSlot);
+      const minIntervalMs = Math.max(8, deltaMs * 0.5);
+      const minAfterLastRender = this.hasRenderedAny
+        ? this.lastRenderedTimeMs + minIntervalMs
+        : now;
+      scheduledRenderTime = Math.max(now, targetRealtimeSlot, minAfterLastRender);
 
-      // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead!
-      if (scheduledRenderTime <= now + 2) {
+      // If the frame slot is due right now (or within 2ms), render immediately without timer/queue overhead,
+      // unless doing so would violate minimum inter-frame spacing after a delayed previous render.
+      if (
+        scheduledRenderTime <= now + 2 &&
+        (!this.hasRenderedAny || now - this.lastRenderedTimeMs >= minIntervalMs)
+      ) {
         this.renderFrameInternal(frame, ptsUs, now);
         // Preserve accumulated PLL shift on earliestNextSlot even when rendered immediately at `now`,
         // bounded to (now - deltaMs * 0.5) to avoid excessive historical slip while allowing true phase accumulation!
-        const minIntervalMs = Math.max(8, deltaMs * 0.5);
         this.lastScheduledTimeMs = Math.max(now - minIntervalMs, earliestNextSlot);
         this.lastScheduledPtsUs = ptsUs;
         return;
@@ -532,7 +546,11 @@ export class FramePacer {
 
     const now = performance.now();
     const nextItem = this.frameQueue[0];
-    const delay = Math.max(0, Math.round(nextItem.scheduledRenderTime - now));
+    const minTargetTime = this.hasRenderedAny
+      ? Math.max(nextItem.scheduledRenderTime, this.lastRenderedTimeMs + 8)
+      : nextItem.scheduledRenderTime;
+    const remainingMs = minTargetTime - now;
+    const delay = remainingMs > 0 ? Math.max(1, Math.round(remainingMs)) : 0;
 
     this.pacingTimer = setTimeout(() => {
       this.pacingTimer = null;
@@ -568,12 +586,16 @@ export class FramePacer {
       }
       if (droppedAny && this.frameQueue[0].scheduledRenderTime > now + 2) {
         this.frameQueue[0].scheduledRenderTime = now;
+        if (this.frameQueue.length === 1) {
+          this.lastScheduledTimeMs = now;
+        }
       }
     }
 
     const nextItem = this.frameQueue[0];
+    const respectsMinSpacing = !this.hasRenderedAny || now - this.lastRenderedTimeMs >= 8;
 
-    if (nextItem.scheduledRenderTime <= now + 2) {
+    if (nextItem.scheduledRenderTime <= now + 2 && respectsMinSpacing) {
       this.frameQueue.shift();
       this.renderFrameInternal(nextItem.frame, nextItem.ptsUs, now);
 
@@ -586,7 +608,30 @@ export class FramePacer {
         const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
         const minNextTime = now + minCatchupIntervalMs;
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
-          totalShift += minNextTime - this.frameQueue[0].scheduledRenderTime;
+          if (dMs >= minCatchupIntervalMs) {
+            // Timer lag caused head frame to slip past minNextTime: shift entire queue uniformly
+            // to preserve 1x PTS spacing and let the PLL pull back smoothly.
+            totalShift += minNextTime - this.frameQueue[0].scheduledRenderTime;
+          } else {
+            // Batched arrival (sub-8ms PTS delta): space out only adjacent frames that are too close
+            // without shifting already well-spaced future frames backward.
+            this.frameQueue[0].scheduledRenderTime = minNextTime;
+            for (let i = 1; i < this.frameQueue.length; i++) {
+              const pairDeltaMs = this.computeDeltaPtsMs(
+                this.frameQueue[i].ptsUs,
+                this.frameQueue[i - 1].ptsUs,
+              );
+              const pairMinGapMs = Math.max(8, pairDeltaMs * 0.5);
+              const minPairTime = this.frameQueue[i - 1].scheduledRenderTime + pairMinGapMs;
+              if (this.frameQueue[i].scheduledRenderTime < minPairTime) {
+                this.frameQueue[i].scheduledRenderTime = minPairTime;
+              } else {
+                break;
+              }
+            }
+            this.lastScheduledTimeMs =
+              this.frameQueue[this.frameQueue.length - 1].scheduledRenderTime;
+          }
         }
 
         // A/V Sync Phase-Locked Loop (リップシンク自動補正):
@@ -599,10 +644,9 @@ export class FramePacer {
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
             const syncErrorMs = targetRenderTime - currentHeadSchedule;
 
-            const earliestHeadTime = Math.max(
-              now + 8,
-              this.lastScheduledTimeMs + minCatchupIntervalMs,
-            );
+            // Anchor negative catchup bound to `now` (the frame just rendered at line 578),
+            // NOT `this.lastScheduledTimeMs` (which points to the tail of `this.frameQueue`).
+            const earliestHeadTime = Math.max(now + 8, now + minCatchupIntervalMs);
             const maxNegativeShiftAllowed = Math.min(0, earliestHeadTime - currentHeadSchedule);
 
             if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
@@ -680,9 +724,10 @@ export class FramePacer {
     }
   }
 
-  private renderFrameInternal(frame: VideoFrame, ptsUs: number, _nowMs: number): void {
+  private renderFrameInternal(frame: VideoFrame, ptsUs: number, nowMs: number): void {
     this.hasRenderedAny = true;
     this.lastRenderedPtsUs = ptsUs;
+    this.lastRenderedTimeMs = nowMs;
     this.avSync?.updateVideoPts(ptsUs);
     this.renderer.render(frame);
     this.onFrameProcessed?.();
@@ -770,6 +815,7 @@ export class FramePacer {
     this.lastArrivalTimeMs = -1;
     this.lastArrivalPtsUs = -1;
     this.lastRenderedPtsUs = 0;
+    this.lastRenderedTimeMs = -Infinity;
     this.hasRenderedAny = false;
     this.lastPllNudgeLogTimeMs = -Infinity;
     this.pllNudgeSuppressedCount = 0;

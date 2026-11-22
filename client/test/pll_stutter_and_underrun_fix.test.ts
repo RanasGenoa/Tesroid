@@ -321,4 +321,80 @@ describe('A/V Sync Stutter Elimination & Audio Underrun Guard', () => {
 
     pacer.destroy();
   });
+
+  it('recovers negative A/V drift at 60 FPS even when frameQueue is non-empty (matching 160ms audio buffer) and handles batched <5ms PTS frames without progressive drift', () => {
+    const renderTimestamps: number[] = [];
+    const mockRenderer: any = {
+      render: vi.fn((f: any) => {
+        renderTimestamps.push(performance.now());
+        f.close?.();
+      }),
+    };
+
+    const avSync = new AvSyncController();
+    let ctxTimeSec = 1.0;
+    avSync.setAudioContextTimeProvider(() => ctxTimeSec);
+
+    // Audio starts 160ms behind incoming video so FramePacer builds a ~10-frame queue (normal steady state)
+    avSync.updateAudioPts(1_000_000, 1.0);
+
+    const pacer = new FramePacer(mockRenderer, 60, avSync);
+    const stepMs = 1000 / 60;
+
+    // Warm up 120 frames (2s @ 60fps) to enter steady state with non-empty frameQueue
+    let nextPtsUs = 1_160_000;
+    let audioPtsUs = 1_000_000;
+    for (let i = 0; i < 120; i++) {
+      pacer.queueFrame(createDummyFrame(nextPtsUs) as any);
+      nextPtsUs += Math.round(stepMs * 1000);
+      vi.advanceTimersByTime(stepMs);
+      ctxTimeSec += stepMs / 1000;
+      audioPtsUs += Math.round(stepMs * 1000);
+      avSync.updateAudioPts(audioPtsUs, ctxTimeSec);
+    }
+    expect(pacer.getQueueLength()).toBeGreaterThanOrEqual(2);
+
+    // Simulate a 250ms video backlog while audio keeps playing at 1x
+    // (15 frames arrive so frameQueue swells to ~410ms and rendered video is ~250ms behind audio)
+    for (let j = 0; j < 15; j++) {
+      pacer.queueFrame(createDummyFrame(nextPtsUs) as any);
+      nextPtsUs += Math.round(stepMs * 1000);
+    }
+    ctxTimeSec += 0.25;
+    audioPtsUs += 250_000;
+    avSync.updateAudioPts(audioPtsUs, ctxTimeSec);
+    expect(avSync.getDriftMs()).toBeLessThan(-150);
+
+    // Continue delivering 360 frames (6s @ 60fps), including periodic batched <5ms PTS pairs
+    for (let i = 0; i < 360; i++) {
+      if (i % 10 === 5) {
+        // Pair arrived 33.3ms after previous, then 0.2ms later (200us < 5000us)
+        pacer.queueFrame(createDummyFrame(nextPtsUs + Math.round(stepMs * 1000)) as any);
+        pacer.queueFrame(createDummyFrame(nextPtsUs + Math.round(stepMs * 1000) + 200) as any);
+        nextPtsUs += Math.round(stepMs * 2000);
+        vi.advanceTimersByTime(stepMs * 2);
+        ctxTimeSec += (stepMs * 2) / 1000;
+        audioPtsUs += Math.round(stepMs * 2000);
+        avSync.updateAudioPts(audioPtsUs, ctxTimeSec);
+        i++;
+      } else {
+        pacer.queueFrame(createDummyFrame(nextPtsUs) as any);
+        nextPtsUs += Math.round(stepMs * 1000);
+        vi.advanceTimersByTime(stepMs);
+        ctxTimeSec += stepMs / 1000;
+        audioPtsUs += Math.round(stepMs * 1000);
+        avSync.updateAudioPts(audioPtsUs, ctxTimeSec);
+      }
+    }
+
+    // Negative PLL must have converged video back within the ±45ms deadband (+ minor tolerance)
+    expect(Math.abs(avSync.getDriftMs())).toBeLessThanOrEqual(60);
+
+    // Every render interval must remain smooth without tight bursts (< 8ms)
+    for (let i = 1; i < renderTimestamps.length; i++) {
+      expect(renderTimestamps[i] - renderTimestamps[i - 1]).toBeGreaterThanOrEqual(8);
+    }
+
+    pacer.destroy();
+  });
 });

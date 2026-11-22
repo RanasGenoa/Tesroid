@@ -82,6 +82,8 @@ describe('VaapiEncoder H.264 Annex-B & OggOpus Stream Parsers', () => {
       expect(emitted[2].flags).toBe(VIDEO_FLAGS.AVCC);
       expect(emitted[2].data.readUInt32BE(0)).toBe(5);
       expect(emitted[2].data.subarray(4)).toEqual(Buffer.from([0x41, 0x9a, 0x22, 0x11, 0x05]));
+      // Multiple AUs parsed from a single chunk must still have strictly increasing PTS
+      expect(emitted[2].pts > emitted[1].pts).toBe(true);
     }
   });
 

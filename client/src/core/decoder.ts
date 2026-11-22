@@ -33,6 +33,7 @@ export class VideoStreamDecoder {
   private pendingPackets: PendingVideoPacket[] = [];
   private pendingBytes = 0;
   private isPumping = false;
+  private targetFps = 30;
   private maxActiveFrames = 14;
   private targetPendingDurationMs = 10000; // Default 10s prefetch buffer depth
   private maxPendingPackets = 1020; // Hard fallback limit (+35% + 2.5s margin @ up to 60fps)
@@ -119,6 +120,19 @@ export class VideoStreamDecoder {
 
   public setDownstreamQueueLengthProvider(provider: () => number): void {
     this.getDownstreamQueueLength = provider;
+  }
+
+  /**
+   * Scale active decoded frame capacity with target FPS so 60fps steady-state A/V sync
+   * (~185ms cushion = ~11 frames + hw decode queue) has sufficient headroom without starving FramePacer.
+   */
+  public setTargetFps(fps: number): void {
+    this.targetFps = fps > 0 ? fps : 30;
+    this.maxActiveFrames =
+      this.targetFps > 30 ? Math.min(24, Math.max(14, Math.round(this.targetFps / 3))) : 14;
+    if (this.pendingPackets.length > 0 && this.hasCapacityForDecode()) {
+      void this.pumpPendingPackets();
+    }
   }
 
   constructor(target: FrameOutputTarget, onFrameDecoded?: (pts: number) => void) {

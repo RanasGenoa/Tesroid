@@ -26,6 +26,9 @@ describe('Server Performance Tuning (Issue #46)', () => {
     expect(args[compIdx + 1]).toBe('7');
     expect(args).not.toContain('-low_power');
     expect(args).toContain('hwupload,scale_vaapi=format=nv12');
+    const flushIdx = args.indexOf('-flush_packets');
+    expect(flushIdx).toBeGreaterThan(-1);
+    expect(args[flushIdx + 1]).toBe('1');
   });
 
   it('should clamp compressionLevel between 1 and 7 and toggle -low_power / CPU CSC', () => {

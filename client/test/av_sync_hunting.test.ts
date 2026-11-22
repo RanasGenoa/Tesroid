@@ -260,13 +260,19 @@ describe('A/V Sync Hunting Prevention & Rate Limiting (Issue #15)', () => {
         pacer.queueFrame(createDummyFrame(4_600_000 + i * stepUs) as any);
       }
 
-      vi.advanceTimersByTime(150);
-      expect(renderTimesMs.length).toBeGreaterThanOrEqual(4);
+      vi.advanceTimersByTime(300);
+      expect(renderTimesMs.length).toBe(9);
 
       // Verify strict minimum 8ms spacing between consecutive rendered frames (no 1ms tight burst at 60fps!)
       for (let i = 1; i < renderTimesMs.length; i++) {
         expect(renderTimesMs[i] - renderTimesMs[i - 1]).toBeGreaterThanOrEqual(8);
       }
+
+      // Verify negative PLL shift actually accelerates playback when frameQueue is non-empty
+      // (total drain duration must be strictly shorter than 8x nominal frame interval)
+      const nominalTotalMs = 8 * (1000 / fps);
+      const actualTotalMs = renderTimesMs[8] - renderTimesMs[0];
+      expect(actualTotalMs).toBeLessThan(nominalTotalMs - 8);
 
       pacer.destroy();
     }
