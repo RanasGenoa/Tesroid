@@ -72,9 +72,9 @@ Tesroid では、迅速な反復開発と車載環境での安全な安定化を
 
 ### 外部（Fork）PR の CI 承認ポリシーとメンテナ運用 (Issue #87)
 
-GitHub のセキュリティ保護により、**Fork リポジトリからの `pull_request` トリガー ワークフロー（`CI (Test & Build)`）** は、対象コントリビューターが本リポジトリへ初めて貢献する際に初回実行が **`action_required`（「Approve and run」承認待ち）** として停止します。GitHub の仕様上、Fork PR の完全な無条件自動実行はできません。
+GitHub のセキュリティ保護により、**Fork リポジトリからの `pull_request` トリガー ワークフロー（`CI (Test & Build)`）** は、リポジトリの承認ポリシーに応じて初回実行が **`action_required`（「Approve and run」承認待ち）** として停止することがあります。GitHub の仕様上、Fork PR の完全な無条件自動実行はできず、承認対象は 3 段階（厳しい → 緩い: `all_external_contributors` / `first_time_contributors` / `first_time_contributors_new_to_github`）から選択します。
 
-- **本リポジトリの承認ポリシー**: `first_time_contributors_new_to_github`（GitHub 新規アカウントのみ承認待ち。既存アカウントの外部コントリビューターは初回 PR から CI が自動実行されます）。
+- **本リポジトリの承認ポリシー**: `first_time_contributors_new_to_github`（最も緩い段階）。GitHub 公式定義では、承認待ちとなるのは「GitHub アカウントが新規で、かつ本リポジトリへ一度もコミットまたは Pull Request をマージしたことがないユーザー」のみです。既存アカウントの外部コントリビューターは初回 PR から CI が自動実行され、一度でもコミット・Pull Request がマージされたコントリビューターは以後承認が不要になります。
 - **ポリシーの確認・変更**（メンテナ/オーナーのみ、Web UI は `Settings > Actions > General > Fork pull request workflows from outside collaborators`）:
 
 ```bash
