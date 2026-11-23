@@ -54,8 +54,9 @@ describe('CPU encoder presets & backend-aware options (Issue #90)', () => {
   });
 
   it('PUT /api/settings applies cpu_low_power preset (maxSize/x264Preset) and forwards it to the encoder', async () => {
-    const configStore = new ConfigStore(`${tmpDir}-cpu`);
-    const lockoutManager = new LockoutManager(`${tmpDir}-cpu`);
+    const cpuDir = path.join(tmpDir, 'cpu');
+    const configStore = new ConfigStore(cpuDir);
+    const lockoutManager = new LockoutManager(cpuDir);
     const authService = new AuthService(configStore, lockoutManager);
     await authService.setPin('1234');
     const tokenResult = await authService.verifyPin('1234');
@@ -95,8 +96,9 @@ describe('CPU encoder presets & backend-aware options (Issue #90)', () => {
   });
 
   it('PUT /api/settings rejects unknown presets and keeps the current preset unchanged', async () => {
-    const configStore = new ConfigStore(`${tmpDir}-reject`);
-    const lockoutManager = new LockoutManager(`${tmpDir}-reject`);
+    const rejectDir = path.join(tmpDir, 'reject');
+    const configStore = new ConfigStore(rejectDir);
+    const lockoutManager = new LockoutManager(rejectDir);
     const authService = new AuthService(configStore, lockoutManager);
     await authService.setPin('1234');
     const tokenResult = await authService.verifyPin('1234');

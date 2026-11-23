@@ -816,11 +816,12 @@ export class VaapiEncoder extends EventEmitter {
     gpuColorConversion?: boolean;
     x264Preset?: string;
   }): Promise<void> {
-    // libx264 speed preset: apply the validated value to the field before restarting,
-    // so buildVideoArgs picks it up from instance state (Issue #90).
+    // libx264 speed preset: only restart when the validated value actually changes,
+    // avoiding needless stream interruptions for equal/invalid values (Issue #90 review).
     const nextX264Preset = normalizeX264Preset(config.x264Preset);
-    if (config.x264Preset !== undefined) {
-      this.x264Preset = nextX264Preset ?? this.x264Preset;
+    const x264PresetChanged = nextX264Preset !== undefined && nextX264Preset !== this.x264Preset;
+    if (x264PresetChanged) {
+      this.x264Preset = nextX264Preset;
     }
 
     const videoNeedsRestart =
@@ -831,7 +832,7 @@ export class VaapiEncoder extends EventEmitter {
       config.compressionLevel !== undefined ||
       config.lowPower !== undefined ||
       config.gpuColorConversion !== undefined ||
-      config.x264Preset !== undefined;
+      x264PresetChanged;
 
     if (videoNeedsRestart) {
       const hasTuningUpdates =

@@ -271,6 +271,7 @@ async function showSettingsModal(
   // Issue #90: エンコーダーバックエンド連動UI（グレーアウト / プリセット選択肢切替 / 状態併記）
   let encoderStatus: EncoderStatusPayload | null = null;
   let encoderStatusTimer: ReturnType<typeof setInterval> | null = null;
+  let encoderModalClosed = false;
   let savedPerformancePreset: string | undefined;
   let presetTouched = false;
 
@@ -336,6 +337,8 @@ async function showSettingsModal(
     } catch {
       // 通信失敗時は現在の表示を維持する
     }
+    // クローズ後のdetached DOMへの適用を避ける (Issue #90 review)
+    if (encoderModalClosed) return;
     applyEncoderBackendUi();
   };
 
@@ -451,6 +454,7 @@ async function showSettingsModal(
 
   // Close handler
   const closeModal = () => {
+    encoderModalClosed = true;
     if (metricsTimer) {
       clearInterval(metricsTimer);
       metricsTimer = null;
