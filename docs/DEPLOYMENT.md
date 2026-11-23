@@ -22,6 +22,7 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   - **AMD Radeon GPU (VAAPI)**: `radeonsi` に対応（コンテナベースを Ubuntu 24.04 / Mesa `25.2.x` へ刷新し、RDNA 4 を含む Radeon 系列の VAAPI に対応。起動時にベンダー ID `0x1002` を自動判定、または `.env` で `LIBVA_DRIVER_NAME=radeonsi` を指定）。
   - **Windows (Docker Desktop / WSL2 D3D12)**: [`docker-compose.windows.yml`](../docker-compose.windows.yml) により `/dev/dxg` + `/usr/lib/wsl` を用いた D3D12 ブリッジ構成に対応。ただし Docker Desktop 既定の VM で `vgem`（`/dev/dri/renderD*`）が露出されない環境や、AMD RX 9070 XT の WSL D3D12 UMD のように `VideoProc` のみで H.264 VAAPI エンコード非対応の環境では、`ENCODER_MODE=auto`（既定値）により自動的に **`libx264` ソフトウェアエンコード** へフォールバックします。
   - **マルチ GPU 環境**: Linux ホストで複数 GPU が存在する場合、`/dev/dri/renderD*` を自動走査し、NVIDIA (`0x10de`) より Intel (`0x8086`) / AMD (`0x1002`) のレンダーノードを優先選択します。
+  - **エンコーダ フォールバック連鎖**: 起動時に `vainfo` で `VAProfileH264 + VAEntrypointEncSlice` を厳密検証し、対応ドライバが無い場合は最初から CPU (`libx264`) で起動します。稼働中に FFmpeg が即死した場合のみ `-low_power` 解除 → GPU CSC (`scale_vaapi`) 解除（HW エンコードは維持）→ `libx264` ソフトウェアエンコードの順に段階降格し、発生した降格は `/api/health` の `lastFallback` に記録されます。安定重視で CPU 固定を望む環境では `.env` で `ENCODER_MODE=software` を指定できます。
 - **動作確認済み GPU / 環境リスト**:
   | GPU / 環境 | アーキテクチャ / 方式 | ドライバ / バックエンド | ステータス | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
