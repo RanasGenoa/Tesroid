@@ -1136,6 +1136,30 @@ async function showSettingsModal(
     }
   });
 
+  // 詳細値を直接編集したら、プリセット選択も即座に 'custom' へ切り替える。
+  // プリセット名だけ balanced のまま値だけ乖離する曖昧状態を防ぐ (Issue #90 review)。
+  // ※ 表示上の 'custom' 展開を触っただけ（未編集）の場合は presetTouched が立たないため、
+  //   保存時に保存済みプリセット名がそのまま送信され、誤った custom 永続化は起きない。
+  const markCustomTouched = () => {
+    const presetSelectEl = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
+    if (presetSelectEl && presetSelectEl.value !== 'custom') {
+      presetSelectEl.value = 'custom';
+      const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
+      if (customPanelEl) {
+        customPanelEl.style.display = 'block';
+      }
+    }
+    presetTouched = true;
+  };
+  for (const detailId of [
+    'cfg-max-size',
+    'cfg-vaapi-compression',
+    'cfg-vaapi-gpu-csc',
+    'cfg-vaapi-low-power',
+  ]) {
+    overlay.querySelector(`#${detailId}`)?.addEventListener('change', markCustomTouched);
+  }
+
   const cfgPinInput = overlay.querySelector('#cfg-pin') as HTMLInputElement | null;
   const cfgPinErrorEl = overlay.querySelector('#cfg-pin-error') as HTMLElement | null;
   bindPinInputValidation(cfgPinInput, cfgPinErrorEl);
