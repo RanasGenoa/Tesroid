@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import type { EncoderMode } from './vaapi.js';
 
 /**
  * NVIDIA NVENC 検出・能力プローブ (Issue #36 Phase 3)。
@@ -36,6 +37,18 @@ export interface NvencDetectedConfig {
 const NVIDIA_DEVICE_PATHS = ['/dev/nvidiactl', '/dev/nvidia0'] as const;
 
 /**
+ * 起動時に NVENC 能力プローブ (spawnSync) を実行すべきかを判定する。
+ * - `software` / `vaapi` 固定: 不要 (結果を使わない)
+ * - `nvenc` 固定: 必須 (結果で警告したい)
+ * - `auto`: VAAPI が非対応な場合のみ (Optimus 等の混在環境で VAAPI 成功時に最大 8s の起動遅延を避ける)
+ */
+export function shouldProbeNvenc(encoderMode: EncoderMode, vaapiEncodeSupported: boolean): boolean {
+  if (encoderMode === 'software' || encoderMode === 'vaapi') return false;
+  if (encoderMode === 'nvenc') return true;
+  return !vaapiEncodeSupported;
+}
+
+/**
  * NVIDIA デバイスがコンテナに露出しているかを判定する。
  * `NVIDIA_VISIBLE_DEVICES` の空 / `none` / `void` は「露出なし」とみなす。
  */
@@ -44,7 +57,11 @@ export function hasNvidiaDevice(deps?: Pick<NvencDetectDeps, 'env' | 'existsSync
   const existsSync = deps?.existsSync ?? fs.existsSync;
 
   const visible = (env.NVIDIA_VISIBLE_DEVICES || '').trim().toLowerCase();
-  if (visible && visible !== 'none' && visible !== 'void') {
+  if (visible === 'none' || visible === 'void') {
+    // Container Toolkit の明示的オプトアウト。デバイスノードがあっても無効とみなす。
+    return false;
+  }
+  if (visible) {
     return true;
   }
 
@@ -52,7 +69,8 @@ export function hasNvidiaDevice(deps?: Pick<NvencDetectDeps, 'env' | 'existsSync
 }
 
 function defaultRunNvencProbe(env: NodeJS.ProcessEnv): NvencProbeResult {
-  // 64x64 の単色 1 フレームを実際に h264_nvenc でエンコードして能力を実測する。
+  // 単色 1 フレームを実際に h264_nvenc でエンコードして能力を実測する。
+  // 解像度は NVENC 最小幅制約 (Turing/Ampere/Ada 系で 145px) を満たす 256x144。
   // コンテナに NVIDIA ドライバ (libnvidia-encode.so.*) が未マウントの場合は非ゼロ終了する。
   const res = spawnSync(
     'ffmpeg',
@@ -63,7 +81,9 @@ function defaultRunNvencProbe(env: NodeJS.ProcessEnv): NvencProbeResult {
       '-f',
       'lavfi',
       '-i',
-      'color=black:s=64x64:r=1',
+      'color=black:s=256x144:r=1',
+      '-pix_fmt',
+      'yuv420p',
       '-frames:v',
       '1',
       '-c:v',

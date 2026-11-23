@@ -1,7 +1,5 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { spawnMock } = vi.hoisted(() => ({
@@ -17,7 +15,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { type EncoderFallbackEvent, VaapiEncoder } from '../src/encoder/ffmpeg.js';
-import { detectNvencConfig, hasNvidiaDevice } from '../src/utils/nvenc.js';
+import { detectNvencConfig, hasNvidiaDevice, shouldProbeNvenc } from '../src/utils/nvenc.js';
 import { resolveEncoderMode, selectInitialEncoderBackend } from '../src/utils/vaapi.js';
 
 function createFakeChildProcess() {
@@ -38,7 +36,6 @@ describe('NVIDIA NVENC detection, backend selection chain and encoder pipeline (
   let prevEncoderMode: string | undefined;
   let prevLibvaDriverName: string | undefined;
   let prevNvidiaVisibleDevices: string | undefined;
-  let tmpDir: string;
   let encoder: VaapiEncoder | null = null;
 
   beforeEach(() => {
@@ -49,7 +46,6 @@ describe('NVIDIA NVENC detection, backend selection chain and encoder pipeline (
     delete process.env.LIBVA_DRIVER_NAME;
     delete process.env.NVIDIA_VISIBLE_DEVICES;
 
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tesroid-nvenc-'));
     spawnMock.mockReset();
     spawnMock.mockImplementation(() => createFakeChildProcess());
   });
@@ -70,10 +66,6 @@ describe('NVIDIA NVENC detection, backend selection chain and encoder pipeline (
 
     if (prevNvidiaVisibleDevices === undefined) delete process.env.NVIDIA_VISIBLE_DEVICES;
     else process.env.NVIDIA_VISIBLE_DEVICES = prevNvidiaVisibleDevices;
-
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
   });
 
   it('resolveEncoderMode accepts nvenc from override and env', () => {
@@ -147,6 +139,33 @@ describe('NVIDIA NVENC detection, backend selection chain and encoder pipeline (
         existsSync: (p) => p === '/dev/nvidiactl',
       }),
     ).toBe(true);
+
+    // 明示的 none/void はデバイスノードの実在に関係なく無効 (オプトアウト優先)
+    expect(
+      hasNvidiaDevice({
+        env: { NVIDIA_VISIBLE_DEVICES: 'none' },
+        existsSync: () => true,
+      }),
+    ).toBe(false);
+    expect(
+      hasNvidiaDevice({
+        env: { NVIDIA_VISIBLE_DEVICES: 'VOID' },
+        existsSync: () => true,
+      }),
+    ).toBe(false);
+  });
+
+  it('shouldProbeNvenc skips the probe for fixed software/vaapi modes and for auto when VAAPI already works', () => {
+    // 固定モード: 結果を使わない software/vaapi ではプローブしない。nvenc 固定は常に実行
+    expect(shouldProbeNvenc('software', true)).toBe(false);
+    expect(shouldProbeNvenc('software', false)).toBe(false);
+    expect(shouldProbeNvenc('vaapi', true)).toBe(false);
+    expect(shouldProbeNvenc('vaapi', false)).toBe(false);
+    expect(shouldProbeNvenc('nvenc', true)).toBe(true);
+
+    // auto: VAAPI 成功環境 (Optimus 等で iGPU が VAAPI 対応) では 8s の spawnSync を走らせない
+    expect(shouldProbeNvenc('auto', true)).toBe(false);
+    expect(shouldProbeNvenc('auto', false)).toBe(true);
   });
 
   it('detectNvencConfig gates the h264_nvenc probe on device exposure and reports failure reasons', () => {

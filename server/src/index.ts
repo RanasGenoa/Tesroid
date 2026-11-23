@@ -16,7 +16,7 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerSoundRoutes } from './routes/sound.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
-import { detectNvencConfig } from './utils/nvenc.js';
+import { detectNvencConfig, shouldProbeNvenc } from './utils/nvenc.js';
 import {
   detectVaapiConfig,
   type EncoderBackend,
@@ -41,8 +41,15 @@ async function bootstrap() {
   const displayNum = process.env.DISPLAY_NUM || ':99';
 
   const vaapiInfo = detectVaapiConfig();
-  const nvencInfo = detectNvencConfig();
   const encoderMode = resolveEncoderMode();
+  // NVENC プローブは必要時のみ実行 (VAAPI 成功環境や固定モードで起動毎に最大 8s の spawnSync を走らせない)
+  const nvencInfo = shouldProbeNvenc(encoderMode, vaapiInfo.vaapiEncodeSupported)
+    ? detectNvencConfig()
+    : {
+        hasNvidiaDevice: false,
+        nvencEncodeSupported: false,
+        reason: `nvenc probe skipped (encoderMode=${encoderMode}, vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported})`,
+      };
   const initialBackend: EncoderBackend = selectInitialEncoderBackend(encoderMode, {
     vaapiEncodeSupported: vaapiInfo.vaapiEncodeSupported,
     nvencEncodeSupported: nvencInfo.nvencEncodeSupported,
