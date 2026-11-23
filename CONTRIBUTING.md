@@ -70,6 +70,29 @@ Tesroid では、迅速な反復開発と車載環境での安全な安定化を
 2. **リリースタグ（`v*`）の勝手な作成・変更・削除の禁止**:
    - `v*` 形式のタグ作成・更新・削除はリポジトリ管理者（オーナー）のみに制限されています。
 
+### 外部（Fork）PR の CI 承認ポリシーとメンテナ運用 (Issue #87)
+
+GitHub のセキュリティ保護により、**Fork リポジトリからの `pull_request` トリガー ワークフロー（`CI (Test & Build)`）** は、対象コントリビューターが本リポジトリへ初めて貢献する際に初回実行が **`action_required`（「Approve and run」承認待ち）** として停止します。GitHub の仕様上、Fork PR の完全な無条件自動実行はできません。
+
+- **本リポジトリの承認ポリシー**: `first_time_contributors_new_to_github`（GitHub 新規アカウントのみ承認待ち。既存アカウントの外部コントリビューターは初回 PR から CI が自動実行されます）。
+- **ポリシーの確認・変更**（メンテナ/オーナーのみ、Web UI は `Settings > Actions > General > Fork pull request workflows from outside collaborators`）:
+
+```bash
+# 現在値の確認
+gh api repos/RanasGenoa/Tesroid/actions/permissions/fork-pr-contributor-approval
+
+# 変更（緩い → 厳しい順: first_time_contributors_new_to_github / first_time_contributors / all_external_contributors）
+gh api --method PUT repos/RanasGenoa/Tesroid/actions/permissions/fork-pr-contributor-approval \
+  -f approval_policy=first_time_contributors_new_to_github
+```
+
+- **`action_required` になった際のメンテナ確認手順**:
+  1. PR 差分に `.github/workflows/` の改変が含まれるか確認します（含まれる場合は、ワークフロー内容にシークレット漏洩・自己-hosted ランナーでの任意コード実行等のリスクがないか先に精査します）。
+  2. 問題がなければ PR の Checks タブで **「Approve and run」** を押下します。
+  3. `gh pr checks <PR番号> --repo RanasGenoa/Tesroid` で CI の開始・完了を確認します。
+- **セキュリティ境界の設計方針（固定）**: `ci.yml` は `pull_request` トリガー（GitHub ホスト型サンドボックス）を維持し、シークレット不使用・`permissions: contents: read` を明示宣言したまま変更しません。Fork のコードがベースリポジトリの権限・シークレットで実行される `pull_request_target` 上での CI 実行は、任意コード実行リスク（pwn request）のため採用しません。`ai-review.yml` の `pull_request_target` はベースブランチのコードのみチェックアウトし PR 差分をテキストとして扱うため、Fork のコードを実行しない設計です。
+
+
 ---
 
 ## 4. 開発・コントリビュートの手順 (ワークフロー)

@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ main, 'release/**' ]
 
+# セキュリティ境界 (Issue #87): このワークフローはシークレットを一切使用せず、
+# GITHUB_TOKEN は読み取り専用に明示分離しています。Fork PR のコードは
+# pull_request トリガーにより GitHub ホスト型サンドボックスで実行されます。
+# Fork コードがベースリポジトリの権限・シークレットで実行される
+# pull_request_target への移行は任意コード実行リスク (pwn request) のため禁止とします。
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build & Test Verification
