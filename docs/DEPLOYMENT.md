@@ -329,6 +329,11 @@ docker exec -it tesroid-server vainfo --display drm --device /dev/dri/renderD128
 > [!NOTE]
 > Windows Docker Desktop 環境では既定で `/dev/dri` (`vgem`) が存在しない（または GPU の WSL D3D12 UMD が `VideoProc` のみで H.264 エンコード非対応）場合、`/api/health` 上で `encoder.backend: "software"` となり `libx264` で正常動作します。
 
+パフォーマンスプリセットと CPU フォールバックの継承挙動（実機検証に基づく仕様）：
+
+- 設定画面で保存したプリセット（`high` / `balanced` / `low_power` / `cpu_balanced` / `cpu_low_power` / `custom`）は `/data/config.json` に永続化され、コンテナ再起動後は保存値がそのまま起動時設定として継承されます（CPUプリセットの libx264 `-preset` 内部既定値も含む。`/api/health` の `encoder.x264Preset` で確認できます）。
+- GPU 非対応環境で最初から、または稼働中の段階降格により `software` バックエンドで動作する場合、エンコーダは安全側の既定値（`libx264 -preset ultrafast` + 保存済みの解像度上限）で稼働し、**保存済みのパフォーマンスプリセットが CPUプリセットへ自動的に書き換えられることはありません**。CPU 専環境で明示的な負荷低減を望む場合は、設定画面で `CPU・標準` / `CPU・軽量` を選択してください（CPU 稼働中は詳細設定の VAAPI 依存項目はグレーアウトされ、設定画面の状態パネルに使用中のエンコーダ情報が併記されます）。
+
 ### 4. コンテナログのリアルタイム確認
 ```bash
 docker compose logs -f --tail 50

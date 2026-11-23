@@ -100,6 +100,8 @@ describe('Server Performance Tuning (Issue #46)', () => {
         compressionLevel: 7,
         lowPower: false,
         gpuColorConversion: true,
+        x264Preset: 'ultrafast',
+        libvaDriverName: null,
         lastFallback: null,
       });
 

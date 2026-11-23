@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import type { Readable } from 'node:stream';
+import { ALLOWED_X264_PRESETS } from '../config.js';
 import {
   DEFAULT_VAAPI_DEVICE,
   type EncoderBackend,
@@ -39,11 +40,19 @@ export interface EncoderOptions {
   compressionLevel?: number; // 1 (best quality) - 7 (fastest/lightest)
   lowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
   gpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
+  x264Preset?: string; // libx264 speed preset (software backend only, Issue #90)
 }
 
 export interface EncoderFallbackEvent {
   option: 'lowPower' | 'gpuColorConversion' | 'softwareEncoder';
   timestamp: number;
+}
+
+// libx264 の既定 -preset（既存動作を維持する最速値。CPUプリセットで上書き可能, Issue #90）
+const DEFAULT_X264_PRESET = 'ultrafast';
+
+function normalizeX264Preset(value?: string): string | undefined {
+  return value && ALLOWED_X264_PRESETS.includes(value) ? value : undefined;
 }
 
 export class VaapiEncoder extends EventEmitter {
@@ -63,6 +72,7 @@ export class VaapiEncoder extends EventEmitter {
   private compressionLevel: number;
   private lowPower: boolean;
   private gpuColorConversion: boolean;
+  private x264Preset: string;
   private videoStartTimeMs = 0;
   private framesInCurrentProcess = 0;
   private lastFallback: EncoderFallbackEvent | null = null;
@@ -138,6 +148,7 @@ export class VaapiEncoder extends EventEmitter {
     this.gpuColorConversion =
       options.gpuColorConversion ??
       (process.env.VAAPI_GPU_CSC !== 'false' && process.env.VAAPI_GPU_CSC !== '0');
+    this.x264Preset = normalizeX264Preset(options.x264Preset) ?? DEFAULT_X264_PRESET;
 
     this.videoFrameDurationUs = BigInt(Math.round(1000000 / this.fps));
     this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
@@ -202,6 +213,10 @@ export class VaapiEncoder extends EventEmitter {
     return this.gpuColorConversion;
   }
 
+  public getX264Preset(): string {
+    return this.x264Preset;
+  }
+
   public getEncoderMode(): EncoderMode {
     return this.encoderMode;
   }
@@ -217,6 +232,8 @@ export class VaapiEncoder extends EventEmitter {
     compressionLevel: number;
     lowPower: boolean;
     gpuColorConversion: boolean;
+    x264Preset: string;
+    libvaDriverName: string | null;
     lastFallback: EncoderFallbackEvent | null;
   } {
     return {
@@ -226,6 +243,8 @@ export class VaapiEncoder extends EventEmitter {
       compressionLevel: this.compressionLevel,
       lowPower: this.lowPower,
       gpuColorConversion: this.gpuColorConversion,
+      x264Preset: this.x264Preset,
+      libvaDriverName: this.libvaDriverName ?? null,
       lastFallback: this.lastFallback ? { ...this.lastFallback } : null,
     };
   }
@@ -260,7 +279,7 @@ export class VaapiEncoder extends EventEmitter {
         '-c:v',
         'libx264',
         '-preset',
-        'ultrafast',
+        this.x264Preset,
         '-tune',
         'zerolatency',
       );
@@ -795,7 +814,18 @@ export class VaapiEncoder extends EventEmitter {
     compressionLevel?: number;
     lowPower?: boolean;
     gpuColorConversion?: boolean;
+    x264Preset?: string;
   }): Promise<void> {
+    // libx264 speed preset: only restart when the validated value actually changes,
+    // and only while the software backend is active (x264 args are unused under VAAPI),
+    // avoiding needless stream interruptions (Issue #90 review).
+    const nextX264Preset = normalizeX264Preset(config.x264Preset);
+    const x264PresetChanged = nextX264Preset !== undefined && nextX264Preset !== this.x264Preset;
+    if (x264PresetChanged) {
+      this.x264Preset = nextX264Preset;
+    }
+    const x264PresetNeedsRestart = x264PresetChanged && this.activeBackend === 'software';
+
     const videoNeedsRestart =
       config.width !== undefined ||
       config.height !== undefined ||
@@ -803,7 +833,8 @@ export class VaapiEncoder extends EventEmitter {
       config.bitrate !== undefined ||
       config.compressionLevel !== undefined ||
       config.lowPower !== undefined ||
-      config.gpuColorConversion !== undefined;
+      config.gpuColorConversion !== undefined ||
+      x264PresetNeedsRestart;
 
     if (videoNeedsRestart) {
       const hasTuningUpdates =

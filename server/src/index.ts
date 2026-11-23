@@ -84,6 +84,7 @@ async function bootstrap() {
     compressionLevel: initialStreamConfig?.vaapiCompressionLevel,
     lowPower: initialStreamConfig?.vaapiLowPower,
     gpuColorConversion: initialStreamConfig?.vaapiGpuColorConversion,
+    x264Preset: initialStreamConfig?.x264Preset,
   });
 
   const inputManager = new X11InputManager(displayNum, displayWidth, displayHeight);

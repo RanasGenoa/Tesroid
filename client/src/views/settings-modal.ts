@@ -1,4 +1,11 @@
 import {
+  describeEncoderStatus,
+  type EncoderStatusPayload,
+  resolveDisplayPreset,
+  vaapiControlsEnabled,
+  visiblePresetIds,
+} from './encoder-policy.js';
+import {
   clearElementChildren,
   DEFAULT_FAVORITES,
   DEFAULT_HOME_FAVORITE_ID,
@@ -163,16 +170,24 @@ async function showSettingsModal(
         <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; margin-bottom: 0;">※ 車内での音楽鑑賞等で音質を優先する場合は192k〜320kを選択してください。</p>
 
         <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+          <div id="encoder-status-panel" style="font-size: 12px; line-height: 1.6; padding: 8px 10px; margin-bottom: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border-color); color: var(--text-muted);">
+            エンコーダー状態を読み込み中...
+          </div>
           <label style="display: block; font-size: 14px; margin-bottom: 6px;">サーバー映像パフォーマンス (iGPU負荷調整)</label>
           <select id="cfg-perf-preset">
-            <option value="high">最高 (最大 1920px / GPU変換・高画質)</option>
-            <option value="balanced" selected>標準 (最大 1280px / GPU変換・高効率)</option>
-            <option value="low_power">軽量・省電力 (最大 960px / GPU変換・最速エンコード)</option>
+            <option value="high" data-preset-scope="gpu">最高 (最大 1920px / GPU変換・高画質)</option>
+            <option value="balanced" data-preset-scope="gpu" selected>標準 (最大 1280px / GPU変換・高効率)</option>
+            <option value="low_power" data-preset-scope="gpu">軽量・省電力 (最大 960px / GPU変換・最速エンコード)</option>
+            <option value="cpu_balanced" data-preset-scope="cpu" hidden>CPU・標準 (libx264 veryfast / 最大 1280px)</option>
+            <option value="cpu_low_power" data-preset-scope="cpu" hidden>CPU・軽量 (libx264 ultrafast / 最大 960px)</option>
             <option value="custom">カスタム (詳細設定を表示)</option>
           </select>
 
           <!-- 注意: カスタム設定内の VAAPI負荷優先度・scale_vaapi・-low_power 1 は Intel UHD 等・環境依存であり、環境によっては正しく動作しない場合があります（scale_vaapi / -low_power 1 は自動フォールバック対応） -->
           <div id="cfg-perf-custom-panel" style="display: none; margin-top: 10px; padding: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color);">
+            <div id="cfg-vaapi-disabled-note" style="display: none; font-size: 12px; color: #fbbf24; margin-bottom: 8px; line-height: 1.5;">
+              ※ 現在のエンコーダーは CPU (libx264) のため、以下の VAAPI 設定は適用されません。
+            </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div>
                 <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限)</label>
@@ -252,6 +267,97 @@ async function showSettingsModal(
   let clearConfirmTimer: any = null;
   let favResetConfirmTimer: ReturnType<typeof setTimeout> | null = null;
   const favoritesManageList = overlay.querySelector('#favorites-manage-list') as HTMLElement | null;
+
+  // Issue #90: エンコーダーバックエンド連動UI（グレーアウト / プリセット選択肢切替 / 状態併記）
+  let encoderStatus: EncoderStatusPayload | null = null;
+  let encoderStatusTimer: ReturnType<typeof setInterval> | null = null;
+  let encoderModalClosed = false;
+  let encoderStatusInFlight = false;
+  let savedPerformancePreset: string | undefined;
+  let presetTouched = false;
+
+  const applyEncoderBackendUi = () => {
+    const statusPanel = overlay.querySelector('#encoder-status-panel');
+    if (statusPanel) {
+      statusPanel.textContent = describeEncoderStatus(encoderStatus);
+    }
+
+    // VAAPI依存3項目のグレーアウト（backend === 'software' のときのみ明確に無効化）
+    const vaapiEnabled = vaapiControlsEnabled(encoderStatus);
+    for (const selector of [
+      '#cfg-vaapi-compression',
+      '#cfg-vaapi-gpu-csc',
+      '#cfg-vaapi-low-power',
+    ]) {
+      const el = overlay.querySelector(selector) as HTMLInputElement | HTMLSelectElement | null;
+      if (!el) continue;
+      el.disabled = !vaapiEnabled;
+      el.style.opacity = vaapiEnabled ? '' : '0.4';
+    }
+    const disabledNote = overlay.querySelector('#cfg-vaapi-disabled-note') as HTMLElement | null;
+    if (disabledNote) {
+      disabledNote.style.display = vaapiEnabled ? 'none' : 'block';
+    }
+
+    // プリセット選択肢の表示/非表示切替（GPU前提 / CPU向け / custom）
+    const presetSelect = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
+    if (presetSelect) {
+      const visible = visiblePresetIds(encoderStatus);
+      const optionEls = presetSelect.options ? Array.from(presetSelect.options) : [];
+      for (const opt of optionEls) {
+        const show = (visible as readonly string[]).includes(opt.value);
+        opt.hidden = !show;
+        opt.disabled = !show;
+      }
+      const visibleValues = optionEls.map((o) => o.value);
+      if (
+        optionEls.length > 0 &&
+        visibleValues.some((v) => (visible as readonly string[]).includes(v))
+      ) {
+        // 未操作時は常に保存値から再評価する。/api/settings が /api/health より先に
+        // 完了すると、ステータス未取得（=GPU前提一覧）で 'custom' に書き換わった後、
+        // health 再適用時に 'custom' が可視値のため元へ戻らないレースがある (Issue #90 review)。
+        const targetPreset =
+          !presetTouched && savedPerformancePreset
+            ? resolveDisplayPreset(savedPerformancePreset, encoderStatus)
+            : !(visible as readonly string[]).includes(presetSelect.value)
+              ? resolveDisplayPreset(savedPerformancePreset ?? presetSelect.value, encoderStatus)
+              : presetSelect.value;
+        if (presetSelect.value !== targetPreset) {
+          presetSelect.value = targetPreset;
+          const customPanelEl = overlay.querySelector(
+            '#cfg-perf-custom-panel',
+          ) as HTMLElement | null;
+          if (customPanelEl) {
+            customPanelEl.style.display = presetSelect.value === 'custom' ? 'block' : 'none';
+          }
+        }
+      }
+    }
+  };
+
+  const fetchEncoderStatus = async () => {
+    // 5秒間隔のポーリングが多重実行されても、進行中の1本だけ通す (Issue #90 review)
+    if (encoderStatusInFlight) return;
+    encoderStatusInFlight = true;
+    try {
+      const res = await fetch('/api/health');
+      if (res.ok) {
+        const data = await res.json();
+        encoderStatus = data?.encoder ?? null;
+      }
+    } catch {
+      // 通信失敗時は現在の表示を維持する
+    } finally {
+      encoderStatusInFlight = false;
+    }
+    // クローズ後のdetached DOMへの適用を避ける (Issue #90 review)
+    if (encoderModalClosed) return;
+    applyEncoderBackendUi();
+  };
+
+  fetchEncoderStatus();
+  encoderStatusTimer = setInterval(fetchEncoderStatus, 5000);
 
   const updateMetricsDisplay = async () => {
     const displayEl = overlay.querySelector('#metrics-display');
@@ -362,9 +468,14 @@ async function showSettingsModal(
 
   // Close handler
   const closeModal = () => {
+    encoderModalClosed = true;
     if (metricsTimer) {
       clearInterval(metricsTimer);
       metricsTimer = null;
+    }
+    if (encoderStatusTimer) {
+      clearInterval(encoderStatusTimer);
+      encoderStatusTimer = null;
     }
     if (clearConfirmTimer) {
       clearTimeout(clearConfirmTimer);
@@ -973,6 +1084,9 @@ async function showSettingsModal(
         const compEl = overlay.querySelector('#cfg-vaapi-compression') as HTMLSelectElement | null;
         const gpuCscEl = overlay.querySelector('#cfg-vaapi-gpu-csc') as HTMLInputElement | null;
         const lowPowerEl = overlay.querySelector('#cfg-vaapi-low-power') as HTMLInputElement | null;
+        if (typeof data.stream.performancePreset === 'string') {
+          savedPerformancePreset = data.stream.performancePreset;
+        }
         if (presetEl && data.stream.performancePreset) {
           presetEl.value = data.stream.performancePreset;
         }
@@ -990,11 +1104,14 @@ async function showSettingsModal(
         if (lowPowerEl && data.stream.vaapiLowPower !== undefined) {
           lowPowerEl.checked = Boolean(data.stream.vaapiLowPower);
         }
+        // 読み込んだ保存値と現在のバックエンド状態を突き合わせてUIを整合させる (Issue #90)
+        applyEncoderBackendUi();
       }
     }
   } catch {}
 
   overlay.querySelector('#cfg-perf-preset')?.addEventListener('change', (e) => {
+    presetTouched = true;
     const preset = (e.target as HTMLSelectElement).value;
     const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
     const maxSizeEl = overlay.querySelector('#cfg-max-size') as HTMLSelectElement | null;
@@ -1021,8 +1138,35 @@ async function showSettingsModal(
       if (compEl) compEl.value = '7';
       if (gpuCscEl) gpuCscEl.checked = true;
       if (lowPowerEl) lowPowerEl.checked = false;
+    } else if (preset === 'cpu_balanced' || preset === 'cpu_low_power') {
+      // CPUプリセットはVAAPI設定を一切変更しない（libx264側の値はサーバー側定義で適用） (Issue #90)
+      if (maxSizeEl) maxSizeEl.value = preset === 'cpu_balanced' ? '1280' : '960';
     }
   });
+
+  // 詳細値を直接編集したら、プリセット選択も即座に 'custom' へ切り替える。
+  // プリセット名だけ balanced のまま値だけ乖離する曖昧状態を防ぐ (Issue #90 review)。
+  // ※ 表示上の 'custom' 展開を触っただけ（未編集）の場合は presetTouched が立たないため、
+  //   保存時に保存済みプリセット名がそのまま送信され、誤った custom 永続化は起きない。
+  const markCustomTouched = () => {
+    const presetSelectEl = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
+    if (presetSelectEl && presetSelectEl.value !== 'custom') {
+      presetSelectEl.value = 'custom';
+      const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
+      if (customPanelEl) {
+        customPanelEl.style.display = 'block';
+      }
+    }
+    presetTouched = true;
+  };
+  for (const detailId of [
+    'cfg-max-size',
+    'cfg-vaapi-compression',
+    'cfg-vaapi-gpu-csc',
+    'cfg-vaapi-low-power',
+  ]) {
+    overlay.querySelector(`#${detailId}`)?.addEventListener('change', markCustomTouched);
+  }
 
   const cfgPinInput = overlay.querySelector('#cfg-pin') as HTMLInputElement | null;
   const cfgPinErrorEl = overlay.querySelector('#cfg-pin-error') as HTMLElement | null;
@@ -1051,8 +1195,12 @@ async function showSettingsModal(
     const audioBitrate = Number(
       (overlay.querySelector('#cfg-audio-bitrate') as HTMLSelectElement)?.value || 128000,
     );
-    const performancePreset =
+    const presetSelectValue =
       (overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement)?.value || 'balanced';
+    // 未操作時はサーバー保存値をそのまま送信する（バックエンド非対応で表示上 'custom' 相当に
+    // 開いているだけの状態が、誤って 'custom' として永続化されるのを防ぐ）(Issue #90)
+    const performancePreset =
+      !presetTouched && savedPerformancePreset ? savedPerformancePreset : presetSelectValue;
     const maxSize = Number(
       (overlay.querySelector('#cfg-max-size') as HTMLSelectElement)?.value || 1280,
     );
