@@ -258,8 +258,17 @@ export function renderStreamingView(
   let currentFps = 30;
   let currentBitrate = 1000000;
 
-  const fpsOptions = [30, 60];
+  // Issue #11 (D4): 標準の既定選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
+  let fpsOptions = [24, 30, 60];
   const bitrateOptions = [500000, 750000, 1000000, 1500000, 2000000];
+
+  const applyFpsOptionsFromServer = (raw: unknown): void => {
+    if (!Array.isArray(raw)) return;
+    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 15 && n <= 60);
+    if (opts.length > 0) {
+      fpsOptions = [...new Set(opts)].sort((a, b) => a - b);
+    }
+  };
 
   const fpsToggleBtn = document.getElementById('hud-fps-toggle') as HTMLButtonElement;
   const bitrateToggleBtn = document.getElementById('hud-bitrate-toggle') as HTMLButtonElement;
@@ -517,6 +526,8 @@ export function renderStreamingView(
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
+        // Issue #11: HUD の FPS 選択肢をクライアント負荷プロファイルの実効値へ (D4 裁定)
+        applyFpsOptionsFromServer(data?.clientProfileResolved?.fpsOptions);
         if (data?.stream?.maxFps) {
           applyTargetFps(Number(data.stream.maxFps));
         }
@@ -716,6 +727,11 @@ export function renderStreamingView(
       typeof framePacer.getQueueLength === 'function' ? framePacer.getQueueLength() : 0,
     );
   }
+
+  // Issue #11 (D5): クライアント処理負荷のベースライン比較用 (描画所要時間 p50/p95)
+  framePacer.onFrameRenderTimed = (durationMs: number) => {
+    metricsCollector.recordFrameProcessed(durationMs);
+  };
 
   framePacer.onFrameProcessed = () => {
     if (typeof decoder.pumpPendingPackets === 'function') {
@@ -1333,6 +1349,8 @@ export function renderStreamingView(
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
       executeJumpToLive(true, false);
     } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
+      // Issue #11: プロファイル変更で HUD の FPS 選択肢もライブ更新 (D4 裁定)
+      applyFpsOptionsFromServer(msg.stream?.fpsOptions);
       let streamSettingsChanged = false;
       if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
         const nextFps = Number(msg.stream.maxFps);

@@ -108,6 +108,8 @@ export class FramePacer {
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
+  // Issue #11 (D5): 1フレームの canvas 描画所要時間(ms)。MCU2 側の処理負荷比較に使う。
+  public onFrameRenderTimed?: (durationMs: number) => void;
   public onBufferingChange?: (isBuffering: boolean) => void;
 
   constructor(
@@ -730,7 +732,9 @@ export class FramePacer {
     this.lastRenderedPtsUs = ptsUs;
     this.lastRenderedTimeMs = nowMs;
     this.avSync?.updateVideoPts(ptsUs);
+    const renderStartMs = performance.now();
     this.renderer.render(frame);
+    this.onFrameRenderTimed?.(performance.now() - renderStartMs);
     this.onFrameProcessed?.();
   }
 

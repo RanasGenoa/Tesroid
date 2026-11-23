@@ -82,6 +82,82 @@ export interface StreamConfig {
   vaapiLowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
   vaapiGpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
   x264Preset?: string; // libx264 speed preset (software backend only, Issue #90)
+  clientProfile?: ClientProfileConfig; // 車載ブラウザ負荷プロファイル (Issue #11)
+}
+
+// クライアント負荷プロファイル (Issue #11): 車載ブラウザ側のデコード/描画負荷を決める軸。
+// サーバー負荷プリセット (performancePreset) とは直交し、配信解像度は両者の厳しい方が採用される。
+export type ClientPerformanceProfile = 'standard' | 'lightweight' | 'custom';
+
+export interface ClientProfileConfig {
+  profile: ClientPerformanceProfile;
+  // custom のみ: 明示値 (プリセット時は resolveClientProfile が規定値を展開)
+  resolutionScale?: number; // 0.4〜1.0 (レイアウト解像度に対するエンコード倍率)
+  fpsOptions?: number[]; // HUD 選択肢集合 (15〜60)
+  bitrateDefault?: number; // プロファイル切替時のビットレート既定値
+}
+
+export const CLIENT_PROFILE_DEFAULTS: Record<
+  Exclude<ClientPerformanceProfile, 'custom'>,
+  Required<Omit<ClientProfileConfig, 'profile'>>
+> = {
+  // 現行動作と同一 (Ryzen / MCU3 推奨)。HUD の 24fps 選択肢追加のみ (D4 裁定)
+  standard: {
+    resolutionScale: 1.0,
+    fpsOptions: [24, 30, 60],
+    bitrateDefault: 1_000_000,
+  },
+  // Intel / MCU2 推奨。Phase 0 実車計測で容認確認済み (D1 裁定):
+  // 車載ビューポート (~966x752 レイアウト) で scale 0.65 ≈ 640x458 相当・fps<=30
+  lightweight: {
+    resolutionScale: 0.65,
+    fpsOptions: [24, 30],
+    bitrateDefault: 700_000,
+  },
+};
+
+export interface ResolvedClientProfile {
+  resolutionScale: number; // clamped 0.4..1.0
+  fpsOptions: number[]; // sorted, unique, 15..60
+  bitrateDefault?: number;
+}
+
+export function resolveClientProfile(stream?: StreamConfig): ResolvedClientProfile {
+  const cp = stream?.clientProfile;
+  const profile: ClientPerformanceProfile =
+    cp?.profile === 'lightweight' || cp?.profile === 'custom' ? cp.profile : 'standard';
+  if (profile !== 'custom') {
+    const d = CLIENT_PROFILE_DEFAULTS[profile];
+    return {
+      resolutionScale: d.resolutionScale,
+      fpsOptions: [...d.fpsOptions],
+      bitrateDefault: d.bitrateDefault,
+    };
+  }
+  const scale =
+    cp?.resolutionScale !== undefined && Number.isFinite(Number(cp.resolutionScale))
+      ? Math.max(0.4, Math.min(1.0, Number(cp.resolutionScale)))
+      : 1.0;
+  const rawOptions = Array.isArray(cp?.fpsOptions)
+    ? [
+        ...new Set(
+          (cp!.fpsOptions as unknown[])
+            .map((n) => Math.round(Number(n)))
+            .filter((n) => n >= 15 && n <= 60),
+        ),
+      ]
+    : [];
+  const fpsOptions = rawOptions.sort((a, b) => a - b);
+  const bitrateDefault =
+    cp?.bitrateDefault !== undefined && Number.isFinite(Number(cp.bitrateDefault))
+      ? Math.max(300_000, Math.min(10_000_000, Math.round(Number(cp.bitrateDefault))))
+      : undefined;
+  return {
+    resolutionScale: scale,
+    fpsOptions:
+      fpsOptions.length > 0 ? fpsOptions : [...CLIENT_PROFILE_DEFAULTS.standard.fpsOptions],
+    bitrateDefault,
+  };
 }
 
 export interface FavoriteItem {
@@ -181,6 +257,7 @@ const DEFAULT_CONFIG: AppConfig = {
     vaapiLowPower: process.env.VAAPI_LOW_POWER === 'true' || process.env.VAAPI_LOW_POWER === '1',
     vaapiGpuColorConversion:
       process.env.VAAPI_GPU_CSC !== 'false' && process.env.VAAPI_GPU_CSC !== '0',
+    clientProfile: { profile: 'standard' },
   },
 };
 

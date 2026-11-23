@@ -169,9 +169,43 @@ async function showSettingsModal(
         </select>
         <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; margin-bottom: 0;">※ 車内での音楽鑑賞等で音質を優先する場合は192k〜320kを選択してください。</p>
 
+        <!-- Issue #11: クライアント負荷設定 (車載ブラウザ側のデコード/描画負荷) -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+          <h4 style="font-size:14px;margin:0 0 6px 0;">📺 クライアント負荷設定 (車載ブラウザのデコード・描画負荷)</h4>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px 0;line-height:1.5;">
+            車載ディスプレイ側でデコード・表示する映像の解像度とFPSを決めます。リモートブラウザの表示レイアウト（操作性）は変えず、映像のみを縮小します。<br/>
+            Intel搭載車 (MCU2) には「軽量」を選択してください。下のサーバー負荷設定とは別軸で、配信解像度は両者の厳しい方が採用されます。
+          </p>
+          <select id="cfg-client-profile">
+            <option value="standard" selected>標準 (Ryzen / MCU3 推奨・現行品質)</option>
+            <option value="lightweight">軽量 (Intel / MCU2 推奨・解像度65%・FPS上限30)</option>
+            <option value="custom">カスタム (詳細設定を表示)</option>
+          </select>
+          <div id="cfg-client-resolved-note" style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.5;"></div>
+          <div id="cfg-client-custom-panel" style="display:none;margin-top:10px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);">
+            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">エンコード解像度倍率 (レイアウトに対する比率・低いほど車載側が軽量)</label>
+            <select id="cfg-client-scale">
+              <option value="1">100% (フル解像度)</option>
+              <option value="0.85">85% (画素数約72%)</option>
+              <option value="0.75">75% (画素数約56%)</option>
+              <option value="0.65" selected>65% (画素数約42%・MCU2推奨)</option>
+              <option value="0.5">50% (画素数25%・最軽量)</option>
+            </select>
+            <label style="display:block;font-size:12px;color:var(--text-muted);margin:10px 0 6px 0;">HUDで選べるFPS (24未満にはできません)</label>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="cfg-client-fps-24" style="width:16px;height:16px;accent-color:var(--accent-primary,#38bdf8);" /> 24</label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="cfg-client-fps-30" checked style="width:16px;height:16px;accent-color:var(--accent-primary,#38bdf8);" /> 30</label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="cfg-client-fps-60" checked style="width:16px;height:16px;accent-color:var(--accent-primary,#38bdf8);" /> 60</label>
+            </div>
+          </div>
+        </div>
+
         <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
           <div id="encoder-status-panel" style="font-size: 12px; line-height: 1.6; padding: 8px 10px; margin-bottom: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border-color); color: var(--text-muted);">
             エンコーダー状態を読み込み中...
+          </div>
+          <div id="cfg-encoder-cpu-warning" style="display:none; font-size:12px; color:#fbbf24; line-height:1.5; margin-bottom:10px;">
+            ⚠ サーバーは現在 CPU で映像を処理しています（ソフトウェアエンコード）。サーバーのスペックによっては動作が快適ではないかもしれません。稼働中の負荷（CPU・GPU使用率）を確認してください。
           </div>
           <label style="display: block; font-size: 14px; margin-bottom: 6px;">サーバー映像パフォーマンス (iGPU負荷調整)</label>
           <select id="cfg-perf-preset">
@@ -190,12 +224,9 @@ async function showSettingsModal(
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div>
-                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限)</label>
-                <select id="cfg-max-size">
-                  <option value="960">960px (軽量・qHD)</option>
-                  <option value="1280" selected>1280px (標準・HD)</option>
-                  <option value="1920">1920px (高精細・FHD)</option>
-                </select>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限 / 640〜1920)</label>
+                <input type="number" id="cfg-max-size" min="640" max="1920" step="2" value="1280" inputmode="numeric" style="width: 100%; box-sizing: border-box;" />
+                <p style="font-size: 11px; color: var(--text-muted); margin: 4px 0 0 0;">任意の値を入力できます (例: 1440)</p>
               </div>
               <div>
                 <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">VAAPI負荷優先度 (1-7・Intel UHD等 / VAAPI環境依存)</label>
@@ -299,6 +330,13 @@ async function showSettingsModal(
       disabledNote.style.display = vaapiEnabled ? 'none' : 'block';
     }
 
+    // Issue #11: CPU (ソフトウェア) 動作時の車載向け注意アナウンス（黄文字）
+    const cpuWarningEl = overlay.querySelector('#cfg-encoder-cpu-warning') as HTMLElement | null;
+    if (cpuWarningEl) {
+      cpuWarningEl.style.display =
+        encoderStatus && encoderStatus.backend === 'software' ? 'block' : 'none';
+    }
+
     // プリセット選択肢の表示/非表示切替（GPU前提 / CPU向け / custom）
     const presetSelect = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
     if (presetSelect) {
@@ -358,6 +396,71 @@ async function showSettingsModal(
 
   fetchEncoderStatus();
   encoderStatusTimer = setInterval(fetchEncoderStatus, 5000);
+
+  // Issue #11: クライアント負荷プロファイル UI (標準 / 軽量(MCU2推奨) / カスタム)
+  let clientProfileTouched = false;
+
+  const readClientProfileForm = (): {
+    profile: 'standard' | 'lightweight' | 'custom';
+    resolutionScale?: number;
+    fpsOptions?: number[];
+  } => {
+    const raw = (overlay.querySelector('#cfg-client-profile') as HTMLSelectElement | null)?.value;
+    const profile = raw === 'lightweight' || raw === 'custom' ? raw : 'standard';
+    if (profile !== 'custom') {
+      return { profile };
+    }
+    const scale = Number(
+      (overlay.querySelector('#cfg-client-scale') as HTMLSelectElement | null)?.value || 1,
+    );
+    const fpsOptions = [24, 30, 60].filter(
+      (fps) =>
+        (overlay.querySelector(`#cfg-client-fps-${fps}`) as HTMLInputElement | null)?.checked,
+    );
+    return { profile, resolutionScale: scale, fpsOptions };
+  };
+
+  const applyClientProfilePanel = () => {
+    const raw = (overlay.querySelector('#cfg-client-profile') as HTMLSelectElement | null)?.value;
+    const panelEl = overlay.querySelector('#cfg-client-custom-panel') as HTMLElement | null;
+    if (panelEl) {
+      panelEl.style.display = raw === 'custom' ? 'block' : 'none';
+    }
+  };
+
+  const updateClientResolvedNote = () => {
+    const noteEl = overlay.querySelector('#cfg-client-resolved-note') as HTMLElement | null;
+    if (!noteEl) return;
+    const form = readClientProfileForm();
+    let scalePct = 100;
+    let fps: number[] = [24, 30, 60];
+    if (form.profile === 'lightweight') {
+      scalePct = 65;
+      fps = [24, 30];
+    } else if (form.profile === 'custom') {
+      scalePct = Math.round(
+        (Number.isFinite(form.resolutionScale) ? form.resolutionScale! : 1) * 100,
+      );
+      if (form.fpsOptions && form.fpsOptions.length > 0) fps = form.fpsOptions;
+    }
+    noteEl.textContent = `適用時プレビュー: エンコード解像度 ${scalePct}% / HUD FPS選択肢 ${fps.join('・')}（変更は「設定を保存」で即反映されます）`;
+  };
+
+  for (const detailId of [
+    'cfg-client-profile',
+    'cfg-client-scale',
+    'cfg-client-fps-24',
+    'cfg-client-fps-30',
+    'cfg-client-fps-60',
+  ]) {
+    overlay.querySelector(`#${detailId}`)?.addEventListener('change', () => {
+      clientProfileTouched = true;
+      applyClientProfilePanel();
+      updateClientResolvedNote();
+    });
+  }
+  applyClientProfilePanel();
+  updateClientResolvedNote();
 
   const updateMetricsDisplay = async () => {
     const displayEl = overlay.querySelector('#metrics-display');
@@ -1104,6 +1207,35 @@ async function showSettingsModal(
         if (lowPowerEl && data.stream.vaapiLowPower !== undefined) {
           lowPowerEl.checked = Boolean(data.stream.vaapiLowPower);
         }
+        // Issue #11: クライアント負荷プロファイルの保存値反映
+        const clientProfileSaved = data.stream.clientProfile;
+        if (clientProfileSaved && typeof clientProfileSaved.profile === 'string') {
+          const profileEl = overlay.querySelector(
+            '#cfg-client-profile',
+          ) as HTMLSelectElement | null;
+          if (profileEl) {
+            profileEl.value = clientProfileSaved.profile;
+          }
+          if (clientProfileSaved.profile === 'custom' && data.clientProfileResolved) {
+            const scaleEl = overlay.querySelector('#cfg-client-scale') as HTMLSelectElement | null;
+            if (scaleEl) {
+              const targetScale = String(data.clientProfileResolved.resolutionScale);
+              if (Array.from(scaleEl.options).some((o) => o.value === targetScale)) {
+                scaleEl.value = targetScale;
+              }
+            }
+            for (const fps of [24, 30, 60]) {
+              const cb = overlay.querySelector(`#cfg-client-fps-${fps}`) as HTMLInputElement | null;
+              if (cb) {
+                cb.checked = Array.isArray(data.clientProfileResolved.fpsOptions)
+                  ? data.clientProfileResolved.fpsOptions.includes(fps)
+                  : false;
+              }
+            }
+          }
+        }
+        applyClientProfilePanel();
+        updateClientResolvedNote();
         // 読み込んだ保存値と現在のバックエンド状態を突き合わせてUIを整合させる (Issue #90)
         applyEncoderBackendUi();
       }
@@ -1215,6 +1347,22 @@ async function showSettingsModal(
     );
     const locale = (overlay.querySelector('#cfg-locale') as HTMLSelectElement)?.value;
 
+    // Issue #11: クライアント負荷プロファイル (操作した場合のみ送信し、未操作時は保存値を維持)
+    let clientProfilePayload:
+      | { profile: string; resolutionScale?: number; fpsOptions?: number[] }
+      | undefined;
+    if (clientProfileTouched) {
+      const form = readClientProfileForm();
+      clientProfilePayload =
+        form.profile === 'custom'
+          ? {
+              profile: 'custom',
+              resolutionScale: form.resolutionScale,
+              fpsOptions: form.fpsOptions,
+            }
+          : { profile: form.profile };
+    }
+
     interface SettingsUpdatePayload {
       displayScale: number;
       stream: {
@@ -1224,6 +1372,7 @@ async function showSettingsModal(
         vaapiCompressionLevel: number;
         vaapiLowPower: boolean;
         vaapiGpuColorConversion: boolean;
+        clientProfile?: { profile: string; resolutionScale?: number; fpsOptions?: number[] };
       };
       pin?: string;
       locale?: string;
@@ -1240,6 +1389,7 @@ async function showSettingsModal(
         vaapiGpuColorConversion,
       },
     };
+    if (clientProfilePayload) body.stream.clientProfile = clientProfilePayload;
     if (newPin) body.pin = newPin;
     if (locale) body.locale = locale;
 

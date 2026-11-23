@@ -17,6 +17,10 @@ export interface ClientQualityMetrics {
 
   avDriftMs: number;
 
+  // Issue #11 (D5): 1フレーム描画処理時間の中央値/95パーセンタイル (ms)。0 = 計測サンプルなし
+  frameProcessP50Ms?: number;
+  frameProcessP95Ms?: number;
+
   displayWidth: number;
   displayHeight: number;
   devicePixelRatio: number;
@@ -34,6 +38,9 @@ export class MetricsCollector {
   private windowAudioPackets = 0;
   private windowMinFps = 999;
   private windowMaxFps = 0;
+  // Issue #11 (D5): ウィンドウ内の 1 フレーム描画所要時間サンプル (ms)
+  private windowFrameRenderTimes: number[] = [];
+  private static readonly MAX_FRAME_TIME_SAMPLES = 1200;
   private lastReportTime: number;
 
   // Current states
@@ -62,6 +69,20 @@ export class MetricsCollector {
 
   public recordFrameDropped(): void {
     this.droppedFrames++;
+  }
+
+  /** Issue #11 (D5): 1フレームの canvas 描画所要時間をサンプル収集する。 */
+  public recordFrameProcessed(durationMs: number): void {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+    if (this.windowFrameRenderTimes.length < MetricsCollector.MAX_FRAME_TIME_SAMPLES) {
+      this.windowFrameRenderTimes.push(durationMs);
+    }
+  }
+
+  private static percentile(sorted: number[], p: number): number {
+    if (sorted.length === 0) return 0;
+    const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+    return Math.round(sorted[idx] * 10) / 10;
   }
 
   public recordDecoderError(): void {
@@ -102,6 +123,8 @@ export class MetricsCollector {
 
       const renderFps = Math.round((this.windowFrames / elapsedSec) * 10) / 10;
       const bitrateKbps = Math.round((this.windowVideoBytes * 8) / elapsedSec / 1000);
+      // Issue #11 (D5): 描画処理時間のパーセンタイル (サンプル 0 の場合は 0)
+      const sortedFrameTimes = [...this.windowFrameRenderTimes].sort((a, b) => a - b);
 
       const metrics: ClientQualityMetrics = {
         timestamp: Date.now(),
@@ -118,6 +141,8 @@ export class MetricsCollector {
         audioPacketsReceived: this.windowAudioPackets,
         bitrateKbps,
         avDriftMs: Math.round(this.currentAvDriftMs * 10) / 10,
+        frameProcessP50Ms: MetricsCollector.percentile(sortedFrameTimes, 0.5),
+        frameProcessP95Ms: MetricsCollector.percentile(sortedFrameTimes, 0.95),
         displayWidth: window.innerWidth,
         displayHeight: window.innerHeight,
         devicePixelRatio: window.devicePixelRatio || 1,
@@ -132,6 +157,7 @@ export class MetricsCollector {
       this.windowAudioPackets = 0;
       this.windowMinFps = 999;
       this.windowMaxFps = 0;
+      this.windowFrameRenderTimes = [];
       this.lastReportTime = now;
 
       if (this.onReport) {

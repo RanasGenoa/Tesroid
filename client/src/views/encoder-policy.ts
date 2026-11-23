@@ -13,6 +13,11 @@ export interface EncoderStatusPayload {
   x264Preset?: string;
   libvaDriverName?: string | null;
   lastFallback?: { option?: string; timestamp?: number } | null;
+  // Issue #11: レイアウト(キャプチャ)寸法と実エンコード出力寸法 (縮小時は両方表示)
+  captureWidth?: number;
+  captureHeight?: number;
+  encodeWidth?: number;
+  encodeHeight?: number;
 }
 
 export type PresetId =
@@ -104,5 +109,23 @@ export function describeEncoderStatus(status: EncoderStatusPayload | null): stri
     const reason = FALLBACK_REASON_LABELS[status.lastFallback.option] || status.lastFallback.option;
     fallback = ` ⚠ ${reason}`;
   }
-  return `${label}${mode}${fallback}`;
+  // Issue #11: 実エンコード出力寸法を併記 (レイアウト縮小と異なる場合のみ縮小表示)
+  let dims = '';
+  if (
+    typeof status.encodeWidth === 'number' &&
+    typeof status.encodeHeight === 'number' &&
+    status.encodeWidth > 0 &&
+    status.encodeHeight > 0
+  ) {
+    if (
+      typeof status.captureWidth === 'number' &&
+      typeof status.captureHeight === 'number' &&
+      (status.captureWidth !== status.encodeWidth || status.captureHeight !== status.encodeHeight)
+    ) {
+      dims = ` / 映像出力 ${status.encodeWidth}x${status.encodeHeight} (レイアウト ${status.captureWidth}x${status.captureHeight} から縮小)`;
+    } else {
+      dims = ` / 映像出力 ${status.encodeWidth}x${status.encodeHeight}`;
+    }
+  }
+  return `${label}${mode}${dims}${fallback}`;
 }

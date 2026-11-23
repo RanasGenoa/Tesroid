@@ -5,6 +5,8 @@ import {
   ALLOWED_LOCALES,
   ALLOWED_X264_PRESETS,
   type AppConfig,
+  type ClientPerformanceProfile,
+  type ClientProfileConfig,
   type ConfigStore,
   CPU_PERFORMANCE_PRESETS,
   DEFAULT_FAVORITES,
@@ -14,6 +16,7 @@ import {
   PERFORMANCE_PRESET_DEFAULTS,
   type PerformancePreset,
   pinHomeFavoriteFirst,
+  resolveClientProfile,
   resolveHomeUrl,
 } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
@@ -45,6 +48,7 @@ interface UpdateSettingsBody {
     vaapiLowPower?: boolean;
     vaapiGpuColorConversion?: boolean;
     x264Preset?: string;
+    clientProfile?: ClientProfileConfig; // Issue #11
   };
 }
 
@@ -102,6 +106,8 @@ export function registerSettingsRoutes(
       homeFavoriteId: config.homeFavoriteId,
       homeUrl: resolveHomeUrl(config),
       stream: config.stream,
+      // Issue #11: 保存値そのものではなく、HUD/設定UIが使う実効値（選択肢・スケール）を併記
+      clientProfileResolved: resolveClientProfile(config.stream),
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
       browserTitle:
@@ -239,6 +245,9 @@ export function registerSettingsRoutes(
         }
         await authService.setPin(pin);
       }
+      // Issue #11: クライアント負荷プロファイルの実効値 (ブロードキャストと再適用判定に使用)
+      let clientProfileChanged = false;
+      let resolvedClientProfileEffective = resolveClientProfile(configStore.getConfig().stream);
       if (stream) {
         if (stream.audioBitrate !== undefined) {
           let ab: number;
@@ -282,14 +291,69 @@ export function registerSettingsRoutes(
             ? PERFORMANCE_PRESET_DEFAULTS[nextPreset]
             : undefined;
 
+        // Issue #11: クライアント負荷プロファイル (standard / lightweight / custom) の検証と保存。
+        // プリセット時は規定値を resolveClientProfile が展開するため profile 名のみ保存する。
+        const allowedClientProfiles: ClientPerformanceProfile[] = [
+          'standard',
+          'lightweight',
+          'custom',
+        ];
+        let nextClientProfile: ClientProfileConfig | undefined = currentStream.clientProfile;
+        if (stream.clientProfile !== undefined) {
+          const requestedProfile = stream.clientProfile.profile;
+          if (!allowedClientProfiles.includes(requestedProfile)) {
+            return reply.status(400).send({
+              error: 'Invalid clientProfile.profile: Must be standard, lightweight or custom.',
+            });
+          }
+          if (requestedProfile === 'custom') {
+            const resolvedCustom = resolveClientProfile({
+              ...currentStream,
+              clientProfile: stream.clientProfile,
+            });
+            nextClientProfile = {
+              profile: 'custom',
+              resolutionScale: resolvedCustom.resolutionScale,
+              fpsOptions: resolvedCustom.fpsOptions,
+              bitrateDefault: resolvedCustom.bitrateDefault,
+            };
+          } else {
+            nextClientProfile = { profile: requestedProfile };
+          }
+        }
+        resolvedClientProfileEffective = resolveClientProfile({
+          ...currentStream,
+          clientProfile: nextClientProfile,
+        });
+        // 実効値（スケール / FPS 選択肢 / 既定ビットレート）が変わったときのみ再適用・連動とする
+        const resolvedCurrentProfile = resolveClientProfile(currentStream);
+        clientProfileChanged =
+          stream.clientProfile !== undefined &&
+          (resolvedCurrentProfile.resolutionScale !==
+            resolvedClientProfileEffective.resolutionScale ||
+            resolvedCurrentProfile.bitrateDefault !==
+              resolvedClientProfileEffective.bitrateDefault ||
+            resolvedCurrentProfile.fpsOptions.join(',') !==
+              resolvedClientProfileEffective.fpsOptions.join(','));
+
         const nextBitrate =
           stream.bitrate !== undefined && Number.isFinite(Number(stream.bitrate))
             ? Math.max(300000, Math.min(10000000, Math.round(Number(stream.bitrate))))
-            : currentStream.bitrate;
-        const nextMaxFps =
+            : clientProfileChanged && resolvedClientProfileEffective.bitrateDefault !== undefined
+              ? resolvedClientProfileEffective.bitrateDefault // プロファイル切替時のビットレート連動 (D1 裁定)
+              : currentStream.bitrate;
+        let nextMaxFps =
           stream.maxFps !== undefined && Number.isFinite(Number(stream.maxFps))
             ? Math.max(15, Math.min(60, Math.round(Number(stream.maxFps))))
             : currentStream.maxFps;
+        // FPS 選択肢はプロファイルが制御 (D4 裁定): 範囲外値は最も近い下位許可値へ寄せる
+        const allowedFpsOptions = resolvedClientProfileEffective.fpsOptions;
+        if (allowedFpsOptions.length > 0 && !allowedFpsOptions.includes(nextMaxFps)) {
+          const lowerOrEqual = [...allowedFpsOptions]
+            .sort((a, b) => b - a)
+            .find((n) => n <= nextMaxFps);
+          nextMaxFps = lowerOrEqual ?? allowedFpsOptions[0];
+        }
         const nextMaxSize =
           stream.maxSize !== undefined && Number.isFinite(Number(stream.maxSize))
             ? Math.max(640, Math.min(1920, Math.round(Number(stream.maxSize))))
@@ -329,6 +393,7 @@ export function registerSettingsRoutes(
           vaapiLowPower: nextLowPower,
           vaapiGpuColorConversion: nextGpuCsc,
           x264Preset: nextX264Preset,
+          clientProfile: nextClientProfile,
         };
       }
 
@@ -389,9 +454,18 @@ export function registerSettingsRoutes(
       }
 
       if (stream && updates.stream && wsHandler) {
+        // Issue #11: プロファイル変更時はレイアウト寸法を変えず、エンコード出力寸法のみ再適用
+        if (clientProfileChanged) {
+          try {
+            await wsHandler.reapplyClientProfile();
+          } catch (err) {
+            console.error('[SettingsRoute] reapplyClientProfile failed:', err);
+          }
+        }
         wsHandler.broadcastStreamSettings({
           maxFps: updates.stream.maxFps,
           bitrate: updates.stream.bitrate,
+          fpsOptions: resolvedClientProfileEffective.fpsOptions,
         });
       }
 

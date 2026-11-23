@@ -11,6 +11,7 @@ import {
   resolveEncoderMode,
   resolveLibvaDriverName,
 } from '../utils/vaapi.js';
+import type { EncodeDimensions } from './encode-dimensions.js';
 
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
@@ -61,6 +62,10 @@ export class VaapiEncoder extends EventEmitter {
   private displayNum: string;
   private width: number;
   private height: number;
+  // Issue #11: レイアウト(キャプチャ)寸法と独立したエンコード出力寸法。
+  // encodeWidth/Height == width/height のときは現行と完全に同一の FFmpeg 引数になる。
+  private encodeWidth: number;
+  private encodeHeight: number;
   private fps: number;
   private bitrate: string;
   private audioBitrate: string;
@@ -122,6 +127,8 @@ export class VaapiEncoder extends EventEmitter {
     this.displayNum = options.displayNum || process.env.DISPLAY_NUM || ':99';
     this.width = options.width || Number(process.env.DISPLAY_WIDTH) || 1280;
     this.height = options.height || Number(process.env.DISPLAY_HEIGHT) || 720;
+    this.encodeWidth = this.width;
+    this.encodeHeight = this.height;
     this.fps = options.fps || Number(process.env.FPS) || 30;
     this.bitrate = options.bitrate || process.env.VIDEO_BITRATE || '1000k';
     this.audioBitrate = this.formatAudioBitrate(
@@ -235,6 +242,10 @@ export class VaapiEncoder extends EventEmitter {
     x264Preset: string;
     libvaDriverName: string | null;
     lastFallback: EncoderFallbackEvent | null;
+    captureWidth: number;
+    captureHeight: number;
+    encodeWidth: number;
+    encodeHeight: number;
   } {
     return {
       running: this.isVideoRunning,
@@ -246,6 +257,10 @@ export class VaapiEncoder extends EventEmitter {
       x264Preset: this.x264Preset,
       libvaDriverName: this.libvaDriverName ?? null,
       lastFallback: this.lastFallback ? { ...this.lastFallback } : null,
+      captureWidth: this.width,
+      captureHeight: this.height,
+      encodeWidth: this.encodeWidth,
+      encodeHeight: this.encodeHeight,
     };
   }
 
@@ -272,10 +287,15 @@ export class VaapiEncoder extends EventEmitter {
     ];
 
     const codecArgs: string[] = [];
+    // Issue #11: クライアント負荷プロファイルによるエンコード寸法縮小 (レイアウトは変更しない)。
+    // 標準 (scale=1.0) では encode* == capture* となり、生成フィルタは従来と完全に一致する。
+    const encodeScaled = this.encodeWidth !== this.width || this.encodeHeight !== this.height;
+    const encW = Math.max(320, this.encodeWidth & ~7);
+    const encH = Math.max(240, this.encodeHeight & ~1);
     if (this.activeBackend === 'software') {
       codecArgs.push(
         '-vf',
-        'format=yuv420p',
+        encodeScaled ? `scale=${encW}:${encH},format=yuv420p` : 'format=yuv420p',
         '-c:v',
         'libx264',
         '-preset',
@@ -285,8 +305,12 @@ export class VaapiEncoder extends EventEmitter {
       );
     } else {
       const vfFilter = this.gpuColorConversion
-        ? 'hwupload,scale_vaapi=format=nv12'
-        : 'format=nv12,hwupload';
+        ? encodeScaled
+          ? `hwupload,scale_vaapi=w=${encW}:h=${encH}:format=nv12`
+          : 'hwupload,scale_vaapi=format=nv12'
+        : encodeScaled
+          ? `scale=${encW}:${encH},format=nv12,hwupload`
+          : 'format=nv12,hwupload';
       codecArgs.push(
         '-vaapi_device',
         this.vaapiDevice,
@@ -690,10 +714,18 @@ export class VaapiEncoder extends EventEmitter {
     compressionLevel?: number,
     lowPower?: boolean,
     gpuColorConversion?: boolean,
+    encodeDimensions?: EncodeDimensions | null,
   ): Promise<void> {
     console.log(
       `[VaapiEncoder] Restarting Video FFmpeg encoder (` +
         `resolution=${width && height ? `${width}x${height}` : `${this.width}x${this.height}`}, ` +
+        `encode=${
+          encodeDimensions
+            ? `${encodeDimensions.width}x${encodeDimensions.height}`
+            : width || height
+              ? 'same'
+              : `${this.encodeWidth}x${this.encodeHeight}`
+        }, ` +
         `fps=${fps || this.fps}, ` +
         `bitrate=${bitrate || this.bitrate}, ` +
         `compressionLevel=${compressionLevel ?? this.compressionLevel}, ` +
@@ -706,6 +738,20 @@ export class VaapiEncoder extends EventEmitter {
     if (width && height) {
       this.width = width & ~1;
       this.height = height & ~1;
+    }
+    // Issue #11: エンコード出力寸法 (レイアウト=キャプチャ寸法とは独立)。
+    // 明示指定が無く解像度変更があればエンコード寸法も追随 (標準動作=従来と同一)。
+    if (encodeDimensions !== undefined) {
+      if (encodeDimensions) {
+        this.encodeWidth = encodeDimensions.width & ~7;
+        this.encodeHeight = encodeDimensions.height & ~1;
+      } else {
+        this.encodeWidth = this.width;
+        this.encodeHeight = this.height;
+      }
+    } else if (width && height) {
+      this.encodeWidth = this.width;
+      this.encodeHeight = this.height;
     }
     if (fps && fps > 0) {
       this.fps = fps;
@@ -864,6 +910,25 @@ export class VaapiEncoder extends EventEmitter {
     } else if (config.audioBitrate !== undefined) {
       await this.restartAudio(config.audioBitrate);
     }
+  }
+
+  /**
+   * Issue #11: クライアント負荷プロファイル変更時のみ呼ぶ。キャプチャ(レイアウト)寸法・fps・
+   * ビットレートは変更せず、エンコード出力寸法だけを更新して映像エンコーダを再構成する。
+   * null で従来動作 (エンコード=キャプチャ寸法) へ復帰する。
+   */
+  public async setEncodeDimensions(encodeDimensions: EncodeDimensions | null): Promise<void> {
+    await this.restart(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      encodeDimensions,
+    );
   }
 
   /**
