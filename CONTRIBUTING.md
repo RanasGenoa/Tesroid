@@ -87,7 +87,7 @@ gh api --method PUT repos/RanasGenoa/Tesroid/actions/permissions/fork-pr-contrib
 ```
 
 - **`action_required` になった際のメンテナ確認手順**:
-  1. PR 差分に `.github/workflows/` の改変が含まれるか確認します（含まれる場合は、ワークフロー内容にシークレット漏洩・自己-hosted ランナーでの任意コード実行等のリスクがないか先に精査します）。
+  1. PR 差分に `.github/workflows/` の改変が含まれるか確認します（含まれる場合は、ワークフロー内容にシークレット漏洩・self-hosted ランナーでの任意コード実行等のリスクがないか先に精査します）。
   2. 問題がなければ PR の Checks タブで **「Approve and run」** を押下します。
   3. `gh pr checks <PR番号> --repo RanasGenoa/Tesroid` で CI の開始・完了を確認します。
 - **セキュリティ境界の設計方針（固定）**: `ci.yml` は `pull_request` トリガー（GitHub ホスト型サンドボックス）を維持し、シークレット不使用・`permissions: contents: read` を明示宣言したまま変更しません。Fork のコードがベースリポジトリの権限・シークレットで実行される `pull_request_target` 上での CI 実行は、任意コード実行リスク（pwn request）のため採用しません。`ai-review.yml` の `pull_request_target` はベースブランチのコードのみチェックアウトし PR 差分をテキストとして扱うため、Fork のコードを実行しない設計です。
