@@ -2,9 +2,9 @@ name: AI PR Reviewer (Gemini 4 Neon Medium)
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, ready_for_review, synchronize]
   pull_request_target:
-    types: [opened, synchronize]
+    types: [opened, ready_for_review, synchronize]
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
   review:
     name: Code Review (Antigravity)
     runs-on: [self-hosted, antigravity]
-    # ドラフトPRはスキップ
+    # ドラフトPRはスキップ（Draft 解除時は ready_for_review イベントで起動する）
     # 同一リポジトリは pull_request、Fork からの PR は pull_request_target で動作（二重実行防止 & Fork PR での GITHUB_TOKEN write 権限確保）
     if: |
       github.event.pull_request.draft == false && (
