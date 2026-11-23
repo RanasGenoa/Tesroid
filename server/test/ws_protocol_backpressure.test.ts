@@ -347,13 +347,13 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     await sendClientMsg(client, ClientProtocol.packAuth('1234'));
     client.sentPackets = [];
 
-    await wsHandler.reapplyClientProfile({ fps: 30, bitrate: 700_000 });
+    await wsHandler.reapplyClientProfile({ fps: 30, bitrate: 500_000 });
 
     // 寸法 (1280x720 x 0.65 -> 832x468) と fps / bitrate が 1 回の updateConfig で適用される
     expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
     const applied = (mockEncoder.updateConfig as any).mock.calls[0]?.[0];
     expect(applied?.fps).toBe(30);
-    expect(applied?.bitrate).toBe(700_000);
+    expect(applied?.bitrate).toBe(500_000);
     expect(applied?.encodeDimensions).toEqual({ width: 832, height: 468 });
     // 二重再起動経路 (setEncodeDimensions / 直接 restart) は呼ばれない
     expect(mockEncoder.setEncodeDimensions).not.toHaveBeenCalled();

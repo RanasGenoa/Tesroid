@@ -109,10 +109,11 @@ export const CLIENT_PROFILE_DEFAULTS: Record<
   },
   // Intel / MCU2 推奨。Phase 0 実車計測で容認確認済み (D1 裁定):
   // 車載ビューポート (~966x752 レイアウト) で scale 0.65 ≈ 640x458 相当・fps<=30
+  // bitrateDefault は HUD の 0.5M 段階と一致させる (オーナー裁定 2026-11: 0.7M → 0.5M)
   lightweight: {
     resolutionScale: 0.65,
     fpsOptions: [24, 30],
-    bitrateDefault: 700_000,
+    bitrateDefault: 500_000,
   },
 };
 
@@ -150,7 +151,7 @@ export function resolveClientProfile(stream?: StreamConfig): ResolvedClientProfi
   const fpsOptions = rawOptions.sort((a, b) => a - b);
   const bitrateDefault =
     cp?.bitrateDefault !== undefined && Number.isFinite(Number(cp.bitrateDefault))
-      ? Math.max(300_000, Math.min(10_000_000, Math.round(Number(cp.bitrateDefault))))
+      ? Math.max(250_000, Math.min(10_000_000, Math.round(Number(cp.bitrateDefault))))
       : undefined;
   return {
     resolutionScale: scale,

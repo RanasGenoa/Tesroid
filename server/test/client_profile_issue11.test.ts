@@ -33,7 +33,7 @@ describe('Client load profile (Issue #11)', () => {
       expect(resolved.resolutionScale).toBe(CLIENT_PROFILE_DEFAULTS.lightweight.resolutionScale);
       expect(resolved.resolutionScale).toBe(0.65);
       expect(resolved.fpsOptions).toEqual([24, 30]);
-      expect(resolved.bitrateDefault).toBe(700_000);
+      expect(resolved.bitrateDefault).toBe(500_000);
     });
 
     it('custom は範囲クランプ・重複排除・昇順ソート', () => {
@@ -177,7 +177,7 @@ describe('Client load profile (Issue #11)', () => {
       const saved = configStore.getConfig().stream;
       expect(saved.clientProfile?.profile).toBe('lightweight');
       expect(saved.maxFps).toBe(30); // 60 → 選択肢 [24,30] の最も近い下位へ
-      expect(saved.bitrate).toBe(700_000); // bitrateDefault 連動
+      expect(saved.bitrate).toBe(500_000); // bitrateDefault 連動
 
       // エンコード寸法の再適用が呼ばれ、HUD へ fpsOptions がブロードキャストされる
       expect(mockWsHandler.reapplyClientProfile).toHaveBeenCalledTimes(1);
@@ -185,10 +185,10 @@ describe('Client load profile (Issue #11)', () => {
       expect(broadcastArg?.fpsOptions).toEqual([24, 30]);
 
       // PR #94 レビュー (High): 明示指定が無いプロファイル切替でも、連動・スナップ済みの
-      // 正規化値 (D1: 700kbps / D4: 30fps) が encoder 適用へ委譲されなければならない
+      // 正規化値 (D1: 500kbps / D4: 30fps) が encoder 適用へ委譲されなければならない
       const delegated = (mockWsHandler.reapplyClientProfile as any).mock.calls[0]?.[0];
       expect(delegated?.fps).toBe(30);
-      expect(delegated?.bitrate).toBe(700_000);
+      expect(delegated?.bitrate).toBe(500_000);
 
       await app.close();
     });

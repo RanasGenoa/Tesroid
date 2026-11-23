@@ -98,7 +98,7 @@ export function renderStreamingView(
             <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで 30 / 60 切替)">
               ${ICONS.zap} <span id="hud-fps-val" class="telemetry-value">30</span>
             </button>
-            <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.5M 〜 2.0M 切替)">
+            <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.25M 〜 2.0M の 6 段階循環)">
               ${ICONS.signal} <span id="hud-bitrate-val" class="telemetry-value">1.0M</span>
             </button>
           </div>
@@ -260,8 +260,8 @@ export function renderStreamingView(
 
   // Issue #11 (D4): 標準の既定選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
   let fpsOptions = [24, 30, 60];
-  // 700k は lightweight プロファイルの bitrateDefault と一致させる (HUD 循環で段階飛ばし防止)
-  const bitrateOptions = [500000, 700000, 750000, 1000000, 1500000, 2000000];
+  // 500k は lightweight プロファイルの bitrateDefault と一致させる (HUD 循環で段階飛ばし防止)
+  const bitrateOptions = [250000, 500000, 750000, 1000000, 1500000, 2000000];
 
   const applyFpsOptionsFromServer = (raw: unknown): void => {
     if (!Array.isArray(raw)) return;
@@ -297,6 +297,7 @@ export function renderStreamingView(
   resetHudDimTimer();
 
   const formatBitrateLabel = (bps: number): string => {
+    if (bps === 250000) return '0.25M';
     if (bps === 500000) return '0.5M';
     if (bps === 750000) return '0.75M';
     if (bps === 1000000) return '1.0M';
@@ -612,7 +613,7 @@ export function renderStreamingView(
   bitrateToggleBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     let idx = bitrateOptions.indexOf(currentBitrate);
-    if (idx === -1) idx = 2; // Default to 1.0M
+    if (idx === -1) idx = bitrateOptions.indexOf(1_000_000); // 保存値がグリッド外なら 1.0M から循環再開
     const nextIdx = (idx + 1) % bitrateOptions.length;
     currentBitrate = bitrateOptions[nextIdx];
     updateToggleButtons();

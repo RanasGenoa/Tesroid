@@ -358,7 +358,7 @@ export function registerSettingsRoutes(
 
         const nextBitrate =
           stream.bitrate !== undefined && Number.isFinite(Number(stream.bitrate))
-            ? Math.max(300000, Math.min(10000000, Math.round(Number(stream.bitrate))))
+            ? Math.max(250000, Math.min(10000000, Math.round(Number(stream.bitrate))))
             : clientProfileChanged && resolvedClientProfileEffective.bitrateDefault !== undefined
               ? resolvedClientProfileEffective.bitrateDefault // プロファイル切替時のビットレート連動 (D1 裁定)
               : currentStream.bitrate;
