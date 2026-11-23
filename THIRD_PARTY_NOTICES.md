@@ -27,8 +27,10 @@ When you build the container image locally (`docker compose build` / `docker bui
 2. **cloudflared** (`cloudflared-linux-amd64`)
    - Downloaded directly from `https://github.com/cloudflare/cloudflared/releases/` during image build.
    - Licensed under the **Apache License 2.0** (`https://github.com/cloudflare/cloudflared/blob/master/LICENSE`).
-3. **Ubuntu System Packages** (`ffmpeg`, `xvfb`, `openbox`, `xdotool`, `wmctrl`, `pulseaudio`, `intel-media-va-driver-non-free`, `vainfo`, `fonts-noto-cjk`, `fonts-noto-color-emoji`, `nodejs`)
-   - Installed via `apt-get` from official Ubuntu and NodeSource repositories under their respective open-source and upstream distribution licenses (MIT, BSD, LGPL/GPL, SIL Open Font License 1.1, and Intel Media Driver licenses).
+3. **Ubuntu 24.04 System Packages & VA-API Drivers** (`ffmpeg`, `xvfb`, `openbox`, `xdotool`, `wmctrl`, `x11-xserver-utils`, `pulseaudio`, `pulseaudio-utils`, `alsa-utils`, `libva2`, `libva-drm2`, `intel-media-va-driver-non-free`, `i965-va-driver-shaders`, `mesa-va-drivers`, `libdrm-amdgpu1`, `vainfo`, `libpci3`, `pciutils`, `locales`, `curl`, `gnupg`, `ca-certificates`, `procps`, `fonts-noto-cjk`, `fonts-noto-color-emoji`, `nodejs`)
+   - Installed via `apt-get` from official Ubuntu 24.04 (`main`, `universe`, `multiverse`, `noble-updates`) and NodeSource repositories under their respective open-source and upstream distribution licenses (MIT, X11, BSD, LGPL/GPL, SIL Open Font License 1.1, Mesa/gallium MIT licenses, and Intel Media Driver / `i965-va-driver-shaders` licenses).
+4. **Windows / WSL2 Host Runtime Libraries (Runtime Bind-Mount Only)**
+   - When running on Windows (Docker Desktop for Windows or WSL2 via `docker-compose.windows.yml`), `/usr/lib/wsl` (including Microsoft DirectX / DXCore WSL runtime libraries and vendor-specific GPU WSL user-mode drivers) is bind-mounted read-only from the user's host OS at container runtime and is **not** bundled or redistributed in Tesroid container images.
 
 ---
 

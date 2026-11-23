@@ -13,18 +13,18 @@ Tesroid は、単一 Docker コンテナ内で稼働する **VAAPI ハードウ�
         │  HTTPS / WSS (Port 9001 / 443)
         │  (WebCodecs VideoDecoder -> <canvas> ゼロコピー描画 + Web Audio API)
         ▼
-[ Docker Host (Linux / VPS / NAS) ]
-  └── [ Container: tesroid-server (Ubuntu 22.04 / Single Container) ]
-        ├── GPU Access    : /dev/dri/card0, /dev/dri/renderD128 (VAAPI)
+[ Docker Host (Linux / VPS / NAS / Windows Docker Desktop) ]
+  └── [ Container: tesroid-server (Ubuntu 24.04 / Single Container) ]
+        ├── GPU Access    : /dev/dri/renderD* (Intel iHD/i965, AMD radeonsi) or /dev/dxg (Windows D3D12)
         ├── Xvfb & Openbox: 仮想ディスプレイ (:99, デフォルト 1280x720)
         ├── PulseAudio    : 仮想シンク (unix:/tmp/pulse-socket, virtual_sink)
-        ├── Google Chrome : ハードウェアアクセラレーション (VAAPI VP9/H.264デコード)
-        ├── FFmpeg        : VAAPI h264_vaapi (ゼロ遅延ハードウェアエンコード) + libopus
+        ├── Google Chrome : ハードウェアアクセラレーション (VAAPI VP9/H.264デコード / 不可時は自動SW)
+        ├── FFmpeg        : VAAPI h264_vaapi (ゼロ遅延) / libx264 フォールバック + libopus
         └── Node.js Fastify: WebSocketストリーミング + CDP/xdotool入力注入 + 電源管理
 ```
 
 - **クライアント (`client/`)**: Vanilla TypeScript + Vite。`<video>` タグを使わず、WebCodecs の `VideoDecoder` で H.264 を直接 `<canvas>` に描画（テスラのDレンジ走行時動画停止ガードを回避）。
-- **サーバー (`server/`)**: Node.js (Fastify) + WebSocket + FFmpeg VAAPI + X11/CDP。
+- **サーバー (`server/`)**: Node.js (Fastify) + WebSocket + FFmpeg VAAPI / `libx264` + X11/CDP。
 
 ---
 
@@ -72,8 +72,10 @@ Tesroid/
 ├── README.md                   # プロジェクト概要・クイックスタート
 ├── LICENSE                     # MIT ライセンス
 ├── THIRD_PARTY_NOTICES.md      # サードパーティライセンス表記・再配布注意事項
-├── Dockerfile                  # マルチステージビルド (Ubuntu 22.04 + Chrome + VAAPI)
-├── docker-compose.yml          # 標準 Docker Compose 定義
+├── Dockerfile                  # マルチステージビルド (Ubuntu 24.04 + Chrome + マルチGPU VAAPI)
+├── docker-compose.yml          # 標準 Docker Compose 定義 (Linux ローカルビルド)
+├── docker-compose.prebuilt.yml # 事前ビルドイメージ用 Docker Compose 定義 (Linux)
+├── docker-compose.windows.yml  # Docker Desktop for Windows 用 Compose 定義 (/dev/dxg)
 ├── docs/
 │   ├── DEPLOYMENT.md           # デプロイメント・運用ガイド
 │   ├── NETWORK.md              # リバースプロキシ・HTTPS・Cloudflare Tunnel 設定ガイド
@@ -108,6 +110,9 @@ Tesroid/
   PIN 入力を 10 回連続で失敗するとサーバープロセスが `exit 1` で緊急停止し、`lockout.json` に記録されます。
 - **WebAuthn / パスキーネイティブダイアログ抑止**:
   Docker/Xvfb 環境には物理・プラットフォーム認証器が存在せず、Chrome ネイティブの WebAuthn ダイアログが出ると車載タッチ操作で閉じられず操作不能になります。`server/extension/content.js` および CDP による WebAuthn インターセプトで即時フォールバックさせています。
+- **マルチ GPU VAAPI・`/etc/libva.conf` 優先順位・D3D12 スコープ**:
+  - `libva` は環境変数 `LIBVA_DRIVER_NAME` より `/etc/libva.conf` を優先するため、`/etc/libva.conf` に `LIBVA_DRIVER_NAME=iHD` 等をハードコードしてはなりません（コメントのみ維持し、実行時自動判定または環境変数で `iHD` / `i965` / `radeonsi` / `d3d12` を切り替えます）。
+  - Windows Docker Desktop / WSL2 環境で D3D12 を使う場合も、Chrome の Xvfb 安定描画（CPU Skia + `llvmpipe`）を維持するため `GALLIUM_DRIVER=d3d12` をグローバルに付与せず、FFmpeg の `d3d12` プローブ / サブプロセスのみに限定します。`d3d12` VAAPI エンコード非対応または `/dev/dri/renderD*` 不在時は `ENCODER_MODE=auto` により `libx264` ソフトウェアエンコードへ自動フォールバックします。
 - **詳細な最適化仕様の参照**:
   コンテナ内 Chrome 安定化、ヒステリシス・バックプレッシャー、PulseAudio UNIX ソケット構成、CDP ネイティブタッチの詳細は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) に網羅されています。コア処理を変更する前に必ず参照してください。
 

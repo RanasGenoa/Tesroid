@@ -29,7 +29,143 @@ if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chro
   echo "[entrypoint] Google Chrome installation completed."
 fi
 
-# 2. Start cloudflared in the background when TUNNEL_TOKEN is provided
+# 2. Configure WSL2 / Docker Desktop library path & auto-detect VAAPI device/driver
+if [ -d /usr/lib/wsl/lib ]; then
+  case ":${LD_LIBRARY_PATH:-}:" in
+    *":/usr/lib/wsl/lib:"*) ;;
+    *)
+      export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      ;;
+  esac
+fi
+
+trim_ws() {
+  local val="$1"
+  val="${val//$'\r'/}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  printf '%s' "$val"
+}
+
+raw_encoder_mode="$(trim_ws "${ENCODER_MODE:-auto}")"
+case "${raw_encoder_mode,,}" in
+  vaapi|software|auto)
+    export ENCODER_MODE="${raw_encoder_mode,,}"
+    ;;
+  "")
+    export ENCODER_MODE="auto"
+    ;;
+  *)
+    echo "[entrypoint] WARN: Invalid ENCODER_MODE='${raw_encoder_mode}', falling back to 'auto'." >&2
+    export ENCODER_MODE="auto"
+    ;;
+esac
+
+detect_vaapi_device() {
+  local preferred=""
+  local non_nvidia=""
+  local first_any=""
+  local node=""
+  local base=""
+  local vendor_file=""
+  local vendor=""
+
+  for node in /dev/dri/renderD*; do
+    [ -e "$node" ] || continue
+    if [ -z "$first_any" ]; then
+      first_any="$node"
+    fi
+    base="$(basename "$node")"
+    vendor_file="/sys/class/drm/${base}/device/vendor"
+    vendor=""
+    if [ -r "$vendor_file" ]; then
+      vendor="$(tr '[:upper:]' '[:lower:]' < "$vendor_file" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    if [ "$vendor" = "0x8086" ] || [ "$vendor" = "0x1002" ]; then
+      preferred="$node"
+      break
+    fi
+    if [ "$vendor" != "0x10de" ] && [ -z "$non_nvidia" ]; then
+      non_nvidia="$node"
+    fi
+  done
+
+  if [ -n "$preferred" ]; then
+    printf '%s' "$preferred"
+  elif [ -n "$non_nvidia" ]; then
+    printf '%s' "$non_nvidia"
+  elif [ -n "$first_any" ]; then
+    printf '%s' "$first_any"
+  elif [ ! -e /dev/dxg ]; then
+    printf '%s' "/dev/dri/renderD128"
+  fi
+}
+
+probe_intel_vaapi_driver() {
+  local dev="$1"
+  local out=""
+  if command -v vainfo >/dev/null 2>&1 && [ -n "$dev" ] && [ -e "$dev" ]; then
+    out="$(timeout 3 env LIBVA_DRIVER_NAME=iHD vainfo --display drm --device "$dev" 2>/dev/null || true)"
+    if printf '%s' "$out" | grep -qE 'VAProfileH264.*VAEntrypointEncSlice'; then
+      printf 'iHD'
+      return 0
+    fi
+    out="$(timeout 3 env LIBVA_DRIVER_NAME=i965 vainfo --display drm --device "$dev" 2>/dev/null || true)"
+    if printf '%s' "$out" | grep -qE 'VAProfileH264.*VAEntrypointEncSlice'; then
+      printf 'i965'
+      return 0
+    fi
+    if timeout 3 env LIBVA_DRIVER_NAME=iHD vainfo --display drm --device "$dev" >/dev/null 2>&1; then
+      printf 'iHD'
+      return 0
+    fi
+    if timeout 3 env LIBVA_DRIVER_NAME=i965 vainfo --display drm --device "$dev" >/dev/null 2>&1; then
+      printf 'i965'
+      return 0
+    fi
+  fi
+  printf 'iHD'
+}
+
+raw_vaapi_device="$(trim_ws "${VAAPI_DEVICE:-}")"
+if [ -z "$raw_vaapi_device" ] || [ "${raw_vaapi_device,,}" = "auto" ]; then
+  export VAAPI_DEVICE="$(detect_vaapi_device)"
+else
+  export VAAPI_DEVICE="$raw_vaapi_device"
+fi
+
+raw_libva_driver="$(trim_ws "${LIBVA_DRIVER_NAME:-}")"
+if [ -z "$raw_libva_driver" ] || [ "${raw_libva_driver,,}" = "auto" ]; then
+  if [ -e /dev/dxg ]; then
+    export LIBVA_DRIVER_NAME="d3d12"
+  elif [ -n "${VAAPI_DEVICE:-}" ]; then
+    resolved_dev="$(readlink -f "$VAAPI_DEVICE" 2>/dev/null || printf '%s' "$VAAPI_DEVICE")"
+    dev_vendor_file="/sys/class/drm/$(basename "$resolved_dev")/device/vendor"
+    dev_vendor=""
+    if [ -r "$dev_vendor_file" ]; then
+      dev_vendor="$(tr '[:upper:]' '[:lower:]' < "$dev_vendor_file" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    case "$dev_vendor" in
+      0x1002)
+        export LIBVA_DRIVER_NAME="radeonsi"
+        ;;
+      0x8086)
+        export LIBVA_DRIVER_NAME="$(probe_intel_vaapi_driver "$VAAPI_DEVICE")"
+        ;;
+      *)
+        export LIBVA_DRIVER_NAME="iHD"
+        ;;
+    esac
+  else
+    export LIBVA_DRIVER_NAME="iHD"
+  fi
+else
+  export LIBVA_DRIVER_NAME="$raw_libva_driver"
+fi
+
+echo "[entrypoint] VAAPI config: ENCODER_MODE=${ENCODER_MODE}, VAAPI_DEVICE=${VAAPI_DEVICE:-<none>}, LIBVA_DRIVER_NAME=${LIBVA_DRIVER_NAME}"
+
+# 3. Start cloudflared in the background when TUNNEL_TOKEN is provided
 if [ -n "${TUNNEL_TOKEN:-}" ]; then
   echo "[entrypoint] Starting cloudflared tunnel..."
   # Pass TUNNEL_TOKEN via environment variable (not CLI arguments) to avoid /proc/<pid>/cmdline exposure,
@@ -45,7 +181,7 @@ if [ -n "${TUNNEL_TOKEN:-}" ]; then
   unset TUNNEL_TOKEN
 fi
 
-# 3. Launch application server
+# 4. Launch application server
 # Note: With `init: true` (tini) and `TINI_KILL_PROCESS_GROUP=1`, SIGTERM/SIGINT are forwarded to the entire process group.
 cd /app/server
 if [ "$#" -gt 0 ]; then

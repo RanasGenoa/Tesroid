@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-自宅サーバー（Linux / NAS）上の Docker で動かした Google Chrome の画面と音声を、**テスラ車載ブラウザだけでそのまま視聴・タッチ操作できるセルフホスト型リモートブラウザ** です。
+自宅サーバー（Linux / NAS / Windows Docker Desktop）上の Docker で動かした Google Chrome の画面と音声を、**テスラ車載ブラウザだけでそのまま視聴・タッチ操作できるセルフホスト型リモートブラウザ** です。
 
 車に乗ったら純正ブラウザのブックマークを開くだけ。スマホを取り出したりテザリングを繋いだりする必要はなく、テスラのプレミアムコネクティビティ回線だけで、いつもの YouTube や動画サービスを車内ディスプレイで楽しめます。
 
@@ -18,7 +18,7 @@ Tesroid は「車内で気楽に・クリーンに・安定して動画を観た
 
 1. **セルフホスト費用以外は完全無料**
    - オープンソース（MIT ライセンス）として公開されており、アプリの利用料・月額サブスク・広告などは一切ありません。
-   - 自宅の Linux PC や NAS（＋必要に応じて年数ドル程度の独自ドメイン等）の維持費だけでずっと使い続けられます。
+   - 自宅の Linux PC・NAS・Windows PC（＋必要に応じて年数ドル程度の独自ドメイン等）の維持費だけでずっと使い続けられます。
 2. **動画視聴に特化 ＆ 電波悪化に強いバッファリング対応**
    - テスラ車載ブラウザの「走行開始（D/Rレンジ）で動画が止まる」制約を回避し、同乗者が走行中も動画や Web コンテンツの視聴を継続できます（※1）。
    - トンネルや郊外など通信状況が悪化しやすいドライブ中でも再生が途切れにくいよう、**最大 30 秒の先読みバッファリング ＆ 自動追っかけ再生** に対応。リアルタイムに戻したいときは画面上の **`LIVE`** ボタンひとつで即座に最新位置へ同期できます。
@@ -50,7 +50,7 @@ Tesroid は「車内で気楽に・クリーンに・安定して動画を観た
 - **スマホのテザリングや毎回の接続操作から解放されたい方**
   - 乗車するたびにスマホを操作して画面を飛ばすのではなく、車載ディスプレイ単体・プレミアムコネクティビティ回線だけでサッと完結させたい方。
 - **ある程度のネットワーク / サーバー知識があり、自分で試してみたい方**
-  - 自宅の Linux マシンやミニ PC、NAS などで Docker を動かしたり、Cloudflare Tunnel やリバースプロキシを使って自宅環境を HTTPS 公開したりする作業を試せる方（初心者向けの [かんたん導入ガイド](docs/QUICKSTART.md) も用意しています）。
+  - 自宅の Linux マシン、ミニ PC、NAS、または Windows PC（Docker Desktop）などで Docker を動かしたり、Cloudflare Tunnel やリバースプロキシを使って自宅環境を HTTPS 公開したりする作業を試せる方（初心者向けの [かんたん導入ガイド](docs/QUICKSTART.md) も用意しています）。
 
 ### MCU2（Intel Atom 搭載車）でのデバッグ・最適化仲間を募集中
 
@@ -117,28 +117,36 @@ Tesroid は「車内で気楽に・クリーンに・安定して動画を観た
 ## 動作要件
 
 - **アーキテクチャ**: `x86_64` (`amd64`) 専用
-- **OS**: Linux (Ubuntu 20.04/22.04/24.04, Debian 11/12 等)、NAS OS (TrueNAS SCALE 等)
-- **GPU**: VAAPI 対応 GPU（Intel 第6世代 Skylake 以降の統合 GPU Quick Sync Video、または AMD Radeon VAAPI）
-  - ホスト上に `/dev/dri/renderD128` が存在すること
-- **動作確認済み iGPU**:
-  | GPU / iGPU | アーキテクチャ (世代) | VAAPI ドライバ | 動作確認状況 | 備考 |
+- **OS**:
+  - Linux (`Ubuntu 20.04/22.04/24.04`, `Debian 11/12` 等)、NAS OS (`TrueNAS SCALE` 等)
+  - Windows 10 / 11（**Docker Desktop for Windows** / WSL2 バックエンド有効環境 — PowerShell / CMD から直接起動可能で、別途 WSL2 Linux ディストリビューションの導入は不要）
+- **GPU / エンコーダ**:
+  - **Intel Quick Sync Video (VAAPI)**: 第5世代 Broadwell 以降は `iHD`、それ以前の旧世代（Haswell 等）は `i965` (`i965-va-driver-shaders`) に対応（起動時に自動判定）
+  - **AMD Radeon GPU (VAAPI)**: `radeonsi` に対応（コンテナ内の Ubuntu 24.04 `Mesa 25.2.x` により RDNA 4 を含む新旧 Radeon に対応。起動時に自動判定）
+  - **Windows (Docker Desktop / WSL2 D3D12 + `libx264` 自動フォールバック)**: [`docker-compose.windows.yml`](docker-compose.windows.yml) により `/dev/dxg` + `/usr/lib/wsl` の D3D12 ブリッジ構成に対応。Docker Desktop 側で `vgem`（`/dev/dri/renderD*`）が露出されない環境や、D3D12 VAAPI エンコード非対応 GPU（例: AMD RX 9070 XT の WSL UMD 制限）では、`ENCODER_MODE=auto`（既定値）により自動的に **`libx264` ソフトウェアエンコード** へ安全にフォールバックします
+  - **マルチ GPU / GPU なし環境**: Linux では `/dev/dri/renderD*` を自動走査し、NVIDIA (`0x10de`) より Intel / AMD の VAAPI ノードを優先選択します。VAAPI 非対応 GPU・GPU なし環境では `ENCODER_MODE=auto` / `software` により `libx264` で動作可能です
+- **動作確認済み GPU / 環境**:
+  | GPU / 環境 | アーキテクチャ / 方式 | ドライバ / バックエンド | 動作確認状況 | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
-  | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
-  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
+  | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` (VAAPI) | 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
+  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` (VAAPI) | 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
+  | **Windows 10/11 + Docker Desktop** (AMD Radeon RX 9070 XT) | D3D12 ブリッジ + 自動フォールバック | `libx264` (Software) | 動作確認済み | Docker Desktop 既定 VM では `vgem` 不在および RX 9070 XT WSL UMD のため `ENCODER_MODE=auto` により `libx264` へ自動フォールバックし 1280x720@30fps でリアルタイム動作（他 GPU での D3D12 報告も募集中） |
+  | **AMD Radeon (Linux)** | RDNA 3/4 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | 動作確認済み | RX 9070 XT 実機で検証済: 起動時の `radeonsi` / レンダーノード自動判定、H.264 VAAPI エンコード（`scale_vaapi` GPU CSC 有効・VCN で 1280x720@30 を 20 倍超速度）、Chrome のハードウェア動画デコード（`chrome://gpu` で Video Decode: Hardware accelerated 確認） |
+  | **旧世代 Intel iGPU** | Haswell 以前 | `i965` (VAAPI) | ✅ 動作確認済み | Intel HD Graphics 4600 (Core i5-4590) で H.264 ハードウェアエンコード動作確認。`vainfo` プローブで `iHD` 非対応時に自動選択 |
 - **メモリ**: 2 GB 以上推奨
-- **ソフトウェア**: Docker Engine 24.0+ および Docker Compose v2.0+
+- **ソフトウェア**: Docker Engine 24.0+ / Docker Compose v2.0+（Windows は Docker Desktop for Windows）
 - **ネットワーク**: テスラ車載ブラウザから接続する場合は **公的 CA による HTTPS (SSL/TLS) 環境** が必須です（詳細は [docs/NETWORK.md](docs/NETWORK.md) を参照）
 - **車両環境**: MCU3（AMD Ryzen 搭載車）推奨。MCU2（Intel Atom 搭載車）は動作が重くなるため実験的サポート（デバッグ・最適化協力者を募集中）
 
-### 非対応・非推奨環境
+### 注意が必要な環境・非対応環境
 
-Tesroid は低遅延・省リソースを実現するため、ハードウェア支援エンコード（VAAPI）と `amd64` 環境を前提としています。以下の環境は非対応または非推奨です：
+Tesroid は低遅延・省リソースを実現するため、ハードウェア支援エンコード（VAAPI）を推奨しつつ、非対応環境向けには `ENCODER_MODE=auto` による `libx264` ソフトウェアフォールバックも備えています：
 
 | 環境 | 対応状況 | 主な理由 |
 | :--- | :---: | :--- |
-| **格安 VPS / GPU なしクラウド VM** | 非対応 | 映像エンコードに `h264_vaapi`（`/dev/dri/renderD128`）が必須であり、CPU エンコード（`libx264`）へのフォールバックを持たないため動作しません。GPU 付きクラウド VM は月額コストが高額になるため非推奨です。 |
-| **Windows PC (Docker Desktop / WSL2)** | 非対応 | WSL2 上の Docker 環境には Linux の `/dev/dri` デバイスを渡せないため動作しません。またスリープや Windows Update 再起動による運用トラブルも起きやすいため非推奨です。 |
-| **ARM CPU 搭載 NAS 等 (Raspberry Pi / ARM64 NAS)** | 非対応 | `x86_64` (`amd64`) 専用設計であり、Google Chrome Stable (`amd64`) および Intel/AMD VAAPI ドライバに依存しているため動作しません。 |
+| **Windows PC (Docker Desktop / WSL2)** | 対応（運用注意） | [`docker-compose.windows.yml`](docker-compose.windows.yml) で PowerShell / CMD から直接起動できます（`d3d12` VAAPI が使えない環境では自動的に `libx264` へフォールバック）。ただし PC のスリープ移行や Windows Update 自動再起動で接続が途切れやすいため、24時間常時稼働用途には Linux / NAS を推奨します。 |
+| **格安 VPS / GPU なしクラウド VM** | 動作可能（非推奨） | `ENCODER_MODE=auto` / `software` による `libx264` CPU エンコードで動作可能ですが、快適動作には 2〜4 vCPU / 2GB〜4GB RAM 以上のスペックと高い CPU 負荷（月額コスト増）を伴うため非推奨です。 |
+| **ARM CPU 搭載 NAS 等 (Raspberry Pi / ARM64 NAS)** | 非対応 | `x86_64` (`amd64`) 専用設計であり、Google Chrome Stable (`amd64`) および `x86_64` 向けコンテナイメージに依存しているため動作しません。 |
 
 ---
 
@@ -153,10 +161,11 @@ Tesroid は低遅延・省リソースを実現するため、ハードウェア
 > Cloudflare の無料アカウント登録から安価な独自ドメイン購入（年 \$5 前後〜）、`TUNNEL_TOKEN` 発行、Docker Compose 起動までを順番に解説しています：
 > **[かんたん導入ガイド (docs/QUICKSTART.md)](docs/QUICKSTART.md)**
 
-- **方法 A: `docker-compose.prebuilt.yml` コピペ導入（一番おすすめ）**
-  [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を取得し、`.env` に `TUNNEL_TOKEN` を貼り付けて `docker compose -f docker-compose.prebuilt.yml up -d` を実行するだけで起動します（手順の詳細は [docs/QUICKSTART.md](docs/QUICKSTART.md)）。
-- **方法 B: ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）**
-  Ubuntu / Debian 等の Linux 環境では、Docker 確認・`/dev/dri` 権限設定・設定ファイル生成・起動までを対話式で一括実行できます（途中で `TUNNEL_TOKEN` の貼り付けにも対応）：
+- **方法 A: Docker Compose コピペ導入（一番おすすめ）**
+  - **Linux / NAS**: [`docker-compose.prebuilt.yml`](docker-compose.prebuilt.yml) を取得し、`.env` に `TUNNEL_TOKEN` を貼り付けて `docker compose -f docker-compose.prebuilt.yml up -d` を実行するだけで起動します（手順の詳細は [docs/QUICKSTART.md](docs/QUICKSTART.md)）。
+  - **Windows（Docker Desktop for Windows）**: [`docker-compose.windows.yml`](docker-compose.windows.yml) を取得し、PowerShell / CMD から `docker compose -f docker-compose.windows.yml up -d` を実行して直接起動できます（別途 WSL2 Linux ディストリビューションの導入は不要。手順は [docs/QUICKSTART.md](docs/QUICKSTART.md)）。
+- **方法 B: ワンショット導入スクリプト（x86_64 Linux 向け・副次 WSL2 Linux ディストリ対応）**
+  Ubuntu / Debian 等の Linux 環境（および副次的に WSL2 Linux ディストリビューション内）では、Docker 確認・GPU 権限設定・マルチ GPU / ドライバ自動検出・設定ファイル生成・起動までを対話式で一括実行できます（途中で `TUNNEL_TOKEN` の貼り付けにも対応）：
   ```bash
   curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
   bash install.sh
@@ -204,8 +213,9 @@ curl http://localhost:9001/api/health
 | `DISPLAY_HEIGHT` | `720` | 仮想ディスプレイ縦解像度 |
 | `FPS` | `30` | エンコードフレームレート (`30` または `60`) |
 | `VIDEO_BITRATE` | `1000k` | 初期映像ビットレート（車載 UI から動的に変更可能） |
-| `VAAPI_DEVICE` | `/dev/dri/renderD128` | コンテナ内で使用する VAAPI レンダーノード |
-| `LIBVA_DRIVER_NAME` | `iHD` | VAAPI ドライバ名（Intel: `iHD` / 旧世代Intel: `i965` / AMD: `radeonsi`） |
+| `ENCODER_MODE` | `auto` | エンコーダ動作モード（`auto`: VAAPI 優先・不可時 `libx264` 自動フォールバック / `vaapi` / `software`） |
+| `VAAPI_DEVICE` | *(自動検出)* | 使用する VAAPI レンダーノード（未指定時は `/dev/dri/renderD*` を走査し Intel/AMD を優先選択、D3D12/`software` 時は空欄可） |
+| `LIBVA_DRIVER_NAME` | *(自動判定)* | VAAPI ドライバ名（空欄または `auto` で自動判定。手動指定: `iHD` / `i965` / `radeonsi` / `d3d12`） |
 | `TUNNEL_TOKEN` | *(空)* | Cloudflare Tunnel コネクタ用トークン（設定時は内蔵 `cloudflared` を自動起動） |
 
 ---
@@ -237,13 +247,13 @@ TARGET_HOST=<DOCKER_HOST_IP> npm run proxy
         │  - WebCodecs VideoDecoder -> <canvas> zero-copy rendering
         │  - Web Audio API (Opus low-latency playback & A/V sync)
         ▼
-[ Docker Host (Linux / VPS / NAS) ]
-  └── [ Container: tesroid-server (Ubuntu 22.04 / Single Container) ]
-        ├── GPU Passthrough : /dev/dri (Intel QuickSync iHD / AMD radeonsi VAAPI)
+[ Docker Host (Linux / VPS / NAS / Windows Docker Desktop) ]
+  └── [ Container: tesroid-server (Ubuntu 24.04 / Single Container) ]
+        ├── GPU Passthrough : /dev/dri (Intel iHD/i965, AMD radeonsi) or /dev/dxg (Windows D3D12)
         ├── Virtual Display : Xvfb (:99) + Openbox (undecorated window)
         ├── Virtual Audio   : PulseAudio (unix:/tmp/pulse-socket, virtual_sink)
         ├── Cloud Browser   : Google Chrome Stable + Car Fullscreen Extension
-        ├── Media Encoder   : FFmpeg (x11grab -> h264_vaapi + libopus)
+        ├── Media Encoder   : FFmpeg (x11grab -> h264_vaapi / libx264 fallback + libopus)
         └── Streaming Server: Node.js Fastify (Multiplexed WS + CDP Touch Bridge)
 ```
 
@@ -253,9 +263,9 @@ TARGET_HOST=<DOCKER_HOST_IP> npm run proxy
 1. **Dレンジ走行中のブラックアウト完全回避 (Canvas2D + WebCodecs)**
    - テスラ車載 OS は走行開始（D/Rレンジ投入）時にブラウザ内のすべての `<video>` 要素を強制停止します。
    - Tesroid は `<video>` タグを一切使用せず、単一 WebSocket から受信した H.264 ストリームを **WebCodecs API (`VideoDecoder`)** でデコードし、**HTML5 `<canvas>`** に直接描画します（サーバー側での AVCC 事前パッキングによりクライアント側のメモリ負荷と GC を最小化）。
-2. **VAAPI ハードウェアフルアクセラレーション**
-   - **映像デコード**: コンテナ内の Google Chrome が VAAPI 経由で VP9 / H.264 をハードウェアデコード。
-   - **映像・音声エンコード**: FFmpeg が X11 仮想画面を直接キャプチャし、`h264_vaapi`（ゼロ遅延）+ `libopus`（20ms 低遅延フレーム）でリアルタイム配信。
+2. **マルチ GPU VAAPI ハードウェアアクセラレーション ＆ `libx264` 自動フォールバック**
+   - **映像デコード**: コンテナ内の Google Chrome が VAAPI 経由で VP9 / H.264 をハードウェアデコード（DRI デバイス不在・非対応環境では自動的にソフトウェアデコードへフォールバック）。
+   - **映像・音声エンコード**: FFmpeg が X11 仮想画面を直接キャプチャし、`h264_vaapi`（ゼロ遅延）+ `libopus`（20ms 低遅延フレーム）でリアルタイム配信。VAAPI エンコードが利用できない環境では `ENCODER_MODE=auto` により自動的に `libx264`（`-preset ultrafast -tune zerolatency`）へフォールバック。
 3. **CDP ネイティブ静電容量タッチ & 慣性スクロール**
    - Chrome DevTools Protocol (`Input.dispatchTouchEvent`) により Blink エンジンへ直接マルチタッチイベントを注入し、滑らかな慣性スクロールと正確なタップ操作を実現。
 4. **車載ソフトウェアキーボード対応 & WebAuthn 抑止**

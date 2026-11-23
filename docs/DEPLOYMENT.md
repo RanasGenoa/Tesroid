@@ -17,48 +17,53 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
 
 ### ハードウェア要件
 - **CPU アーキテクチャ**: `x86_64` (`amd64`) 専用
-- **GPU (VAAPI 必須)**:
-  - **Intel Quick Sync Video (VAAPI)**: Intel 第6世代 Core (Skylake) 以降の統合 GPU 推奨。ドライバ `iHD` (`intel-media-va-driver-non-free`) に対応。
-  - **AMD GPU (VAAPI)**: Radeon シリーズ等の VAAPI (`radeonsi`) 対応 GPU（`.env` で `LIBVA_DRIVER_NAME=radeonsi` を指定）。
-- **動作確認済み iGPU リスト**:
-  | GPU / iGPU | アーキテクチャ (世代) | VAAPI ドライバ | ステータス | 備考 |
+- **GPU / エンコーダ (VAAPI ハードウェア優先・`libx264` 自動フォールバック対応)**:
+  - **Intel Quick Sync Video (VAAPI)**: 第5世代 Core (Broadwell) 以降は `iHD` (`intel-media-va-driver-non-free`)、それ以前の旧世代（Haswell 等）は `i965` (`i965-va-driver-shaders`) に対応。起動時に `vainfo` プローブで自動判定します。
+  - **AMD Radeon GPU (VAAPI)**: `radeonsi` に対応（コンテナベースを Ubuntu 24.04 / Mesa `25.2.x` へ刷新し、RDNA 4 を含む Radeon 系列の VAAPI に対応。起動時にベンダー ID `0x1002` を自動判定、または `.env` で `LIBVA_DRIVER_NAME=radeonsi` を指定）。
+  - **Windows (Docker Desktop / WSL2 D3D12)**: [`docker-compose.windows.yml`](../docker-compose.windows.yml) により `/dev/dxg` + `/usr/lib/wsl` を用いた D3D12 ブリッジ構成に対応。ただし Docker Desktop 既定の VM で `vgem`（`/dev/dri/renderD*`）が露出されない環境や、AMD RX 9070 XT の WSL D3D12 UMD のように `VideoProc` のみで H.264 VAAPI エンコード非対応の環境では、`ENCODER_MODE=auto`（既定値）により自動的に **`libx264` ソフトウェアエンコード** へフォールバックします。
+  - **マルチ GPU 環境**: Linux ホストで複数 GPU が存在する場合、`/dev/dri/renderD*` を自動走査し、NVIDIA (`0x10de`) より Intel (`0x8086`) / AMD (`0x1002`) のレンダーノードを優先選択します。
+  - **エンコーダ フォールバック連鎖**: 起動時に `vainfo` で `VAProfileH264 + VAEntrypointEncSlice` を厳密検証し、対応ドライバが無い場合は最初から CPU (`libx264`) で起動します。稼働中に FFmpeg が即死した場合のみ `-low_power` 解除 → GPU CSC (`scale_vaapi`) 解除（HW エンコードは維持）→ `libx264` ソフトウェアエンコードの順に段階降格し、発生した降格は `/api/health` の `lastFallback` に記録されます。安定重視で CPU 固定を望む環境では `.env` で `ENCODER_MODE=software` を指定できます。
+- **動作確認済み GPU / 環境リスト**:
+  | GPU / 環境 | アーキテクチャ / 方式 | ドライバ / バックエンド | ステータス | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
-  | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
-  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
-  | **Intel HD Graphics 4600** | Haswell (第4世代 Core i5-4590 等) | `i965` | ✅ 動作確認済み | `.env` で `LIBVA_DRIVER_NAME=i965` を指定して H.264 ハードウェアエンコード動作 |
+  | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` (VAAPI) | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
+  | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` (VAAPI) | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
+  | **旧世代 Intel iGPU** | Haswell 以前 (Core i5-4590 / Intel HD Graphics 4600 等) | `i965` (`i965-va-driver-shaders`) | ✅ 動作確認済み | HD Graphics 4600 実機で H.264 ハードウェアエンコード動作確認。起動時に `vainfo` プローブで `iHD` 非対応時に自動選択（`.env` で `LIBVA_DRIVER_NAME=i965` の明示指定も可） |
+  | **Windows 10/11 + Docker Desktop** (AMD Radeon RX 9070 XT) | D3D12 ブリッジ + 自動フォールバック | `libx264` (Software) | ✅ 動作確認済み | `vgem` 不在および RX 9070 XT WSL UMD 制限のため `ENCODER_MODE=auto` により `libx264` で 1280x720@30fps リアルタイム動作を確認 |
+  | **AMD Radeon (Linux)** | RDNA 3/4 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | ✅ 動作確認済み | RX 9070 XT (Navi 48) + Linux amdgpu (VCN v5) 実機で検証済: `radeonsi` / `renderD128` 自動判定、H.264 `EncSlice` プロファイル検出、`scale_vaapi` GPU CSC で VCN エンコード 20 倍超速度、Chrome ハードウェア動画デコード確認（XR 環境では Xvfb 安定性のため 2D ラスタは CPU 維持のまま動画のみ HW） |
 - **メモリ**: 2GB 以上推奨（コンテナ内 Google Chrome + FFmpeg + PulseAudio + Node.js が稼働）
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 
 ### サポート OS
 - **一般的な Linux ディストリビューション**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, Arch Linux 等（`x86_64`）
 - **NAS OS**: TrueNAS SCALE (Docker / Custom App), Unraid, CasaOS 等（Intel/AMD `x86_64` CPU 搭載機）
+- **Windows**: Windows 10 / 11（Docker Desktop for Windows / WSL2 バックエンド有効環境 — PowerShell / CMD から直接起動可能）
 
 ### 必要なソフトウェア
-- Docker Engine 24.0 以上
-- Docker Compose v2.0 以上
+- Docker Engine 24.0 以上 / Docker Compose v2.0 以上（Windows は Docker Desktop for Windows）
 
-### 対応が難しい・非推奨の環境
+### 注意が必要な環境・非推奨の環境
 
-Tesroid は低遅延・省CPU負荷を実現するため、VAAPI ハードウェアエンコードと `x86_64` 環境を前提に設計されています。以下の環境は技術的な理由により非対応または非推奨です：
+Tesroid は低遅延・省CPU負荷を実現するため、VAAPI ハードウェアエンコードを第一推奨としつつ、非対応環境では `ENCODER_MODE=auto` による `libx264` ソフトウェアフォールバックで動作します。以下の環境は運用面またはコスト面で注意が必要です：
 
-1. **格安 VPS / GPU なしクラウド VM**:
-   - 映像エンコードに `h264_vaapi`（ホストの `/dev/dri/renderD128`）を必須としており、`libx264` 等による CPU ソフトウェアエンコードへのフォールバックを持ちません。そのため GPU なしの一般的な VPS では起動・配信できません。
-   - 仮に CPU エンコードを行う構成にした場合でも、安定動作には 2〜4 vCPU / 4GB RAM 以上（月額 1,500〜3,500 円程度）のスペックと動画ストリーミングに伴うネットワーク帯域がかかります。GPU パススルー付きクラウド VM はコストが高額になるため非推奨です。
-2. **Windows PC (Docker Desktop / WSL2)**:
-   - WSL2 上の Docker 環境には Linux の `/dev/dri`（VAAPI レンダーノード）を直接パススルーできないため、現行構成では動作しません。
-   - また、PC のスリープ移行や Windows Update による自動再起動で車載からの接続が途切れやすく、常時稼働サーバー用途には不向きです。
-3. **ARM CPU 搭載 NAS 等（Raspberry Pi / ARM64 NAS）**:
-   - コンテナイメージ・FFmpeg `h264_vaapi`・Google Chrome Stable（`amd64` 版）がすべて `x86_64` (`amd64`) 専用で構築されているため、ARM アーキテクチャでは動作しません。
+1. **格安 VPS / GPU なしクラウド VM（動作可能・非推奨）**:
+   - `ENCODER_MODE=auto` / `software` により `libx264` ソフトウェアエンコードへ自動フォールバックして起動・配信できます。
+   - ただし、CPU エンコードでの安定動作には 2〜4 vCPU / 2GB〜4GB RAM 以上（月額 1,500〜3,500 円程度）のスペックと動画ストリーミングに伴う高い CPU 負荷・帯域コストがかかるため、常時利用には VAAPI 対応の自宅環境を推奨します。
+2. **Windows PC（Docker Desktop / WSL2 — 対応・常時稼働は運用注意）**:
+   - [`docker-compose.windows.yml`](../docker-compose.windows.yml) を使うことで、別途 WSL2 Linux ディストリビューションを用意しなくても PowerShell / CMD から直接導入・稼働できます（WSL2 Linux ディストリ内の `scripts/install.sh` も副次的に対応）。
+   - ただし、PC のスリープ移行や Windows Update による自動再起動で車載からの接続が途切れやすいため、24時間常時稼働サーバー用途には Linux / NAS を推奨します。
+3. **ARM CPU 搭載 NAS 等（Raspberry Pi / ARM64 NAS — 非対応）**:
+   - コンテナイメージ・Google Chrome Stable（`amd64` 版）がすべて `x86_64` (`amd64`) 専用で構築されているため、ARM アーキテクチャでは動作しません。
 
 ---
 
 ## 2. 一般的な Docker / Docker Compose 環境でのデプロイ
 
-Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入・運用手順です。初めて構築する場合は、Cloudflare アカウント登録〜ドメイン購入〜起動までをまとめた **[docs/QUICKSTART.md](QUICKSTART.md)** を参照してください。
+Ubuntu、Debian、ミニ PC、x86_64 NAS、および Windows（Docker Desktop for Windows）環境での導入・運用手順です。初めて構築する場合は、Cloudflare アカウント登録〜ドメイン購入〜起動までをまとめた **[docs/QUICKSTART.md](QUICKSTART.md)** を参照してください。
 
 ### 2-A. ビルド不要の Docker Compose コピペ導入（推奨）
 
-公開されているビルド済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と [`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml) を使用することで、`git clone` やローカルでの `docker build` を行わずに起動できます。
+公開されているビルド済みベースイメージ（`ghcr.io/ranasgenoa/tesroid:latest`）と [`docker-compose.prebuilt.yml`](../docker-compose.prebuilt.yml)（Linux / NAS 向け）または [`docker-compose.windows.yml`](../docker-compose.windows.yml)（Windows Docker Desktop 向け）を使用することで、`git clone` やローカルでの `docker build` を行わずに起動できます。
 
 > [!TIP]
 > Cloudflare のアカウント登録・安価な独自ドメインの購入・Tunnel 作成〜`TUNNEL_TOKEN` 取得までの詳細な手順は **[かんたん導入ガイド (docs/QUICKSTART.md)](QUICKSTART.md)** に記載しています。
@@ -66,16 +71,43 @@ Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入
 > - **`ghcr.io/ranasgenoa/tesroid:latest` について**: Google Chrome の再配布規約に配慮し、初回起動時にコンテナ内で Google Chrome 公式パッケージを自動取得します（初回のみ数十秒〜1〜2分かかります）。
 > - **DuckDNS 等の無料 DDNS や自前リバースプロキシを使う場合**: `TUNNEL_TOKEN` を空欄にして [docs/NETWORK.md のパターン B（Caddy / Nginx ＋ ルーターの 80/443 開放）](NETWORK.md#パターン-b-自宅サーバー--リバースプロキシ-caddy--nginx) を使用してください。
 
-#### 手順
+#### 手順（Windows / Docker Desktop — PowerShell 第一推奨）
+別途 WSL2 Linux ディストリビューションを用意せず、Windows PowerShell（または CMD）から直接起動できます：
+1. 作業用フォルダを作成し、[`docker-compose.windows.yml`](../docker-compose.windows.yml) を取得します（Windows PowerShell 5.1 の `curl` エイリアスを避けるため `curl.exe` を使用してください）：
+   ```powershell
+   mkdir tesroid
+   cd tesroid
+   curl.exe -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/docker-compose.windows.yml -o docker-compose.windows.yml
+   ```
+2. `.env` ファイルを作成します（BOM なし ASCII で保存するため `Set-Content -Encoding Ascii` を使用します）：
+   ```powershell
+   @"
+   TESROID_PORT=9001
+   ENCODER_MODE=auto
+   LIBVA_DRIVER_NAME=d3d12
+   TUNNEL_TOKEN=eyJh...ここにCloudflare Zero Trustで取得したトンネルトークンを貼り付け
+   "@ | Set-Content -Encoding Ascii .env
+   ```
+   > [!NOTE]
+   > Docker Desktop 既定 VM に `/dev/dri` (`vgem`) がない場合や、GPU 側の WSL D3D12 UMD が H.264 VAAPI エンコードに対応していない場合は、`ENCODER_MODE=auto` により自動的に `libx264` ソフトウェアエンコードで起動します。
+3. コンテナを起動し、ヘルスチェックとログを確認します：
+   ```powershell
+   docker compose -f docker-compose.windows.yml up -d
+   docker compose -f docker-compose.windows.yml logs -f
+   curl.exe -s http://127.0.0.1:9001/api/health
+   ```
+
+#### 手順（Linux / NAS）
 1. 任意の作業ディレクトリを作成し、`docker-compose.prebuilt.yml` を取得（または内容を `docker-compose.yml` として保存）します：
    ```bash
    mkdir -p ~/tesroid && cd ~/tesroid
    curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/docker-compose.prebuilt.yml -o docker-compose.prebuilt.yml
    ```
-2. `.env` ファイルを作成し、Cloudflare Zero Trust で取得した **Cloudflare Tunnel トークン（`TUNNEL_TOKEN`）** と公開ポート番号を設定します（Cloudflare Tunnel を使用しない場合は `TUNNEL_TOKEN` を空欄または省略してください。`TUNNEL_TOKEN` は秘密情報のため `chmod 600` での保護を推奨します）：
+2. `.env` ファイルを作成し、Cloudflare Zero Trust で取得した **Cloudflare Tunnel トークン（`TUNNEL_TOKEN`）** と公開ポート番号を設定します（未指定の `VAAPI_DEVICE` / `LIBVA_DRIVER_NAME` はコンテナ起動時に自動検出されます。Cloudflare Tunnel を使用しない場合は `TUNNEL_TOKEN` を空欄または省略し、`chmod 600` での保護を推奨します）：
    ```bash
    cat <<'EOF' > .env
    TESROID_PORT=9001
+   ENCODER_MODE=auto
    TUNNEL_TOKEN=eyJh...ここにCloudflare Zero Trustで取得したトンネルトークンを貼り付け
    EOF
    chmod 600 .env
@@ -90,16 +122,16 @@ Ubuntu、Debian、ミニ PC、または x86_64 NAS の Docker 環境での導入
    curl -s http://127.0.0.1:9001/api/health
    ```
 
-### 2-B. ワンショット導入スクリプト（Intel / AMD x86_64 Linux 向け）
+### 2-B. ワンショット導入スクリプト（x86_64 Linux 向け・副次 WSL2 ディストリ対応）
 
-Ubuntu / Debian 等の Intel x86_64 Linux 環境（ミニ PC・自宅サーバー等）では、[`scripts/install.sh`](../scripts/install.sh) を使うことで環境チェックから起動までを対話式で一括実行できます。
+Ubuntu / Debian 等の x86_64 Linux 環境（ミニ PC・自宅サーバー等）および副次的に WSL2 Linux ディストリビューション内では、[`scripts/install.sh`](../scripts/install.sh) を使うことで環境チェックから起動までを対話式で一括実行できます（※ Windows 環境では上記 **2-A の PowerShell + `docker-compose.windows.yml`** が第一推奨です）。
 
 **スクリプトが自動で行う処理**:
-- OS・CPU アーキテクチャ（`x86_64`）および `/dev/dri` デバイスの確認
+- OS・CPU アーキテクチャ（`x86_64`）の確認とマルチ GPU 走査（`/sys/class/drm/renderD*/device/vendor` を確認し NVIDIA `0x10de` より Intel/AMD を優先、WSL2 では `/dev/dxg` + `/usr/lib/wsl` を検出、GPU 不在時は `ENCODER_MODE=software` 継続を確認）
 - Docker Engine / Docker Compose の確認・未導入時のインストール（Ubuntu / Debian 等）
-- 実行ユーザーの `render` / `video` グループへの追加（GPU アクセス権限付与）
-- 対話プロンプトでの設定入力（インストール先ディレクトリ、公開ポート既定 `9001`、任意の `TUNNEL_TOKEN`）
-- `ghcr.io/ranasgenoa/tesroid:latest` を使った `docker-compose.yml` と `.env` の生成・コンテナ起動
+- 実行ユーザーの `render` / `video` / `docker` グループへの追加（Linux DRI 環境時）
+- 対話プロンプトでの設定入力（インストール先ディレクトリ、公開ポート既定 `9001`、任意の `TUNNEL_TOKEN`、`LIBVA_DRIVER_NAME`［`auto`（空欄）/ `iHD` / `i965` / `radeonsi` / `d3d12`］）
+- `ghcr.io/ranasgenoa/tesroid:latest` を使った環境別 `docker-compose.yml` と `.env` の生成・コンテナ起動
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RanasGenoa/Tesroid/main/scripts/install.sh -o install.sh
@@ -115,16 +147,17 @@ git clone https://github.com/<YOUR_ORG_OR_USER>/Tesroid.git
 cd Tesroid
 ```
 
-### ステップ 2: ホスト側の GPU 権限の確認 (Intel / AMD)
-ホストの Linux で GPU デバイス `/dev/dri` が利用可能であることを確認します：
-```bash
-# デバイスの存在確認
-ls -la /dev/dri
-# 出力例: card0, renderD128 が表示されれば OK
+### ステップ 2: ホスト側の GPU / Docker 環境の確認
+- **Linux (Intel / AMD) の場合**: ホストで GPU デバイス `/dev/dri` が利用可能であることを確認します：
+  ```bash
+  # デバイスの存在確認
+  ls -la /dev/dri
+  # 出力例: card0, renderD128 が表示されれば OK
 
-# 必要に応じて実行ユーザーを render / video グループに追加
-sudo usermod -aG render,video $USER
-```
+  # 必要に応じて実行ユーザーを render / video グループに追加
+  sudo usermod -aG render,video $USER
+  ```
+- **Windows (Docker Desktop) の場合**: PowerShell で `docker info` が正常応答することを確認してください（`/dev/dri` やグループ追加は不要です）。
 
 ### ステップ 3: 環境変数の準備 (`.env`)
 テンプレートから設定ファイルをコピーし、必要に応じてポート番号や初期 URL を変更します：
@@ -138,14 +171,17 @@ cp .env.example .env
 - `DISPLAY_WIDTH` / `DISPLAY_HEIGHT`: 仮想ディスプレイ解像度（デフォルト: `1280` / `720`）
 - `FPS`: フレームレート（デフォルト: `30`）
 - `VIDEO_BITRATE`: ビデオビットレート（デフォルト: `1000k`）
-- `LIBVA_DRIVER_NAME`: VAAPI ドライバ（Intel: `iHD`, AMD: `radeonsi`）
+- `ENCODER_MODE`: エンコーダモード（`auto`: VAAPI 優先・不可時 `libx264` 自動フォールバック / `vaapi`: VAAPI 強制 / `software`: `libx264` 固定、デフォルト: `auto`）
+- `VAAPI_DEVICE`: VAAPI レンダーノード（未指定時はコンテナ起動時に Intel/AMD ノードを自動選択、D3D12/`software` 時は空欄可）
+- `LIBVA_DRIVER_NAME`: VAAPI ドライバ（空欄または `auto` で自動判定。手動指定: Intel Broadwell 以降 `iHD` / 旧世代 Intel `i965` / AMD `radeonsi` / Windows D3D12 `d3d12`）
 - `TUNNEL_TOKEN`: Cloudflare Tunnel コネクタ用トークン（設定時は内蔵 `cloudflared` を自動起動、未設定時は無効）
 
 ### ステップ 4: Docker Compose でコンテナ起動
 ```bash
-# イメージのローカルビルドとバックグラウンド起動
+# Linux: イメージのローカルビルドとバックグラウンド起動
 docker compose up -d --build
 ```
+Windows（PowerShell）でローカルビルド版を起動する場合は、[`docker-compose.windows.yml`](../docker-compose.windows.yml) 内のコメントアウトされた `build:` 設定を有効化する（または `docker build -t ghcr.io/ranasgenoa/tesroid:latest .` 後に `docker compose -f docker-compose.windows.yml up -d` を実行する）ことで起動できます。
 
 ### ステップ 5: 動作確認
 コンテナが正常に起動し、ヘルスチェックに応答するか確認します：
@@ -197,9 +233,13 @@ docker build -t tesroid-tesroid:latest .
 docker compose pull
 docker compose up -d
 
-# docker-compose.prebuilt.yml を直接利用している場合
+# docker-compose.prebuilt.yml を直接利用している場合 (Linux)
 docker compose -f docker-compose.prebuilt.yml pull
 docker compose -f docker-compose.prebuilt.yml up -d
+
+# docker-compose.windows.yml を利用している場合 (Windows PowerShell)
+docker compose -f docker-compose.windows.yml pull
+docker compose -f docker-compose.windows.yml up -d
 ```
 
 ### 標準 Docker Compose 環境の更新
@@ -276,12 +316,18 @@ docker compose restart
 ### 2. ブラウザプロファイルの永続化と初期化
 コンテナ内の `/data/browser-profile` が永続化されているため、ログイン状態や Cookie は再起動後も保持されます。ブラウザ状態を完全に初期化したい場合は、コンテナ停止中にプロファイルディレクトリを削除してください。
 
-### 3. VAAPI ハードウェアアクセラレーションの動作診断
-コンテナ内部で GPU が正しく認識されているか確認するコマンド：
+### 3. VAAPI / エンコーダバックエンドの動作診断
+現在アクティブなエンコーダバックエンド（`vaapi` か `software` (`libx264`) か）と自動フォールバック履歴は `/api/health` で確認できます：
+```bash
+curl -s http://127.0.0.1:9001/api/health
+```
+コンテナ内部で DRM VAAPI デバイスが正しく認識されているか確認するコマンド（`DISPLAY=:99` の Xvfb を誤ってプローブしないよう `--display drm --device` を明示指定します。マルチ GPU で `renderD129` 等を使う場合は対象デバイスへ置き換えてください）：
 ```bash
 docker exec -it tesroid-server vainfo --display drm --device /dev/dri/renderD128
-# 出力に VAProfileH264Main / VAEntrypointEncSlice 等が表示されていれば正常動作
+# 出力に VAProfileH264Main / VAEntrypointEncSlice 等が表示されていれば VAAPI エンコード対応
 ```
+> [!NOTE]
+> Windows Docker Desktop 環境では既定で `/dev/dri` (`vgem`) が存在しない（または GPU の WSL D3D12 UMD が `VideoProc` のみで H.264 エンコード非対応）場合、`/api/health` 上で `encoder.backend: "software"` となり `libx264` で正常動作します。
 
 ### 4. コンテナログのリアルタイム確認
 ```bash

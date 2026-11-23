@@ -16,6 +16,7 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerSoundRoutes } from './routes/sound.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { detectVaapiConfig, type EncoderBackend, resolveEncoderMode } from './utils/vaapi.js';
 import { WebSocketHandler } from './ws/handler.js';
 
 async function bootstrap() {
@@ -33,12 +34,28 @@ async function bootstrap() {
   const displayHeight = Number(process.env.DISPLAY_HEIGHT) || 720;
   const displayNum = process.env.DISPLAY_NUM || ':99';
 
+  const vaapiInfo = detectVaapiConfig();
+  const encoderMode = resolveEncoderMode();
+  const initialBackend: EncoderBackend =
+    encoderMode === 'software' || (encoderMode === 'auto' && !vaapiInfo.vaapiEncodeSupported)
+      ? 'software'
+      : 'vaapi';
+
+  console.log(
+    `[Bootstrap] Video config: device=${vaapiInfo.vaapiDevice || '<none>'}, ` +
+      `driver=${vaapiInfo.libvaDriverName}, hasDri=${vaapiInfo.hasDri}, hasDxg=${vaapiInfo.hasDxg}, ` +
+      `vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported}, encoderMode=${encoderMode}, ` +
+      `initialBackend=${initialBackend} (${vaapiInfo.reason})`,
+  );
+
   const initialConfig = configStore.getConfig();
   const browserManager = new BrowserManager({
     displayNum,
     width: displayWidth,
     height: displayHeight,
     defaultUrl: process.env.BROWSER_URL || resolveHomeUrl(initialConfig),
+    vaapiDevice: vaapiInfo.vaapiDevice,
+    libvaDriverName: vaapiInfo.libvaDriverName,
     displayScale: initialConfig.displayScale || 120,
     locale: initialConfig.locale || 'ja-JP',
     timezone: initialConfig.timezone || 'Asia/Tokyo',
@@ -60,6 +77,10 @@ async function bootstrap() {
     fps: initialFps,
     bitrate: initialBitrate,
     audioBitrate: initialAudioBitrate,
+    vaapiDevice: vaapiInfo.vaapiDevice,
+    libvaDriverName: vaapiInfo.libvaDriverName,
+    encoderMode,
+    initialBackend,
     compressionLevel: initialStreamConfig?.vaapiCompressionLevel,
     lowPower: initialStreamConfig?.vaapiLowPower,
     gpuColorConversion: initialStreamConfig?.vaapiGpuColorConversion,
@@ -71,7 +92,7 @@ async function bootstrap() {
   try {
     console.log('[Bootstrap] Initializing Browser Stack (Xvfb + Openbox + Chrome)...');
     await browserManager.start();
-    console.log('[Bootstrap] Initializing FFmpeg VAAPI Encoder...');
+    console.log(`[Bootstrap] Initializing FFmpeg Encoder (backend=${initialBackend})...`);
     encoder.start();
   } catch (err) {
     console.warn(

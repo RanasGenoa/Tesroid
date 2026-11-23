@@ -1,7 +1,15 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import type { Readable } from 'node:stream';
-import { resolveLibvaDriverName } from '../utils/vaapi.js';
+import {
+  DEFAULT_VAAPI_DEVICE,
+  type EncoderBackend,
+  type EncoderMode,
+  normalizeVaapiOverride,
+  resolveEncoderMode,
+  resolveLibvaDriverName,
+} from '../utils/vaapi.js';
 
 export const VIDEO_FLAGS = {
   KEYFRAME: 0x01,
@@ -24,7 +32,9 @@ export interface EncoderOptions {
   bitrate?: string; // '4M'
   audioBitrate?: string | number; // e.g. '128k', 128000, '320k' (128k - 320k)
   vaapiDevice?: string; // '/dev/dri/renderD128'
-  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi'
+  libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi', 'd3d12'
+  encoderMode?: EncoderMode; // 'auto' | 'vaapi' | 'software'
+  initialBackend?: EncoderBackend; // 'vaapi' | 'software'
   audioSink?: string; // 'virtual_sink.monitor'
   compressionLevel?: number; // 1 (best quality) - 7 (fastest/lightest)
   lowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
@@ -32,11 +42,13 @@ export interface EncoderOptions {
 }
 
 export interface EncoderFallbackEvent {
-  option: 'lowPower' | 'gpuColorConversion';
+  option: 'lowPower' | 'gpuColorConversion' | 'softwareEncoder';
   timestamp: number;
 }
 
 export class VaapiEncoder extends EventEmitter {
+  private static readonly VIDEO_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000] as const;
+
   private displayNum: string;
   private width: number;
   private height: number;
@@ -45,6 +57,8 @@ export class VaapiEncoder extends EventEmitter {
   private audioBitrate: string;
   private vaapiDevice: string;
   private libvaDriverName?: string;
+  private encoderMode: EncoderMode;
+  private activeBackend: EncoderBackend;
   private audioSink: string;
   private compressionLevel: number;
   private lowPower: boolean;
@@ -52,6 +66,8 @@ export class VaapiEncoder extends EventEmitter {
   private videoStartTimeMs = 0;
   private framesInCurrentProcess = 0;
   private lastFallback: EncoderFallbackEvent | null = null;
+  private videoRetryTimer: NodeJS.Timeout | null = null;
+  private videoRetryAttempt = 0;
 
   private videoProcess: ChildProcess | null = null;
   private audioProcess: ChildProcess | null = null;
@@ -101,8 +117,18 @@ export class VaapiEncoder extends EventEmitter {
     this.audioBitrate = this.formatAudioBitrate(
       options.audioBitrate || process.env.AUDIO_BITRATE || '128k',
     );
-    this.vaapiDevice = options.vaapiDevice || process.env.VAAPI_DEVICE || '/dev/dri/renderD128';
+    this.vaapiDevice =
+      normalizeVaapiOverride(options.vaapiDevice) ||
+      normalizeVaapiOverride(process.env.VAAPI_DEVICE) ||
+      DEFAULT_VAAPI_DEVICE;
     this.libvaDriverName = options.libvaDriverName;
+    this.encoderMode = resolveEncoderMode(options.encoderMode);
+    this.activeBackend =
+      this.encoderMode === 'software'
+        ? 'software'
+        : this.encoderMode === 'vaapi'
+          ? 'vaapi'
+          : (options.initialBackend ?? 'vaapi');
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
     const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 7);
     this.compressionLevel = Math.max(1, Math.min(7, Math.round(rawComp)));
@@ -176,8 +202,18 @@ export class VaapiEncoder extends EventEmitter {
     return this.gpuColorConversion;
   }
 
+  public getEncoderMode(): EncoderMode {
+    return this.encoderMode;
+  }
+
+  public getActiveBackend(): EncoderBackend {
+    return this.activeBackend;
+  }
+
   public getEncoderStatus(): {
     running: boolean;
+    backend: EncoderBackend;
+    encoderMode: EncoderMode;
     compressionLevel: number;
     lowPower: boolean;
     gpuColorConversion: boolean;
@@ -185,6 +221,8 @@ export class VaapiEncoder extends EventEmitter {
   } {
     return {
       running: this.isVideoRunning,
+      backend: this.activeBackend,
+      encoderMode: this.encoderMode,
       compressionLevel: this.compressionLevel,
       lowPower: this.lowPower,
       gpuColorConversion: this.gpuColorConversion,
@@ -195,11 +233,8 @@ export class VaapiEncoder extends EventEmitter {
   public buildVideoArgs(): string[] {
     const bps = this.parseBitrateBps(this.bitrate);
     const gop = Math.max(1, Math.round(this.fps * 2.0)); // 2.0s GOP for high efficiency at 1Mbps
-    const vfFilter = this.gpuColorConversion
-      ? 'hwupload,scale_vaapi=format=nv12'
-      : 'format=nv12,hwupload';
 
-    const args = [
+    const inputArgs = [
       '-hide_banner',
       '-loglevel',
       'error',
@@ -215,21 +250,40 @@ export class VaapiEncoder extends EventEmitter {
       `${this.width}x${this.height}`,
       '-i',
       `${this.displayNum}.0`,
-      '-vaapi_device',
-      this.vaapiDevice,
-      '-vf',
-      vfFilter,
-      '-c:v',
-      'h264_vaapi',
-      '-compression_level',
-      `${this.compressionLevel}`,
     ];
 
-    if (this.lowPower) {
-      args.push('-low_power', '1');
+    const codecArgs: string[] = [];
+    if (this.activeBackend === 'software') {
+      codecArgs.push(
+        '-vf',
+        'format=yuv420p',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-tune',
+        'zerolatency',
+      );
+    } else {
+      const vfFilter = this.gpuColorConversion
+        ? 'hwupload,scale_vaapi=format=nv12'
+        : 'format=nv12,hwupload';
+      codecArgs.push(
+        '-vaapi_device',
+        this.vaapiDevice,
+        '-vf',
+        vfFilter,
+        '-c:v',
+        'h264_vaapi',
+        '-compression_level',
+        `${this.compressionLevel}`,
+      );
+      if (this.lowPower) {
+        codecArgs.push('-low_power', '1');
+      }
     }
 
-    args.push(
+    const outputArgs = [
       '-b:v',
       `${Math.round(bps / 1000)}k`,
       '-maxrate',
@@ -247,20 +301,25 @@ export class VaapiEncoder extends EventEmitter {
       '-f',
       'h264',
       'pipe:1',
-    );
+    ];
 
-    return args;
+    return [...inputArgs, ...codecArgs, ...outputArgs];
   }
 
   /**
    * Builds the environment variables passed to the Video FFmpeg child process.
    */
   public buildVideoEnv(): NodeJS.ProcessEnv {
-    return {
+    const libvaDriverName = resolveLibvaDriverName(this.libvaDriverName);
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       DISPLAY: this.displayNum,
-      LIBVA_DRIVER_NAME: resolveLibvaDriverName(this.libvaDriverName),
+      LIBVA_DRIVER_NAME: libvaDriverName,
     };
+    if (libvaDriverName === 'd3d12' && !process.env.GALLIUM_DRIVER) {
+      env.GALLIUM_DRIVER = 'd3d12';
+    }
+    return env;
   }
 
   public getCachedSpsPps(): Buffer | null {
@@ -298,8 +357,40 @@ export class VaapiEncoder extends EventEmitter {
     this.startAudio();
   }
 
+  private switchToSoftwareFallback(): void {
+    this.activeBackend = 'software';
+    this.lastFallback = { option: 'softwareEncoder', timestamp: Date.now() };
+    this.emit('fallback', { ...this.lastFallback });
+  }
+
+  private getNextVideoRetryDelayMs(): number {
+    const idx = Math.min(this.videoRetryAttempt, VaapiEncoder.VIDEO_RETRY_DELAYS_MS.length - 1);
+    this.videoRetryAttempt++;
+    return VaapiEncoder.VIDEO_RETRY_DELAYS_MS[idx];
+  }
+
   public startVideo(): void {
     if (this.isVideoRunning) return;
+    if (this.videoRetryTimer) {
+      clearTimeout(this.videoRetryTimer);
+      this.videoRetryTimer = null;
+    }
+
+    if (
+      this.activeBackend === 'vaapi' &&
+      this.encoderMode === 'auto' &&
+      !fs.existsSync(this.vaapiDevice)
+    ) {
+      console.warn(
+        `[VaapiEncoder] VAAPI render node not found at ${this.vaapiDevice}; switching to software (libx264) encoder.`,
+      );
+      this.switchToSoftwareFallback();
+    } else if (this.activeBackend === 'vaapi' && !fs.existsSync(this.vaapiDevice)) {
+      console.warn(
+        `[VaapiEncoder] VAAPI render node not found at ${this.vaapiDevice} (encoderMode=${this.encoderMode}); attempting VAAPI spawn anyway.`,
+      );
+    }
+
     this.isVideoRunning = true;
     this.isIntentionalVideoStop = false;
     this.framesInCurrentProcess = 0;
@@ -319,7 +410,7 @@ export class VaapiEncoder extends EventEmitter {
     const videoArgs = this.buildVideoArgs();
 
     console.log(
-      `[VaapiEncoder] Spawning dedicated Video FFmpeg encoder: ffmpeg ${videoArgs.join(' ')}`,
+      `[VaapiEncoder] Spawning dedicated Video FFmpeg encoder (${this.activeBackend}): ffmpeg ${videoArgs.join(' ')}`,
     );
 
     const proc = spawn('ffmpeg', videoArgs, {
@@ -338,37 +429,52 @@ export class VaapiEncoder extends EventEmitter {
         return;
       }
       console.warn(`[VaapiEncoder] Video FFmpeg exited (code=${code}, signal=${signal})`);
+      this.videoProcess = null;
       const intentional = this.isIntentionalVideoStop;
       this.isIntentionalVideoStop = false;
       this.isVideoRunning = false;
       this.stopVideoWatchdog();
       this.emit('stop');
 
-      if (!intentional && code !== 0 && code !== null) {
+      const failedAbnormally = !intentional && ((code !== 0 && code !== null) || signal !== null);
+      if (failedAbnormally) {
         const elapsedMs = performance.now() - this.videoStartTimeMs;
         // Allow up to 5s for cold-boot driver/FFmpeg init on low-spec CPUs (e.g. Celeron N4000) before triggering fallback
         const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 5000;
-        if (this.lowPower && failedImmediately) {
-          console.warn(
-            '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
-          );
-          this.lowPower = false;
-          this.lastFallback = { option: 'lowPower', timestamp: Date.now() };
-          this.emit('fallback', { ...this.lastFallback });
-        } else if (this.gpuColorConversion && failedImmediately) {
-          console.warn(
-            '[VaapiEncoder] Video FFmpeg exited immediately with GPU scale_vaapi color conversion; falling back to CPU format=nv12 (gpuColorConversion=false).',
-          );
-          this.gpuColorConversion = false;
-          this.lastFallback = { option: 'gpuColorConversion', timestamp: Date.now() };
-          this.emit('fallback', { ...this.lastFallback });
+        if (this.activeBackend === 'vaapi' && failedImmediately) {
+          if (this.lowPower) {
+            console.warn(
+              '[VaapiEncoder] Video FFmpeg exited immediately with -low_power 1; falling back to standard VAAPI mode (lowPower=false).',
+            );
+            this.lowPower = false;
+            this.lastFallback = { option: 'lowPower', timestamp: Date.now() };
+            this.emit('fallback', { ...this.lastFallback });
+          } else if (this.gpuColorConversion) {
+            console.warn(
+              '[VaapiEncoder] Video FFmpeg exited immediately with GPU scale_vaapi color conversion; falling back to CPU format=nv12 (gpuColorConversion=false).',
+            );
+            this.gpuColorConversion = false;
+            this.lastFallback = { option: 'gpuColorConversion', timestamp: Date.now() };
+            this.emit('fallback', { ...this.lastFallback });
+          } else if (this.encoderMode === 'auto') {
+            console.warn(
+              '[VaapiEncoder] VAAPI h264_vaapi encoder exited immediately after exhausting VAAPI fallbacks; falling back to software (libx264) encoder.',
+            );
+            this.switchToSoftwareFallback();
+          }
         }
-        console.log('[VaapiEncoder] Auto-recovering Video FFmpeg process in 1s...');
-        setTimeout(() => {
-          if (!this.isVideoRunning) {
+
+        const retryDelayMs = this.getNextVideoRetryDelayMs();
+        console.log(`[VaapiEncoder] Auto-recovering Video FFmpeg process in ${retryDelayMs}ms...`);
+        this.videoRetryTimer = setTimeout(() => {
+          this.videoRetryTimer = null;
+          if (!this.isVideoRunning && !this.isIntentionalVideoStop) {
             this.startVideo();
           }
-        }, 1000);
+        }, retryDelayMs);
+        if (typeof this.videoRetryTimer.unref === 'function') {
+          this.videoRetryTimer.unref();
+        }
       }
     });
 
@@ -471,6 +577,11 @@ export class VaapiEncoder extends EventEmitter {
 
   public stopVideo(): void {
     this.stopVideoWatchdog();
+    if (this.videoRetryTimer) {
+      clearTimeout(this.videoRetryTimer);
+      this.videoRetryTimer = null;
+    }
+    this.videoRetryAttempt = 0;
     this.cachedSpsPps = null;
     this.cachedKeyframe = null;
     if (!this.isVideoRunning && !this.videoProcess) return;
@@ -590,11 +701,15 @@ export class VaapiEncoder extends EventEmitter {
     }
     if (lowPower !== undefined) {
       this.lowPower = lowPower;
-      this.lastFallback = null;
+      if (this.lastFallback?.option !== 'softwareEncoder') {
+        this.lastFallback = null;
+      }
     }
     if (gpuColorConversion !== undefined) {
       this.gpuColorConversion = gpuColorConversion;
-      this.lastFallback = null;
+      if (this.lastFallback?.option !== 'softwareEncoder') {
+        this.lastFallback = null;
+      }
     }
 
     // Reset caches and buffers so new resolution SPS/PPS and IDR keyframe are cleanly broadcast
@@ -899,6 +1014,7 @@ export class VaapiEncoder extends EventEmitter {
 
       this.lastVideoEmitTime = performance.now();
       this.framesInCurrentProcess++;
+      this.videoRetryAttempt = 0;
 
       this.emit('video', {
         flags,
