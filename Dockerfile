@@ -46,11 +46,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=ja_JP.UTF-8
 
 # 1. Install system utilities, Multi-GPU VA-API drivers (Intel iHD/i965, AMD radeonsi, WSL2 d3d12), and dependencies
-RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+# Note: Prevent implicit installation of systemd / dbus-user-session (Issue #93).
+# On older or vendor-customized host Linux kernels (e.g., QNAP QTS 5.10 + Container Station),
+# Ubuntu 24.04 systemd v255 postinst scripts (systemd-tmpfiles / systemd-sysusers) fail when
+# calling Linux 6.6+ syscalls like fchmodat2(..., AT_EMPTY_PATH) which return ENOENT instead of ENOSYS.
+# Satisfying the D-Bus session bus virtual package via dbus-x11 and pinning systemd packages to -1
+# keeps the single-process container free of systemd and guarantees compatibility across NAS/host kernels.
+RUN printf 'Package: systemd systemd-sysv systemd-standalone-sysusers systemd-standalone-tmpfiles libpam-systemd dbus-user-session udev\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/no-systemd && \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
         sed -i -E '/^Components:/ { /universe/! s/$/ universe/; /multiverse/! s/$/ multiverse/; }' /etc/apt/sources.list.d/ubuntu.sources; \
     fi && \
     apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
+        dbus-x11 \
         curl \
         gnupg \
         ca-certificates \

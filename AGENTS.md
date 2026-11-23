@@ -113,6 +113,13 @@ Tesroid/
 - **マルチ GPU VAAPI・`/etc/libva.conf` 優先順位・D3D12 スコープ**:
   - `libva` は環境変数 `LIBVA_DRIVER_NAME` より `/etc/libva.conf` を優先するため、`/etc/libva.conf` に `LIBVA_DRIVER_NAME=iHD` 等をハードコードしてはなりません（コメントのみ維持し、実行時自動判定または環境変数で `iHD` / `i965` / `radeonsi` / `d3d12` を切り替えます）。
   - Windows Docker Desktop / WSL2 環境で D3D12 を使う場合も、Chrome の Xvfb 安定描画（CPU Skia + `llvmpipe`）を維持するため `GALLIUM_DRIVER=d3d12` をグローバルに付与せず、FFmpeg の `d3d12` プローブ / サブプロセスのみに限定します。`d3d12` VAAPI エンコード非対応または `/dev/dri/renderD*` 不在時は `ENCODER_MODE=auto` により `libx264` ソフトウェアエンコードへ自動フォールバックします。
+- **ホスト環境に依存しないポータビリティ最優先方針 & コンテナパッケージ追加・更新時のガードレール (Issue #93)**:
+  - Tesroid は **「特定の Linux カーネルバージョンやディストリビューションに極力依存せず、あらゆるホスト環境（一般的な Linux、QNAP / Synology / TrueNAS / Unraid 等の NAS OS、旧世代 LTS カーネル、Windows Docker Desktop / WSL2 等）で広くそのまま動作すること」** を設計原則とします。
+  - Docker コンテナはホスト OS のカーネルを共有するため、Ubuntu 24.04 等の新しいユーザーランドに含まれるシステム管理パッケージ（`systemd` v255+ / `libsystemd-shared` の `systemd-tmpfiles`, `systemd-sysusers` 等）が Linux 6.6+ 固有の最新システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）を発行すると、NAS 等のカスタムカーネルや古い seccomp / OverlayFS 環境が `ENOSYS`（未実装）ではなく `ENOENT` 等の想定外エラーを返し、フォールバック不能となって `dpkg --configure`（`postinst`）やランタイムが即死します。
+  - したがって、コンテナのベースイメージ更新や `Dockerfile` のパッケージ追加・変更を行う際は、「ホストカーネルへの依存を最小化し、標準的な POSIX システムコールのみで完結させる」ために以下のガードレールを必ず守ってください：
+    1. **`--no-install-recommends` の徹底と仮想パッケージの非カーネル依存・軽量代替指定**: OR 依存（例: `default-dbus-session-bus | dbus-session-bus`）が `dbus-user-session` → `libpam-systemd` → `systemd` を暗黙的に引き込まないよう、`dbus-x11` を明示指定します。
+    2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) の維持**: `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` でブロックし、単一プロセスのアプリケーションコンテナにホストカーネル強く結合した init / デバイス管理デーモン群が混入することを防止します。
+    3. **パッケージ追加時の依存ツリー & `postinst` 事前監査**: 新規パッケージを追加する際は `apt-get install -s` で意図しないシステムデーモンや `libsystemd-shared` が引き込まれないこと、および `/var/lib/dpkg/info/*.postinst` が特定の新しい Linux カーネル機能・システムコール（`fchmodat2`, `openat2`, `mount_setattr` 等）に依存していないことを確認してください。
 - **詳細な最適化仕様の参照**:
   コンテナ内 Chrome 安定化、ヒステリシス・バックプレッシャー、PulseAudio UNIX ソケット構成、CDP ネイティブタッチの詳細は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) に網羅されています。コア処理を変更する前に必ず参照してください。
 
@@ -134,6 +141,8 @@ Tesroid/
    テスラ車載 Chromium は `<canvas>` タッチでは OS ソフトウェアキーボードを起動しません。必ず DOM `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由した CDP 入力注入を行ってください。
 7. **クライアント側 (`client/`) で物理キーボードやマウス操作を前提とした機能・UIを実装しない**:
    テスラ車載ディスプレイは **完全タッチオンリー環境** であり、運転席から物理キーボードやマウスは使用できません。`Escape` キーによるモーダル閉じ、キーボードショートカット、`keydown` リスナーへの依存、および `hover` 前提 UI・右クリックメニュー・マウスポインタ前提ドラッグなど、タッチのみで完結しない操作を `client/` に実装・要求することを厳禁とします。リモート側へのキー・文字入力は必ずタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入のみで行ってください。
+8. **`Dockerfile` で `/etc/apt/preferences.d/no-systemd` や `dbus-x11` を削除し、`systemd` / `dbus-user-session` / `udev` 等のホストカーネル依存システムパッケージを引き込まない**:
+   QNAP Container Station 等の NAS カスタムカーネル（Linux 5.10 系等）では、Ubuntu 24.04 の `systemd` v255 (`libsystemd-shared`) が発行する Linux 6.6+ システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）が `ENOSYS` ではなく `ENOENT` を返し、`dpkg --configure` が失敗してビルド不能になります（Issue #93）。コンテナへのパッケージ追加時は常にホストカーネル後方互換性を確認してください。
 
 ---
 
