@@ -16,7 +16,13 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerSoundRoutes } from './routes/sound.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
-import { detectVaapiConfig, type EncoderBackend, resolveEncoderMode } from './utils/vaapi.js';
+import { detectNvencConfig } from './utils/nvenc.js';
+import {
+  detectVaapiConfig,
+  type EncoderBackend,
+  resolveEncoderMode,
+  selectInitialEncoderBackend,
+} from './utils/vaapi.js';
 import { WebSocketHandler } from './ws/handler.js';
 
 async function bootstrap() {
@@ -35,17 +41,20 @@ async function bootstrap() {
   const displayNum = process.env.DISPLAY_NUM || ':99';
 
   const vaapiInfo = detectVaapiConfig();
+  const nvencInfo = detectNvencConfig();
   const encoderMode = resolveEncoderMode();
-  const initialBackend: EncoderBackend =
-    encoderMode === 'software' || (encoderMode === 'auto' && !vaapiInfo.vaapiEncodeSupported)
-      ? 'software'
-      : 'vaapi';
+  const initialBackend: EncoderBackend = selectInitialEncoderBackend(encoderMode, {
+    vaapiEncodeSupported: vaapiInfo.vaapiEncodeSupported,
+    nvencEncodeSupported: nvencInfo.nvencEncodeSupported,
+  });
 
   console.log(
     `[Bootstrap] Video config: device=${vaapiInfo.vaapiDevice || '<none>'}, ` +
       `driver=${vaapiInfo.libvaDriverName}, hasDri=${vaapiInfo.hasDri}, hasDxg=${vaapiInfo.hasDxg}, ` +
-      `vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported}, encoderMode=${encoderMode}, ` +
-      `initialBackend=${initialBackend} (${vaapiInfo.reason})`,
+      `vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported}, ` +
+      `nvencDevice=${nvencInfo.hasNvidiaDevice}, nvencEncodeSupported=${nvencInfo.nvencEncodeSupported}, ` +
+      `encoderMode=${encoderMode}, initialBackend=${initialBackend} ` +
+      `(vaapi: ${vaapiInfo.reason} | nvenc: ${nvencInfo.reason})`,
   );
 
   const initialConfig = configStore.getConfig();

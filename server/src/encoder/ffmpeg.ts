@@ -138,7 +138,9 @@ export class VaapiEncoder extends EventEmitter {
         ? 'software'
         : this.encoderMode === 'vaapi'
           ? 'vaapi'
-          : (options.initialBackend ?? 'vaapi');
+          : this.encoderMode === 'nvenc'
+            ? 'nvenc'
+            : (options.initialBackend ?? 'vaapi');
     this.audioSink = options.audioSink || 'virtual_sink.monitor';
     const rawComp = options.compressionLevel ?? (Number(process.env.VAAPI_COMPRESSION_LEVEL) || 7);
     this.compressionLevel = Math.max(1, Math.min(7, Math.round(rawComp)));
@@ -283,6 +285,21 @@ export class VaapiEncoder extends EventEmitter {
         '-tune',
         'zerolatency',
       );
+    } else if (this.activeBackend === 'nvenc') {
+      // NVENC (Issue #36 Phase 3): x11grab の CPU フレームを yuv420p 変換後 h264_nvenc で
+      // エンコード。Annex B + AUD 挿出は既存 NAL パーサ / AVCC パッキングと共通 (出力側共有引数)。
+      codecArgs.push(
+        '-vf',
+        'format=yuv420p',
+        '-c:v',
+        'h264_nvenc',
+        '-preset',
+        'p1',
+        '-tune',
+        'll',
+        '-zerolatency',
+        '1',
+      );
     } else {
       const vfFilter = this.gpuColorConversion
         ? 'hwupload,scale_vaapi=format=nv12'
@@ -329,12 +346,17 @@ export class VaapiEncoder extends EventEmitter {
    * Builds the environment variables passed to the Video FFmpeg child process.
    */
   public buildVideoEnv(): NodeJS.ProcessEnv {
-    const libvaDriverName = resolveLibvaDriverName(this.libvaDriverName);
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       DISPLAY: this.displayNum,
-      LIBVA_DRIVER_NAME: libvaDriverName,
     };
+    // NVENC は libva を通さないため LIBVA_DRIVER_NAME を強制しない
+    // (NVIDIA Container Toolkit が注入するドライバライブラリパスをそのまま用いる)。
+    if (this.activeBackend === 'nvenc') {
+      return env;
+    }
+    const libvaDriverName = resolveLibvaDriverName(this.libvaDriverName);
+    env.LIBVA_DRIVER_NAME = libvaDriverName;
     if (libvaDriverName === 'd3d12' && !process.env.GALLIUM_DRIVER) {
       env.GALLIUM_DRIVER = 'd3d12';
     }
@@ -481,6 +503,16 @@ export class VaapiEncoder extends EventEmitter {
             );
             this.switchToSoftwareFallback();
           }
+        } else if (
+          this.activeBackend === 'nvenc' &&
+          failedImmediately &&
+          this.encoderMode === 'auto'
+        ) {
+          // NVENC が即異常終了 (ドライバ未マウント / NVENCセッション不可等) → auto 時のみ CPU へ降格 (Issue #36)
+          console.warn(
+            '[VaapiEncoder] NVENC h264_nvenc encoder exited immediately; falling back to software (libx264) encoder.',
+          );
+          this.switchToSoftwareFallback();
         }
 
         const retryDelayMs = this.getNextVideoRetryDelayMs();

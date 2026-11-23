@@ -1,7 +1,7 @@
 // Issue #90: エンコーダーバックエンドに応じた設定UI制御の純粋ロジック。
 // settings-modal.ts から呼び出し、Vitest で単体検証可能にする。
 
-export type EncoderBackendName = 'vaapi' | 'software';
+export type EncoderBackendName = 'vaapi' | 'nvenc' | 'software';
 
 export interface EncoderStatusPayload {
   running?: boolean;
@@ -30,11 +30,11 @@ export const CPU_PRESET_IDS: readonly PresetId[] = ['cpu_balanced', 'cpu_low_pow
 /**
  * VAAPI依存コントロール（負荷優先度 / scale_vaapi / -low_power 1）を操作可能にするか。
  * ステータス未取得・バックエンド不明な間は既存挙動を壊さないよう操作可（安全側ではなく従来側）とし、
- * backend === 'software' のときのみ明確に無効化する。
+ * backend === 'software' および 'nvenc'（VAAPI引数が使われない）のときのみ明確に無効化する。
  */
 export function vaapiControlsEnabled(status: EncoderStatusPayload | null): boolean {
   if (!status || typeof status.backend !== 'string') return true;
-  return status.backend !== 'software';
+  return status.backend !== 'software' && status.backend !== 'nvenc';
 }
 
 /** バックエンドごとに表示すべきプリセットID一覧（'custom' は常に含む） */
@@ -71,6 +71,7 @@ const FALLBACK_REASON_LABELS: Record<string, string> = {
 const ENCODER_MODE_LABELS: Record<string, string> = {
   auto: '自動検出 (auto)',
   vaapi: 'VAAPI固定',
+  nvenc: 'NVENC固定',
   software: 'CPU固定 (software)',
 };
 
@@ -92,6 +93,8 @@ export function describeEncoderStatus(status: EncoderStatusPayload | null): stri
         ? ` / ${status.libvaDriverName.trim()}`
         : '';
     label = `VAAPI ハードウェア (h264_vaapi${driver})`;
+  } else if (status.backend === 'nvenc') {
+    label = 'NVENC ハードウェア (h264_nvenc)';
   } else {
     label = `不明なバックエンド (${status.backend})`;
   }
