@@ -213,6 +213,21 @@ describe('Contributor PR Quality & Architectural Guardrails (AGENTS.md)', () => 
     );
   });
 
+  it('keeps CI workflow on pull_request with explicit read-only token permissions and no secrets (Issue #87)', () => {
+    const ciWorkflow = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf-8');
+
+    // 明示的な読み取り専用権限宣言 (リポジトリ既定値への依存を排除)
+    expect(ciWorkflow).toMatch(/^permissions:\n {2}contents: read$/m);
+
+    // シークレット不使用 = Fork PR 実行時の秘匿情報漏洩面をゼロに保つ
+    expect(ciWorkflow).not.toMatch(/\$\{\{\s*secrets\./);
+
+    // Fork コードがベースリポジトリ権限で実行される pull_request_target 化を禁止
+    // (コメント内の説明文は除外し、YAML トリガー定義そのものを検証する)
+    const ciTriggerOnly = ciWorkflow.replace(/#.*$/gm, '');
+    expect(ciTriggerOnly).not.toContain('pull_request_target');
+  });
+
   it('enforces touch-only / no physical keyboard or mouse assumption guardrail in AGENTS.md and AI review workflow', () => {
     const agentsMd = fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf-8');
     const aiReviewWorkflow = fs.readFileSync(
