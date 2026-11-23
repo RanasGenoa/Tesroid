@@ -224,9 +224,14 @@ async function showSettingsModal(
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div>
-                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限 / 640〜1920)</label>
-                <input type="number" id="cfg-max-size" min="640" max="1920" step="2" value="1280" inputmode="numeric" style="width: 100%; box-sizing: border-box;" />
-                <p style="font-size: 11px; color: var(--text-muted); margin: 4px 0 0 0;">任意の値を入力できます (例: 1440)</p>
+                <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">最大解像度 (長辺上限)</label>
+                <select id="cfg-max-size">
+                  <option value="640">640px (最軽量・MCU2 / 弱回線向け)</option>
+                  <option value="960">960px (軽量・省電力)</option>
+                  <option value="1280" selected>1280px (標準)</option>
+                  <option value="1440">1440px (高画質)</option>
+                  <option value="1920">1920px (最高・フルHD)</option>
+                </select>
               </div>
               <div>
                 <label style="display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">VAAPI負荷優先度 (1-7・Intel UHD等 / VAAPI環境依存)</label>
@@ -1197,7 +1202,19 @@ async function showSettingsModal(
           customPanelEl.style.display =
             data.stream.performancePreset === 'custom' ? 'block' : 'none';
         }
-        if (maxSizeEl && data.stream.maxSize) maxSizeEl.value = String(data.stream.maxSize);
+        if (maxSizeEl && data.stream.maxSize) {
+          const savedMaxSize = String(data.stream.maxSize);
+          // 旧バージョンで保存された任意値 (グリッド外) は「現在の保存値」として明示し、
+          // ユーザーが変更するまで実値を保持する (セレクト化に伴う非破壊反映)
+          const optionEls = maxSizeEl.options ? Array.from(maxSizeEl.options) : [];
+          if (optionEls.length > 0 && !optionEls.some((o) => o.value === savedMaxSize)) {
+            const legacyOption = document.createElement('option');
+            legacyOption.value = savedMaxSize;
+            legacyOption.textContent = `${savedMaxSize}px (現在の保存値)`;
+            maxSizeEl.appendChild(legacyOption);
+          }
+          maxSizeEl.value = savedMaxSize;
+        }
         if (compEl && data.stream.vaapiCompressionLevel) {
           compEl.value = String(data.stream.vaapiCompressionLevel);
         }
