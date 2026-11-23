@@ -50,12 +50,12 @@ describe('Client load profile (Issue #11)', () => {
       expect(resolved.bitrateDefault).toBe(10_000_000); // 上限クランプ
     });
 
-    it('custom で FPS 指定なしは standard 選択肢へフォールバック (24fps 下限維持)', () => {
+    it('custom で FPS 指定なし / 24未満のみの指定は standard 選択肢へフォールバック (D2: 24fps 下限)', () => {
       const resolved = resolveClientProfile({
         clientProfile: { profile: 'custom', fpsOptions: [15, 12] },
       } as never);
-      // 15 は範囲内だが 12 は除外。指定ありなので [15] が残る
-      expect(resolved.fpsOptions).toEqual([15]);
+      // 24 未満はすべて除外され、空集合になるため standard 既定値へフォールバックする
+      expect(resolved.fpsOptions).toEqual([24, 30, 60]);
       const empty = resolveClientProfile({
         clientProfile: { profile: 'custom', fpsOptions: [] },
       } as never);
@@ -216,6 +216,18 @@ describe('Client load profile (Issue #11)', () => {
         payload: { stream: { clientProfile: { profile: 'turbo' } } },
       });
       expect(res.statusCode).toBe(400);
+      await app.close();
+    });
+
+    it('clientProfile に null / 非オブジェクトは 500 ではなく 400', async () => {
+      const { app, token } = await makeApp();
+      const resNull = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { stream: { clientProfile: null } },
+      });
+      expect(resNull.statusCode).toBe(400);
       await app.close();
     });
 

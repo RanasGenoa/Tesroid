@@ -1498,6 +1498,30 @@ export class WebSocketHandler {
     });
   }
 
+  /**
+   * Issue #11: サーバー起動時に保存済みクライアント負荷プロファイルを実際のエンコード寸法へ適用する。
+   * これにより lightweight 設定のコンテナで、最初の RESIZE 受信前も縮小エンコードが維持される。
+   * (後の RESIZE は currentEncode* との比較で冪等にスキップされる)
+   */
+  public async syncEncodeDimensionsFromConfig(): Promise<void> {
+    const dims = this.browserManager.getDimensions();
+    const resolvedProfile = resolveClientProfile(this.configStore.getConfig().stream);
+    const encodeDims = computeEncodeDimensions(
+      dims.width,
+      dims.height,
+      resolvedProfile.resolutionScale,
+    );
+    if (!encodeDims) {
+      return;
+    }
+    console.log(
+      `[WebSocketHandler] Applying saved client load profile at startup: encode ${encodeDims.width}x${encodeDims.height} (layout ${dims.width}x${dims.height})`,
+    );
+    this.currentEncodeWidth = encodeDims.width;
+    this.currentEncodeHeight = encodeDims.height;
+    await this.encoder.setEncodeDimensions(encodeDims);
+  }
+
   private handleMetricsMessage(buf: Buffer): void {
     try {
       const jsonStr = buf.subarray(1).toString('utf-8');

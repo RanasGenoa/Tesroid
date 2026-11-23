@@ -140,6 +140,9 @@ async function bootstrap() {
     configStore,
   );
 
+  // Issue #11: lightweight 設定のコンテナで、最初の RESIZE 前から縮小エンコードを維持する
+  await wsHandler.syncEncodeDimensionsFromConfig();
+
   app.get('/ws', { websocket: true }, (connection, req) => {
     wsHandler.handleConnection(connection, req);
   });

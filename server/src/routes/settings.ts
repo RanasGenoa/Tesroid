@@ -300,6 +300,13 @@ export function registerSettingsRoutes(
         ];
         let nextClientProfile: ClientProfileConfig | undefined = currentStream.clientProfile;
         if (stream.clientProfile !== undefined) {
+          if (
+            stream.clientProfile === null ||
+            typeof stream.clientProfile !== 'object' ||
+            Array.isArray(stream.clientProfile)
+          ) {
+            return reply.status(400).send({ error: 'Invalid clientProfile: Must be an object.' });
+          }
           const requestedProfile = stream.clientProfile.profile;
           if (!allowedClientProfiles.includes(requestedProfile)) {
             return reply.status(400).send({
@@ -344,7 +351,7 @@ export function registerSettingsRoutes(
               : currentStream.bitrate;
         let nextMaxFps =
           stream.maxFps !== undefined && Number.isFinite(Number(stream.maxFps))
-            ? Math.max(15, Math.min(60, Math.round(Number(stream.maxFps))))
+            ? Math.max(24, Math.min(60, Math.round(Number(stream.maxFps)))) // D2 裁定: 24fps 未満は不可
             : currentStream.maxFps;
         // FPS 選択肢はプロファイルが制御 (D4 裁定): 範囲外値は最も近い下位許可値へ寄せる
         const allowedFpsOptions = resolvedClientProfileEffective.fpsOptions;

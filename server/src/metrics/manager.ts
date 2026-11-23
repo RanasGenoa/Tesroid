@@ -80,14 +80,12 @@ export class MetricsManager {
       audioPacketsReceived: metrics.audioPacketsReceived || 0,
       bitrateKbps: Math.round(metrics.bitrateKbps || 0),
       avDriftMs: Math.round((metrics.avDriftMs || 0) * 10) / 10,
-      frameProcessP50Ms:
-        metrics.frameProcessP50Ms !== undefined
-          ? Math.round(metrics.frameProcessP50Ms * 10) / 10
-          : undefined,
-      frameProcessP95Ms:
-        metrics.frameProcessP95Ms !== undefined
-          ? Math.round(metrics.frameProcessP95Ms * 10) / 10
-          : undefined,
+      frameProcessP50Ms: Number.isFinite(metrics.frameProcessP50Ms)
+        ? Math.round((metrics.frameProcessP50Ms as number) * 10) / 10
+        : undefined,
+      frameProcessP95Ms: Number.isFinite(metrics.frameProcessP95Ms)
+        ? Math.round((metrics.frameProcessP95Ms as number) * 10) / 10
+        : undefined,
       displayWidth: metrics.displayWidth,
       displayHeight: metrics.displayHeight,
       devicePixelRatio: metrics.devicePixelRatio,

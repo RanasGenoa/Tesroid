@@ -93,7 +93,7 @@ export interface ClientProfileConfig {
   profile: ClientPerformanceProfile;
   // custom のみ: 明示値 (プリセット時は resolveClientProfile が規定値を展開)
   resolutionScale?: number; // 0.4〜1.0 (レイアウト解像度に対するエンコード倍率)
-  fpsOptions?: number[]; // HUD 選択肢集合 (15〜60)
+  fpsOptions?: number[]; // HUD 選択肢集合 (24〜60、D2 下限)
   bitrateDefault?: number; // プロファイル切替時のビットレート既定値
 }
 
@@ -118,7 +118,7 @@ export const CLIENT_PROFILE_DEFAULTS: Record<
 
 export interface ResolvedClientProfile {
   resolutionScale: number; // clamped 0.4..1.0
-  fpsOptions: number[]; // sorted, unique, 15..60
+  fpsOptions: number[]; // sorted, unique, 24..60 (D2 裁定: 24fps 未満は不可)
   bitrateDefault?: number;
 }
 
@@ -143,7 +143,7 @@ export function resolveClientProfile(stream?: StreamConfig): ResolvedClientProfi
         ...new Set(
           (cp!.fpsOptions as unknown[])
             .map((n) => Math.round(Number(n)))
-            .filter((n) => n >= 15 && n <= 60),
+            .filter((n) => n >= 24 && n <= 60),
         ),
       ]
     : [];

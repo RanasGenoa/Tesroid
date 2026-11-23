@@ -260,11 +260,12 @@ export function renderStreamingView(
 
   // Issue #11 (D4): 標準の既定選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
   let fpsOptions = [24, 30, 60];
-  const bitrateOptions = [500000, 750000, 1000000, 1500000, 2000000];
+  // 700k は lightweight プロファイルの bitrateDefault と一致させる (HUD 循環で段階飛ばし防止)
+  const bitrateOptions = [500000, 700000, 750000, 1000000, 1500000, 2000000];
 
   const applyFpsOptionsFromServer = (raw: unknown): void => {
     if (!Array.isArray(raw)) return;
-    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 15 && n <= 60);
+    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 24 && n <= 60); // D2 下限
     if (opts.length > 0) {
       fpsOptions = [...new Set(opts)].sort((a, b) => a - b);
     }
