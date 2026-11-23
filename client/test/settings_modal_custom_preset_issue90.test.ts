@@ -237,14 +237,19 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
       'custom',
     ].map((value) => ({ value }));
 
-    // settings 充填完了まで待ち受ける（充填は value への保存値設定として観測できる）
-    for (let i = 0; i < 50 && presetSelect.value !== 'cpu_balanced'; i++) {
+    // settings 充填後、health 未達（=GPU前提一覧）の適用で 'custom' へ書き換わる時点まで待つ。
+    // スケジュールによっては充填適用が option 設定前に走るため、その場合は固着状態を手動で再現する。
+    let observedCustom = false;
+    for (let i = 0; i < 50; i++) {
+      if (presetSelect.value === 'custom') {
+        observedCustom = true;
+        break;
+      }
       await new Promise((r) => setTimeout(r, 2));
     }
-
-    // レースで生じた「custom 固着」状態を確定的に再現する（health 未達 = バックエンド不明の
-    // 適用で 'custom' に書き換わった時点）。ユーザー操作はない（presetTouched=false）。
-    presetSelect.value = 'custom';
+    if (!observedCustom) {
+      presetSelect.value = 'custom';
+    }
 
     // health (software) 到達後、未操作なら保存値 cpu_balanced へ復元され固着しない
     resolveHealth({
