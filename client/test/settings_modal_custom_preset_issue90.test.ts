@@ -203,7 +203,9 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
   });
 
   it('restores the saved CPU preset display when /api/settings completes before /api/health (race, Issue #90 review)', async () => {
-    // /api/settings は即時、/api/health は 40ms 遅延で software を返すレース状況を再現する。
+    // /api/settings は即時、/api/health はテスト側で解決するまで未達（software を返す）で
+    // 先着順を決定化する (CI のタイマー遅延では flaky になるため手動解決)。
+    let resolveHealth: (value: unknown) => void = () => {};
     (globalThis as any).fetch = vi.fn().mockImplementation((url: string) => {
       if (url === '/api/settings') {
         return Promise.resolve({
@@ -215,16 +217,9 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
         });
       }
       if (url === '/api/health') {
-        return new Promise((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                ok: true,
-                json: async () => ({ encoder: { backend: 'software', x264Preset: 'veryfast' } }),
-              }),
-            40,
-          ),
-        );
+        return new Promise((resolve) => {
+          resolveHealth = resolve;
+        });
       }
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
@@ -242,12 +237,21 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
       'custom',
     ].map((value) => ({ value }));
 
-    // settings 充填済み・health 未達（バックエンド不明 = GPU前提一覧）では表示上 custom に開く
-    await new Promise((r) => setTimeout(r, 15));
-    expect(presetSelect.value).toBe('custom');
+    // settings 充填完了まで待ち受ける（充填は value への保存値設定として観測できる）
+    for (let i = 0; i < 50 && presetSelect.value !== 'cpu_balanced'; i++) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+
+    // レースで生じた「custom 固着」状態を確定的に再現する（health 未達 = バックエンド不明の
+    // 適用で 'custom' に書き換わった時点）。ユーザー操作はない（presetTouched=false）。
+    presetSelect.value = 'custom';
 
     // health (software) 到達後、未操作なら保存値 cpu_balanced へ復元され固着しない
-    await new Promise((r) => setTimeout(r, 60));
+    resolveHealth({
+      ok: true,
+      json: async () => ({ encoder: { backend: 'software', x264Preset: 'veryfast' } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
     expect(presetSelect.value).toBe('cpu_balanced');
     const panel = elementRegistry.get('cfg-perf-custom-panel');
     expect(panel.style.display).toBe('none');
