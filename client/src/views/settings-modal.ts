@@ -312,17 +312,25 @@ async function showSettingsModal(
       const visibleValues = optionEls.map((o) => o.value);
       if (
         optionEls.length > 0 &&
-        !(visible as readonly string[]).includes(presetSelect.value) &&
         visibleValues.some((v) => (visible as readonly string[]).includes(v))
       ) {
-        // 現在のバックエンドで無効な保存値は、表示上のみ 'custom' 相当として開く
-        presetSelect.value = resolveDisplayPreset(
-          savedPerformancePreset ?? presetSelect.value,
-          encoderStatus,
-        );
-        const customPanelEl = overlay.querySelector('#cfg-perf-custom-panel') as HTMLElement | null;
-        if (customPanelEl) {
-          customPanelEl.style.display = presetSelect.value === 'custom' ? 'block' : 'none';
+        // 未操作時は常に保存値から再評価する。/api/settings が /api/health より先に
+        // 完了すると、ステータス未取得（=GPU前提一覧）で 'custom' に書き換わった後、
+        // health 再適用時に 'custom' が可視値のため元へ戻らないレースがある (Issue #90 review)。
+        const targetPreset =
+          !presetTouched && savedPerformancePreset
+            ? resolveDisplayPreset(savedPerformancePreset, encoderStatus)
+            : !(visible as readonly string[]).includes(presetSelect.value)
+              ? resolveDisplayPreset(savedPerformancePreset ?? presetSelect.value, encoderStatus)
+              : presetSelect.value;
+        if (presetSelect.value !== targetPreset) {
+          presetSelect.value = targetPreset;
+          const customPanelEl = overlay.querySelector(
+            '#cfg-perf-custom-panel',
+          ) as HTMLElement | null;
+          if (customPanelEl) {
+            customPanelEl.style.display = presetSelect.value === 'custom' ? 'block' : 'none';
+          }
         }
       }
     }

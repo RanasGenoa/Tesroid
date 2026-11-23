@@ -196,4 +196,55 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
     // 未編集では保存済みプリセット名をそのまま送信し、誤った custom 永続化が起きない
     expect(put.stream.performancePreset).toBe('balanced');
   });
+
+  it('restores the saved CPU preset display when /api/settings completes before /api/health (race, Issue #90 review)', async () => {
+    // /api/settings は即時、/api/health は 40ms 遅延で software を返すレース状況を再現する。
+    (globalThis as any).fetch = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/settings') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            locale: 'ja-JP',
+            stream: { ...savedStream, performancePreset: 'cpu_balanced' },
+          }),
+        });
+      }
+      if (url === '/api/health') {
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: async () => ({ encoder: { backend: 'software', x264Preset: 'veryfast' } }),
+              }),
+            40,
+          ),
+        );
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
+    const presetSelect = elementRegistry.get('cfg-perf-preset');
+    expect(presetSelect).toBeDefined();
+    // 実 <select> の option 一覧（6プリセット）をモックに用意し、可視性切替コードを発火させる
+    presetSelect.options = [
+      'high',
+      'balanced',
+      'low_power',
+      'cpu_balanced',
+      'cpu_low_power',
+      'custom',
+    ].map((value) => ({ value }));
+
+    // settings 充填済み・health 未達（バックエンド不明 = GPU前提一覧）では表示上 custom に開く
+    await new Promise((r) => setTimeout(r, 15));
+    expect(presetSelect.value).toBe('custom');
+
+    // health (software) 到達後、未操作なら保存値 cpu_balanced へ復元され固着しない
+    await new Promise((r) => setTimeout(r, 60));
+    expect(presetSelect.value).toBe('cpu_balanced');
+    const panel = elementRegistry.get('cfg-perf-custom-panel');
+    expect(panel.style.display).toBe('none');
+  });
 });
