@@ -17,6 +17,13 @@ Tesroid は **[Semantic Versioning 2.0.0 (SemVer)](https://semver.org/lang/ja/)*
 | **MINOR** (機能追加) | 後方互換性のある新機能の追加・拡張 | 新しい車載UI機能、設定項目の追加、新しいエンコードチューニング、HUD改善 |
 | **PATCH** (バグ修正) | 後方互換性のあるバグ修正・安定性向上・ドキュメント改善 | パケットドロップ対策の修正、メモリリーク修正、typo修正、テスト追加 |
 
+### リリースタグ付与時のバージョン同期手順
+リリースタグを振る際は、タグと同じバージョンへリポジトリ内の自己申告バージョンを同期してからタグを付与します：
+
+1. 最新 `main` から `chore/sync-package-version-<MAJOR>.<MINOR>.<PATCH>` ブランチを作成し、ルート / client / server の `package.json` と各 `package-lock.json` の `"version"` を同一値へ更新する PR を作成してマージする
+2. マージ後の `main` コミットへリリースタグ（lightweight）を付与して push する
+3. GitHub Release ページを作成する（タイトル = タグ名、本文は既存様式: 概要 / 主な変更・新機能 / 検証環境）
+
 ### 車載実機検証用プレリリース (Release Candidate)
 テスラ車載ブラウザでの実走検証や LTE 回線でのストレステストを行う場合、**プレリリースタグ** を使用します：
 - 例: `v0.2.0-rc.1`, `v0.2.0-rc.2`
