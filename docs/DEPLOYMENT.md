@@ -28,10 +28,9 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   | :--- | :--- | :--- | :--- | :--- |
   | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` (VAAPI) | ✅ 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
   | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` (VAAPI) | ✅ 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
-  | **Intel HD Graphics 4600** | Haswell (第4世代 Core i5-4590 等) | `i965` (VAAPI) | ✅ 動作確認済み | `.env` で `LIBVA_DRIVER_NAME=i965` を指定して H.264 ハードウェアエンコード動作 |
+  | **旧世代 Intel iGPU** | Haswell 以前 (Core i5-4590 / Intel HD Graphics 4600 等) | `i965` (`i965-va-driver-shaders`) | ✅ 動作確認済み | HD Graphics 4600 実機で H.264 ハードウェアエンコード動作確認。起動時に `vainfo` プローブで `iHD` 非対応時に自動選択（`.env` で `LIBVA_DRIVER_NAME=i965` の明示指定も可） |
   | **Windows 10/11 + Docker Desktop** (AMD Radeon RX 9070 XT) | D3D12 ブリッジ + 自動フォールバック | `libx264` (Software) | ✅ 動作確認済み | `vgem` 不在および RX 9070 XT WSL UMD 制限のため `ENCODER_MODE=auto` により `libx264` で 1280x720@30fps リアルタイム動作を確認 |
   | **AMD Radeon (Linux)** | RDNA 3/4 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | ✅ 動作確認済み | RX 9070 XT (Navi 48) + Linux amdgpu (VCN v5) 実機で検証済: `radeonsi` / `renderD128` 自動判定、H.264 `EncSlice` プロファイル検出、`scale_vaapi` GPU CSC で VCN エンコード 20 倍超速度、Chrome ハードウェア動画デコード確認（XR 環境では Xvfb 安定性のため 2D ラスタは CPU 維持のまま動画のみ HW） |
-  | **旧世代 Intel iGPU** | Haswell 以前 | `i965` (VAAPI) | 🔄 対応実装済み（未検証） | `i965-va-driver-shaders` 搭載、`iHD` 非対応時に自動フォールバック（Haswell HD 4600 は上記の通り動作確認済み） |
 - **メモリ**: 2GB 以上推奨（コンテナ内 Google Chrome + FFmpeg + PulseAudio + Node.js が稼働）
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 
