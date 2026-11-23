@@ -92,7 +92,6 @@ gh api --method PUT repos/RanasGenoa/Tesroid/actions/permissions/fork-pr-contrib
   3. `gh pr checks <PR番号> --repo RanasGenoa/Tesroid` で CI の開始・完了を確認します。
 - **セキュリティ境界の設計方針（固定）**: `ci.yml` は `pull_request` トリガー（GitHub ホスト型サンドボックス）を維持し、シークレット不使用・`permissions: contents: read` を明示宣言したまま変更しません。Fork のコードがベースリポジトリの権限・シークレットで実行される `pull_request_target` 上での CI 実行は、任意コード実行リスク（pwn request）のため採用しません。`ai-review.yml` の `pull_request_target` はベースブランチのコードのみチェックアウトし PR 差分をテキストとして扱うため、Fork のコードを実行しない設計です。
 
-
 ---
 
 ## 4. 開発・コントリビュートの手順 (ワークフロー)
