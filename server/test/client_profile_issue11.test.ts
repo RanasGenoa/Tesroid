@@ -187,6 +187,41 @@ describe('Client load profile (Issue #11)', () => {
       await app.close();
     });
 
+    it('プロファイル切替にビットレート・FPS 明示が含まれる場合、encoder 更新は reapplyClientProfile へ委譲し二重再起動を避ける (PR #94 レビュー Medium)', async () => {
+      const { app, token, mockEncoder, mockWsHandler } = await makeApp();
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          stream: { clientProfile: { profile: 'lightweight' }, maxFps: 30, bitrate: 900_000 },
+        },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // 設定ルートから encoder.updateConfig を直接呼ばず、寸法と同一の 1 回へ統合するため
+      // streamUpdate を reapplyClientProfile へ委譲する
+      expect(mockEncoder.updateConfig).not.toHaveBeenCalled();
+      expect(mockWsHandler.reapplyClientProfile).toHaveBeenCalledTimes(1);
+      const delegated = (mockWsHandler.reapplyClientProfile as any).mock.calls[0]?.[0];
+      expect(delegated?.fps).toBe(30);
+      expect(delegated?.bitrate).toBe(900_000);
+
+      // プロファイル無変更のストリーム変更は従来どおり encoder.updateConfig を直接呼ぶ
+      mockWsHandler.reapplyClientProfile.mockClear();
+      const resPlain = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { stream: { bitrate: 800_000 } },
+      });
+      expect(resPlain.statusCode).toBe(200);
+      expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
+      expect(mockWsHandler.reapplyClientProfile).not.toHaveBeenCalled();
+      await app.close();
+    });
+
     it('custom の保存値は実効値へ正規化される', async () => {
       const { app, configStore, token } = await makeApp();
       const res = await app.inject({

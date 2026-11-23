@@ -861,6 +861,9 @@ export class VaapiEncoder extends EventEmitter {
     lowPower?: boolean;
     gpuColorConversion?: boolean;
     x264Preset?: string;
+    // PR #94 レビュー (Medium): プロファイル切替時の連動変更を 1 回の再起動でまとめるため、
+    // エンコード出力寸法を同時指定できる。未指定時は従来と完全に同一の restart 呼び出し形。
+    encodeDimensions?: EncodeDimensions | null;
   }): Promise<void> {
     // libx264 speed preset: only restart when the validated value actually changes,
     // and only while the software backend is active (x264 args are unused under VAAPI),
@@ -880,6 +883,7 @@ export class VaapiEncoder extends EventEmitter {
       config.compressionLevel !== undefined ||
       config.lowPower !== undefined ||
       config.gpuColorConversion !== undefined ||
+      config.encodeDimensions !== undefined ||
       x264PresetNeedsRestart;
 
     if (videoNeedsRestart) {
@@ -887,7 +891,34 @@ export class VaapiEncoder extends EventEmitter {
         config.compressionLevel !== undefined ||
         config.lowPower !== undefined ||
         config.gpuColorConversion !== undefined;
-      if (hasTuningUpdates) {
+      if (config.encodeDimensions !== undefined) {
+        // 寸法同時指定 (プロファイル切替): fps / bitrate / tuning / 寸法を 1 回の restart で適用する
+        if (hasTuningUpdates) {
+          await this.restart(
+            config.width,
+            config.height,
+            config.fps,
+            config.bitrate,
+            config.audioBitrate,
+            config.compressionLevel,
+            config.lowPower,
+            config.gpuColorConversion,
+            config.encodeDimensions,
+          );
+        } else {
+          await this.restart(
+            config.width,
+            config.height,
+            config.fps,
+            config.bitrate,
+            config.audioBitrate,
+            undefined,
+            undefined,
+            undefined,
+            config.encodeDimensions,
+          );
+        }
+      } else if (hasTuningUpdates) {
         await this.restart(
           config.width,
           config.height,

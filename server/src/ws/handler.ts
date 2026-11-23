@@ -1419,6 +1419,12 @@ export class WebSocketHandler {
 
     this.resizeTimer = setTimeout(async () => {
       try {
+        // PR #94 レビュー (Medium): デバウンス待機中にプロファイル変更があった場合へ備え、
+        // タイマー発火時点で実効スケールからエンコード寸法を再計算する
+        const liveProfile = resolveClientProfile(this.configStore.getConfig().stream);
+        const liveEncodeDims = computeEncodeDimensions(width, height, liveProfile.resolutionScale);
+        const liveEncodeW = liveEncodeDims ? liveEncodeDims.width : width;
+        const liveEncodeH = liveEncodeDims ? liveEncodeDims.height : height;
         console.log(`[WebSocketHandler] Executing dynamic server resize to ${width}x${height}...`);
         // 解像度変更時はバッファ全消去 (要件2)
         this.playbackBuffer.clear();
@@ -1429,7 +1435,7 @@ export class WebSocketHandler {
         }
 
         await this.browserManager.resize(width, height);
-        if (encodeDims) {
+        if (liveEncodeDims) {
           await this.encoder.restart(
             width,
             height,
@@ -1439,7 +1445,7 @@ export class WebSocketHandler {
             undefined,
             undefined,
             undefined,
-            encodeDims,
+            liveEncodeDims,
           );
         } else {
           // 標準プロファイル (scale 1.0) は従来と完全に同一の呼び出し形を維持する
@@ -1448,16 +1454,16 @@ export class WebSocketHandler {
         this.inputManager.updateDimensions(width, height);
         this.currentResWidth = width;
         this.currentResHeight = height;
-        this.currentEncodeWidth = encodeW;
-        this.currentEncodeHeight = encodeH;
+        this.currentEncodeWidth = liveEncodeW;
+        this.currentEncodeHeight = liveEncodeH;
 
         this.broadcastControl({
           type: 'RESOLUTION_CHANGED',
-          width: encodeW,
-          height: encodeH,
+          width: liveEncodeW,
+          height: liveEncodeH,
         });
         console.log(
-          `[WebSocketHandler] Server successfully resized to ${width}x${height} (encode ${encodeW}x${encodeH})`,
+          `[WebSocketHandler] Server successfully resized to ${width}x${height} (encode ${liveEncodeW}x${liveEncodeH})`,
         );
       } catch (err) {
         console.error('[WebSocketHandler] Failed to apply resize:', err);
@@ -1468,34 +1474,58 @@ export class WebSocketHandler {
   /**
    * Issue #11: クライアント負荷プロファイル変更時に設定ルートから呼ばれる。
    * レイアウト (リモートビューポート) 寸法は変えず、エンコード出力寸法のみを再計算して適用する。
+   * streamUpdate を渡した場合は、ビットレート・FPS 等の連動変更を新しいエンコード寸法と
+   * 単一の updateConfig 再起動へ統合する (PR #94 レビュー Medium: 二重再起動の抑制)。
    */
-  public async reapplyClientProfile(): Promise<void> {
+  public async reapplyClientProfile(streamUpdate?: {
+    fps?: number;
+    bitrate?: string | number;
+    audioBitrate?: string | number;
+    compressionLevel?: number;
+    lowPower?: boolean;
+    gpuColorConversion?: boolean;
+    x264Preset?: string;
+  }): Promise<void> {
     const layoutW = this.currentResWidth;
     const layoutH = this.currentResHeight;
     const resolvedProfile = resolveClientProfile(this.configStore.getConfig().stream);
     const encodeDims = computeEncodeDimensions(layoutW, layoutH, resolvedProfile.resolutionScale);
     const encodeW = encodeDims ? encodeDims.width : layoutW;
     const encodeH = encodeDims ? encodeDims.height : layoutH;
-    if (encodeW === this.currentEncodeWidth && encodeH === this.currentEncodeHeight) {
+    const encodeDimsChanged =
+      encodeW !== this.currentEncodeWidth || encodeH !== this.currentEncodeHeight;
+    if (!encodeDimsChanged && !streamUpdate) {
       return;
     }
-    console.log(
-      `[WebSocketHandler] Re-applying client load profile: encode ${this.currentEncodeWidth}x${this.currentEncodeHeight} -> ${encodeW}x${encodeH} (layout ${layoutW}x${layoutH} unchanged)`,
-    );
-    this.playbackBuffer.clear();
-    for (const session of this.clientSessions.values()) {
-      if (session.mode === 'CATCHUP') {
-        this.abortCatchupAndSwitchToLive(session);
+    if (encodeDimsChanged) {
+      console.log(
+        `[WebSocketHandler] Re-applying client load profile: encode ${this.currentEncodeWidth}x${this.currentEncodeHeight} -> ${encodeW}x${encodeH} (layout ${layoutW}x${layoutH} unchanged)`,
+      );
+      this.playbackBuffer.clear();
+      for (const session of this.clientSessions.values()) {
+        if (session.mode === 'CATCHUP') {
+          this.abortCatchupAndSwitchToLive(session);
+        }
       }
     }
-    await this.encoder.setEncodeDimensions(encodeDims);
+    if (streamUpdate) {
+      // 寸法変更の有無に関わらず、連動変更と寸法適用は updateConfig の 1 回に統合する
+      await this.encoder.updateConfig({
+        ...streamUpdate,
+        ...(encodeDimsChanged ? { encodeDimensions: encodeDims } : {}),
+      });
+    } else {
+      await this.encoder.setEncodeDimensions(encodeDims);
+    }
     this.currentEncodeWidth = encodeW;
     this.currentEncodeHeight = encodeH;
-    this.broadcastControl({
-      type: 'RESOLUTION_CHANGED',
-      width: encodeW,
-      height: encodeH,
-    });
+    if (encodeDimsChanged) {
+      this.broadcastControl({
+        type: 'RESOLUTION_CHANGED',
+        width: encodeW,
+        height: encodeH,
+      });
+    }
   }
 
   /**

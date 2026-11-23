@@ -417,7 +417,7 @@ export function registerSettingsRoutes(
         await browserManager.setDisplayScale(updates.displayScale);
       }
 
-      if (stream && encoder && updates.stream) {
+      if (stream && updates.stream) {
         const {
           maxFps,
           bitrate,
@@ -436,44 +436,52 @@ export function registerSettingsRoutes(
           vaapiGpuColorConversion !== undefined || stream.performancePreset !== undefined;
         // libx264 speed preset (software backend, Issue #90)
         const applyX264Preset = x264Preset !== undefined || stream.performancePreset !== undefined;
+        const streamUpdate = {
+          fps: maxFps,
+          bitrate,
+          audioBitrate,
+          compressionLevel: applyCompression ? updates.stream.vaapiCompressionLevel : undefined,
+          lowPower: applyLowPower ? updates.stream.vaapiLowPower : undefined,
+          gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
+          x264Preset: applyX264Preset ? updates.stream.x264Preset : undefined,
+        };
+        // PR #94 レビュー (Medium): プロファイル変更時はここで再起動せず reapplyClientProfile へ
+        // 委譲し、ビットレート・FPS 連動と新しいエンコード寸法を 1 回の再起動へ統合する
+        const deferEncoderToProfile = clientProfileChanged && wsHandler !== undefined;
         if (
-          maxFps !== undefined ||
-          bitrate !== undefined ||
-          audioBitrate !== undefined ||
-          applyCompression ||
-          applyLowPower ||
-          applyGpuCsc ||
-          applyX264Preset
+          encoder &&
+          !deferEncoderToProfile &&
+          (maxFps !== undefined ||
+            bitrate !== undefined ||
+            audioBitrate !== undefined ||
+            applyCompression ||
+            applyLowPower ||
+            applyGpuCsc ||
+            applyX264Preset)
         ) {
           console.log(
             `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${updates.stream.vaapiCompressionLevel}, lowPower=${updates.stream.vaapiLowPower}, gpuCsc=${updates.stream.vaapiGpuColorConversion}, x264Preset=${updates.stream.x264Preset}`,
           );
-          await encoder.updateConfig({
-            fps: maxFps,
-            bitrate,
-            audioBitrate,
-            compressionLevel: applyCompression ? updates.stream.vaapiCompressionLevel : undefined,
-            lowPower: applyLowPower ? updates.stream.vaapiLowPower : undefined,
-            gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
-            x264Preset: applyX264Preset ? updates.stream.x264Preset : undefined,
+          await encoder.updateConfig(streamUpdate);
+        }
+
+        if (wsHandler) {
+          // Issue #11: プロファイル変更時はレイアウト寸法を変えず、エンコード出力寸法のみ再適用
+          if (clientProfileChanged) {
+            try {
+              await wsHandler.reapplyClientProfile(
+                deferEncoderToProfile ? streamUpdate : undefined,
+              );
+            } catch (err) {
+              console.error('[SettingsRoute] reapplyClientProfile failed:', err);
+            }
+          }
+          wsHandler.broadcastStreamSettings({
+            maxFps: updates.stream.maxFps,
+            bitrate: updates.stream.bitrate,
+            fpsOptions: resolvedClientProfileEffective.fpsOptions,
           });
         }
-      }
-
-      if (stream && updates.stream && wsHandler) {
-        // Issue #11: プロファイル変更時はレイアウト寸法を変えず、エンコード出力寸法のみ再適用
-        if (clientProfileChanged) {
-          try {
-            await wsHandler.reapplyClientProfile();
-          } catch (err) {
-            console.error('[SettingsRoute] reapplyClientProfile failed:', err);
-          }
-        }
-        wsHandler.broadcastStreamSettings({
-          maxFps: updates.stream.maxFps,
-          bitrate: updates.stream.bitrate,
-          fpsOptions: resolvedClientProfileEffective.fpsOptions,
-        });
       }
 
       if (browserUrl) {
