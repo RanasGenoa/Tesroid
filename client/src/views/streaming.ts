@@ -95,7 +95,7 @@ export function renderStreamingView(
             <span id="hud-fps" class="hud-badge telemetry-value" title="実測描画フレームレート">-- FPS</span>
 
             <!-- Stream Quality Quick Toggles -->
-            <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで 30 / 60 切替)">
+            <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで選択可能なFPS段階を循環)">
               ${ICONS.zap} <span id="hud-fps-val" class="telemetry-value">30</span>
             </button>
             <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.25M 〜 2.0M の 6 段階循環)">

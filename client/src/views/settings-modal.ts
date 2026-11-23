@@ -1237,9 +1237,18 @@ async function showSettingsModal(
             const scaleEl = overlay.querySelector('#cfg-client-scale') as HTMLSelectElement | null;
             if (scaleEl) {
               const targetScale = String(data.clientProfileResolved.resolutionScale);
-              if (Array.from(scaleEl.options).some((o) => o.value === targetScale)) {
-                scaleEl.value = targetScale;
+              // 選択肢外の保存値 (API経由等) も「現在の保存値」として明示し非破壊保持 (cfg-max-size と同一方針)
+              const scaleOptionEls = scaleEl.options ? Array.from(scaleEl.options) : [];
+              if (
+                scaleOptionEls.length > 0 &&
+                !scaleOptionEls.some((o) => o.value === targetScale)
+              ) {
+                const legacyOption = document.createElement('option');
+                legacyOption.value = targetScale;
+                legacyOption.textContent = `${Math.round(Number(targetScale) * 100)}% (現在の保存値)`;
+                scaleEl.appendChild(legacyOption);
               }
+              scaleEl.value = targetScale;
             }
             for (const fps of [24, 30, 60]) {
               const cb = overlay.querySelector(`#cfg-client-fps-${fps}`) as HTMLInputElement | null;
