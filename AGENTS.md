@@ -148,6 +148,7 @@ AI エージェント（Antigravity, Cursor, Gemini, Claude 等）が自律的�
 
 ### 2. リリースタグ・バージョニング規則の遵守
 - リリースタグ `v<MAJOR>.<MINOR>.<PATCH>` の作成は、**ユーザーから明示的なリリース指示があった場合のみ** 行ってください。
+- タグ付与前には必ず CONTRIBUTING.md §1「リリースタグ付与時のバージョン同期手順」に従い、`package.json`（root / client / server）と各 `package-lock.json` の `"version"` をタグと同じ値へ同期する PR をマージした上で、タグを付与してください。
 - バージョン採番は **SemVer 2.0.0** に厳格に従ってください：
   - `MAJOR`: WebSocket プロトコル仕様破壊、必須環境の大幅刷新
   - `MINOR`: 新機能追加、設定拡張、HUD改善
