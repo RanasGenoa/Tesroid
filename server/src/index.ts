@@ -64,6 +64,15 @@ async function bootstrap() {
       `(vaapi: ${vaapiInfo.reason} | nvenc: ${nvencInfo.reason})`,
   );
 
+  // NVENC 固定なのに能力プローブが失敗した場合、降格せず原因を明示警告する (Issue #36)
+  if (encoderMode === 'nvenc' && !nvencInfo.nvencEncodeSupported) {
+    console.warn(
+      '[Bootstrap] ENCODER_MODE=nvenc is fixed but the NVENC capability probe failed: ' +
+        `${nvencInfo.reason}. h264_nvenc will likely fail at runtime ` +
+        '(check NVIDIA Container Toolkit installation and driver mount).',
+    );
+  }
+
   const initialConfig = configStore.getConfig();
   const browserManager = new BrowserManager({
     displayNum,

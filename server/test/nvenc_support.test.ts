@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { spawnMock } = vi.hoisted(() => ({
