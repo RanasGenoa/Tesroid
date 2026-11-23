@@ -177,6 +177,9 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
     expect(put).toBeDefined();
     expect(put.stream.performancePreset).toBe('custom');
     expect(put.stream.maxSize).toBe(960);
+
+    // テスト終了前に必ず閉じて encoderStatusTimer / metricsTimer を解放する (Issue #90 review)
+    elementRegistry.get('modal-close-btn').click();
   });
 
   it('display-only custom expansion without any edit keeps the saved preset name on save', async () => {
@@ -195,6 +198,8 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
     expect(put).toBeDefined();
     // 未編集では保存済みプリセット名をそのまま送信し、誤った custom 永続化が起きない
     expect(put.stream.performancePreset).toBe('balanced');
+
+    elementRegistry.get('modal-close-btn').click();
   });
 
   it('restores the saved CPU preset display when /api/settings completes before /api/health (race, Issue #90 review)', async () => {
@@ -246,5 +251,7 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
     expect(presetSelect.value).toBe('cpu_balanced');
     const panel = elementRegistry.get('cfg-perf-custom-panel');
     expect(panel.style.display).toBe('none');
+
+    elementRegistry.get('modal-close-btn').click();
   });
 });
