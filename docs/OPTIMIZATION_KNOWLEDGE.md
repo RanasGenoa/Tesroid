@@ -391,6 +391,44 @@ Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄�
 
 ---
 
+## 8-B. 課題⑧: NAS・カスタム Linux カーネル環境におけるコンテナパッケージ更新時のシステムコール非互換と防止ガードレール (Issue #93)
+
+### 現象
+QNAP TS-453D（QTS 5.2.8 / Container Station / Linux 5.10 系カスタムカーネル）環境において、コンテナベースを Ubuntu 22.04 から Ubuntu 24.04 (Noble) へ刷新した `v0.7.0` 以降、`docker compose up -d --build` の `apt-get install` ステップで `systemd` パッケージの設定（`dpkg --configure systemd`）が以下のエラーで失敗し、ビルドが停止する事象が発生した：
+
+```text
+fchmod() of /etc/credstore.encrypted failed: No such file or directory
+Creating group 'systemd-journal' with GID 999.
+Failed to copy permissions from /etc/group to /etc/.#group...: No such file or directory
+dpkg: error processing package systemd (--configure):
+  installed systemd package post-installation script subprocess returned error exit status 1
+```
+
+### 根本原因のメカニズム
+1. **Ubuntu 24.04 における暗黙的な `systemd` 依存チェーンの変化**:
+   - `pulseaudio` の依存ツリー（`pulseaudio` ➔ `libsnapd-glib-2-1` ➔ `libsoup-3.0-0` ➔ `glib-networking` ➔ `gsettings-desktop-schemas` ➔ `dconf-gsettings-backend` ➔ `dconf-service`）において、`dconf-service` は `default-dbus-session-bus | dbus-session-bus` に依存している。
+   - APT が第1候補の `default-dbus-session-bus`（実体は `dbus-user-session`）を自動選択したことで、`dbus-user-session` ➔ `libpam-systemd` ➔ `systemd` + `libsystemd-shared` + `systemd-sysv` がコンテナ内に暗黙的に引き込まれた。
+2. **新世代ユーザーランド（`systemd` v255 / `glibc` 2.39）とホスト Linux カーネルのシステムコール非互換**:
+   - Ubuntu 24.04 の `libsystemd-shared-255.so` 内の `fchmod_opath()`（`systemd-tmpfiles` および `systemd-sysusers` が使用）は、Linux 6.6 で新規導入されたシステムコール **`fchmodat2(fd, "", mode, AT_EMPTY_PATH)`（syscall 452）** を空文字列パス `""` で直接発行する。
+   - `fchmod_opath()` の実装は、カーネルが未対応の場合に `ENOSYS` (38) または `EPERM` (1) が返ることを前提として `/proc/self/fd/<fd>` の `chmod()` へフォールバックする分岐しか持っていない。
+   - しかし、QNAP QTS のカスタムカーネル / Container Station 環境では空パス引数に対して **`ENOENT` (2: `No such file or directory`)** が返却されるため、フォールバック処理に到達せず即座にエラー終了していた。
+
+### 解決策 & 今後のコンテナパッケージ更新時のガードレール（ホストカーネル非依存・ポータビリティ原則）
+Tesroid は **「特定の Linux カーネルバージョンやディストリビューションに極力依存せず、幅広いホスト環境（標準的な Linux、QNAP / Synology / TrueNAS / Unraid 等の NAS OS、旧世代 LTS カーネル、Windows Docker Desktop / WSL2 等）でそのまま動作すること」** を重視している。
+単一プロセスツリー（Tini + Node.js）で動作する Tesroid コンテナにはホストカーネルと密結合する `systemd` や `dbus-user-session` は一切不要であり、将来他のパッケージ更新でも同様の「特定カーネル依存のシステムコール非互換」を引き込まないよう、以下の **3重のガードレール** を設ける：
+
+1. **仮想パッケージの非 systemd 代替明示（`dbus-x11`）**:
+   - `Dockerfile` の `apt-get install` に `dbus-x11`（`Provides: dbus-session-bus`）を明示指定し、`dconf-service` の `default-dbus-session-bus | dbus-session-bus` 依存を `systemd` 非依存の X11 D-Bus で解決する。これにより `dbus-user-session` / `libpam-systemd` / `systemd` / `libsystemd-shared` は一切インストールされない。
+2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) による混入の強制ブロック**:
+   - `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` に設定し、将来 `Dockerfile` に新規パッケージを追加した際や Ubuntu リポジトリ側の依存関係変更時にも、APT ソルバがこれらを選択することを強制禁止する。
+3. **ベースイメージ更新・パッケージ追加時の事前監査ルール**:
+   - Docker コンテナは **ホスト OS の Linux カーネルを共有** するため、コンテナ内のディストリビューション（Ubuntu 24.04 等）を新しくすると、ユーザーランド（`glibc`, `systemd`, `util-linux`, `coreutils` 等）が新しい Linux カーネル（6.x+）固有のシステムコール（`fchmodat2`, `openat2`, `clone3`, `mount_setattr`, `close_range`, `epoll_pwait2` 等）を発行し、NAS（QNAP / Synology / TrueNAS 旧版）や LTS カーネル（5.4 / 5.10 / 5.15）のカスタムカーネル・古い seccomp プロファイルで非標準の errno（`ENOENT`, `EINVAL`, `EFAULT`）を返してクラッシュするリスクが常にある。
+   - `Dockerfile` のパッケージを変更・追加する際は、必ず以下を確認すること：
+     - `apt-get install -s --no-install-recommends ...` のドライラン出力で、意図しないシステム管理デーモン（`systemd*`, `udev`, `polkitd`, `snapd` 等）が引き込まれていないか確認する。
+     - 追加パッケージの `/var/lib/dpkg/info/<pkg>.{preinst,postinst}` スクリプトを検査し、`systemd-sysusers` や `systemd-tmpfiles` 等のホストカーネル依存ヘルパーを無条件実行していないか確認する。
+
+---
+
 ## 9. アンチパターン集 (絶対にやってはいけないこと)
 
 今後このプロジェクトを修正・拡張する際、以下の設定を絶対に行ってはなりません：
@@ -421,6 +459,8 @@ Google ログインや YouTube 検索時、コンテナ内 Chrome の入力欄�
     - パスワード保存確認（「Save password?」）、自動サインイン、漏洩検知、自動入力の各バブルはすべて Chrome ネイティブ UI（Views Bubble）であり、`CdpTouchBridge` による DOM タッチ入力ではタップして閉じられません。`applyChromePreferences()` での `credentials_enable_service` / `credentials_enable_autosignin` / `profile.password_manager_enabled` / `profile.password_manager_leak_detection` / `autofill.profile_enabled` / `autofill.credit_card_enabled` の無効化、および `--password-store=basic` を必ず維持してください（あわせて `cleanProfileLocks()` が設定する `profile.exit_type` / `exited_cleanly` を上書き破壊しないこと）。
 13. ❌ **クライアント側 (`client/`) で物理キーボードやマウス操作を前提とした機能・UI を実装すること**
     - テスラ車載ディスプレイは完全タッチオンリー環境であり、物理キーボードやマウスは接続・操作できません。`Escape` キーによるモーダル閉じ、キーボードショートカット、`keydown` リスナーへの依存、`hover` 前提 UI、右クリックメニュー、マウスポインタ前提ドラッグなどを `client/` に実装してはなりません。リモート文字・キー入力はすべてタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入で完結させてください。
+14. ❌ **`Dockerfile` から `dbus-x11` や `/etc/apt/preferences.d/no-systemd` を外し、コンテナ内に `systemd` / `libsystemd-shared` / `dbus-user-session` を引き込むこと (Issue #93)**
+    - QNAP QTS（Linux 5.10 系）等の NAS カスタムカーネルや古い seccomp 環境では、Ubuntu 24.04 の `systemd` v255 (`libsystemd-shared`) が使う Linux 6.6+ システムコール（`fchmodat2(..., AT_EMPTY_PATH)`）に対して `ENOSYS` ではなく `ENOENT` が返り、`systemd.postinst`（`systemd-tmpfiles` / `systemd-sysusers`）が失敗して Docker ビルドが停止します。パッケージ追加時は常にホストカーネル互換性と `postinst` の挙動を監査してください。
 
 ---
 
