@@ -131,7 +131,7 @@ Tesroid は「車内で気楽に・クリーンに・安定して動画を観た
   | **Intel UHD Graphics 630** | Coffee Lake (第8/9世代 Core) | `iHD` (VAAPI) | 動作確認済み | 開発基準環境（1280x720@30/60fps 安定動作） |
   | **Intel UHD Graphics 600** | Gemini Lake (Celeron 等) | `iHD` (VAAPI) | 動作確認済み | 省電力 iGPU 環境（[#46](https://github.com/RanasGenoa/Tesroid/issues/46) のパフォーマンス調整・軽量プリセット等により安定動作） |
   | **Windows 10/11 + Docker Desktop** (AMD Radeon RX 9070 XT) | D3D12 ブリッジ + 自動フォールバック | `libx264` (Software) | 動作確認済み | Docker Desktop 既定 VM では `vgem` 不在および RX 9070 XT WSL UMD のため `ENCODER_MODE=auto` により `libx264` へ自動フォールバックし 1280x720@30fps でリアルタイム動作（他 GPU での D3D12 報告も募集中） |
-  | **AMD Radeon (Linux)** | RDNA 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | 対応実装済み（検証予定） | 起動時ベンダー自動判定対応（RX 9070 XT 等での実機検証予定・動作報告募集中） |
+  | **AMD Radeon (Linux)** | RDNA 3/4 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | 動作確認済み | RX 9070 XT 実機で検証済: 起動時の `radeonsi` / レンダーノード自動判定、H.264 VAAPI エンコード（`scale_vaapi` GPU CSC 有効・VCN で 1280x720@30 を 20 倍超速度）、Chrome のハードウェア動画デコード（`chrome://gpu` で Video Decode: Hardware accelerated 確認） |
   | **旧世代 Intel iGPU** | Haswell 以前 | `i965` (VAAPI) | 対応実装済み（未検証） | `vainfo` プローブで `iHD` 非対応時に自動選択（動作報告募集中） |
 - **メモリ**: 2 GB 以上推奨
 - **ソフトウェア**: Docker Engine 24.0+ / Docker Compose v2.0+（Windows は Docker Desktop for Windows）
