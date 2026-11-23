@@ -118,7 +118,7 @@ Tesroid/
   - Docker コンテナはホスト OS のカーネルを共有するため、Ubuntu 24.04 等の新しいユーザーランドに含まれるシステム管理パッケージ（`systemd` v255+ / `libsystemd-shared` の `systemd-tmpfiles`, `systemd-sysusers` 等）が Linux 6.6+ 固有の最新システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）を発行すると、NAS 等のカスタムカーネルや古い seccomp / OverlayFS 環境が `ENOSYS`（未実装）ではなく `ENOENT` 等の想定外エラーを返し、フォールバック不能となって `dpkg --configure`（`postinst`）やランタイムが即死します。
   - したがって、コンテナのベースイメージ更新や `Dockerfile` のパッケージ追加・変更を行う際は、「ホストカーネルへの依存を最小化し、標準的な POSIX システムコールのみで完結させる」ために以下のガードレールを必ず守ってください：
     1. **`--no-install-recommends` の徹底と仮想パッケージの非カーネル依存・軽量代替指定**: OR 依存（例: `default-dbus-session-bus | dbus-session-bus`）が `dbus-user-session` → `libpam-systemd` → `systemd` を暗黙的に引き込まないよう、`dbus-x11` を明示指定します。
-    2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) の維持**: `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` でブロックし、単一プロセスのアプリケーションコンテナにホストカーネル強く結合した init / デバイス管理デーモン群が混入することを防止します。
+    2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) の維持**: `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` でブロックし、単一プロセスのアプリケーションコンテナにホストカーネルと強く結合した init / デバイス管理デーモン群が混入することを防止します。
     3. **パッケージ追加時の依存ツリー & `postinst` 事前監査**: 新規パッケージを追加する際は `apt-get install -s` で意図しないシステムデーモンや `libsystemd-shared` が引き込まれないこと、および `/var/lib/dpkg/info/*.postinst` が特定の新しい Linux カーネル機能・システムコール（`fchmodat2`, `openat2`, `mount_setattr` 等）に依存していないことを確認してください。
 - **詳細な最適化仕様の参照**:
   コンテナ内 Chrome 安定化、ヒステリシス・バックプレッシャー、PulseAudio UNIX ソケット構成、CDP ネイティブタッチの詳細は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) に網羅されています。コア処理を変更する前に必ず参照してください。

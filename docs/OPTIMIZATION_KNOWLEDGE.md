@@ -422,7 +422,7 @@ Tesroid は **「特定の Linux カーネルバージョンやディストリ�
 2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) による混入の強制ブロック**:
    - `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` に設定し、将来 `Dockerfile` に新規パッケージを追加した際や Ubuntu リポジトリ側の依存関係変更時にも、APT ソルバがこれらを選択することを強制禁止する。
 3. **ベースイメージ更新・パッケージ追加時の事前監査ルール**:
-   - Docker コンテナは **ホスト OS の Linux カーネルを共有** するため、コンテナ内のディストリビューション（Ubuntu 24.04 等）を新しくすると、ユーザーランド（`glibc`, `systemd`, `util-linux`, `coreutils` 等）が新しい Linux カーネル（6.x+）固有のシステムコール（`fchmodat2`, `openat2`, `clone3`, `mount_setattr`, ` close_range`, `epub` 等）を発行し、NAS（QNAP / Synology / TrueNAS 旧版）や LTS カーネル（5.4 / 5.10 / 5.15）のカスタムカーネル・古い seccomp プロファイルで非標準の errno（`ENOENT`, `EINVAL`, `EFAULT`）を返してクラッシュするリスクが常にある。
+   - Docker コンテナは **ホスト OS の Linux カーネルを共有** するため、コンテナ内のディストリビューション（Ubuntu 24.04 等）を新しくすると、ユーザーランド（`glibc`, `systemd`, `util-linux`, `coreutils` 等）が新しい Linux カーネル（6.x+）固有のシステムコール（`fchmodat2`, `openat2`, `clone3`, `mount_setattr`, `close_range`, `epoll_pwait2` 等）を発行し、NAS（QNAP / Synology / TrueNAS 旧版）や LTS カーネル（5.4 / 5.10 / 5.15）のカスタムカーネル・古い seccomp プロファイルで非標準の errno（`ENOENT`, `EINVAL`, `EFAULT`）を返してクラッシュするリスクが常にある。
    - `Dockerfile` のパッケージを変更・追加する際は、必ず以下を確認すること：
      - `apt-get install -s --no-install-recommends ...` のドライラン出力で、意図しないシステム管理デーモン（`systemd*`, `udev`, `polkitd`, `snapd` 等）が引き込まれていないか確認する。
      - 追加パッケージの `/var/lib/dpkg/info/<pkg>.{preinst,postinst}` スクリプトを検査し、`systemd-sysusers` や `systemd-tmpfiles` 等のホストカーネル依存ヘルパーを無条件実行していないか確認する。
