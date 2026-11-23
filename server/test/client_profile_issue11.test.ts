@@ -184,11 +184,17 @@ describe('Client load profile (Issue #11)', () => {
       const broadcastArg = mockWsHandler.broadcastStreamSettings.mock.calls.at(-1)?.[0];
       expect(broadcastArg?.fpsOptions).toEqual([24, 30]);
 
+      // PR #94 レビュー (High): 明示指定が無いプロファイル切替でも、連動・スナップ済みの
+      // 正規化値 (D1: 700kbps / D4: 30fps) が encoder 適用へ委譲されなければならない
+      const delegated = (mockWsHandler.reapplyClientProfile as any).mock.calls[0]?.[0];
+      expect(delegated?.fps).toBe(30);
+      expect(delegated?.bitrate).toBe(700_000);
+
       await app.close();
     });
 
     it('プロファイル切替にビットレート・FPS 明示が含まれる場合、encoder 更新は reapplyClientProfile へ委譲し二重再起動を避ける (PR #94 レビュー Medium)', async () => {
-      const { app, token, mockEncoder, mockWsHandler } = await makeApp();
+      const { app, configStore, token, mockEncoder, mockWsHandler } = await makeApp();
 
       const res = await app.inject({
         method: 'PUT',
@@ -218,7 +224,23 @@ describe('Client load profile (Issue #11)', () => {
       });
       expect(resPlain.statusCode).toBe(200);
       expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
+      // PR #94 レビュー (High): 渡るのは常に正規化済み値 (レンジクランプ後) であること
+      expect((mockEncoder.updateConfig as any).mock.calls[0]?.[0]?.bitrate).toBe(800_000);
       expect(mockWsHandler.reapplyClientProfile).not.toHaveBeenCalled();
+
+      // PR #94 レビュー (High): FPS 選択肢外の明示値はスナップ済み値 (30) が encoder へ渡る
+      mockEncoder.updateConfig.mockClear();
+      const resSnap = await app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { stream: { maxFps: 45 } },
+      });
+      expect(resSnap.statusCode).toBe(200);
+      expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
+      const applied = (mockEncoder.updateConfig as any).mock.calls[0]?.[0];
+      expect(applied?.fps).toBe(30); // lightweight 選択肢 [24,30] の最も近い下位へスナップ
+      expect(configStore.getConfig().stream.maxFps).toBe(30);
       await app.close();
     });
 
