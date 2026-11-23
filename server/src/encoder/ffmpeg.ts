@@ -817,12 +817,14 @@ export class VaapiEncoder extends EventEmitter {
     x264Preset?: string;
   }): Promise<void> {
     // libx264 speed preset: only restart when the validated value actually changes,
-    // avoiding needless stream interruptions for equal/invalid values (Issue #90 review).
+    // and only while the software backend is active (x264 args are unused under VAAPI),
+    // avoiding needless stream interruptions (Issue #90 review).
     const nextX264Preset = normalizeX264Preset(config.x264Preset);
     const x264PresetChanged = nextX264Preset !== undefined && nextX264Preset !== this.x264Preset;
     if (x264PresetChanged) {
       this.x264Preset = nextX264Preset;
     }
+    const x264PresetNeedsRestart = x264PresetChanged && this.activeBackend === 'software';
 
     const videoNeedsRestart =
       config.width !== undefined ||
@@ -832,7 +834,7 @@ export class VaapiEncoder extends EventEmitter {
       config.compressionLevel !== undefined ||
       config.lowPower !== undefined ||
       config.gpuColorConversion !== undefined ||
-      x264PresetChanged;
+      x264PresetNeedsRestart;
 
     if (videoNeedsRestart) {
       const hasTuningUpdates =

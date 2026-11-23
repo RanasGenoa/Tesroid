@@ -6,9 +6,11 @@ import {
   ALLOWED_X264_PRESETS,
   type AppConfig,
   type ConfigStore,
+  CPU_PERFORMANCE_PRESETS,
   DEFAULT_FAVORITES,
   DEFAULT_HOME_FAVORITE_ID,
   type FavoriteItem,
+  GPU_PERFORMANCE_PRESETS,
   PERFORMANCE_PRESET_DEFAULTS,
   type PerformancePreset,
   pinHomeFavoriteFirst,
@@ -265,12 +267,10 @@ export function registerSettingsRoutes(
           stream.audioBitrate = normalizedBitrate;
         }
         const currentStream = configStore.getConfig().stream;
+        // 定義は config.ts の GPU/CPU プリセット一覧を単一ソースとする (Issue #90 review)
         const allowedPresets: PerformancePreset[] = [
-          'high',
-          'balanced',
-          'low_power',
-          'cpu_balanced',
-          'cpu_low_power',
+          ...GPU_PERFORMANCE_PRESETS,
+          ...CPU_PERFORMANCE_PRESETS,
           'custom',
         ];
         const nextPreset =

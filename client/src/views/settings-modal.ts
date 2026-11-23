@@ -272,6 +272,7 @@ async function showSettingsModal(
   let encoderStatus: EncoderStatusPayload | null = null;
   let encoderStatusTimer: ReturnType<typeof setInterval> | null = null;
   let encoderModalClosed = false;
+  let encoderStatusInFlight = false;
   let savedPerformancePreset: string | undefined;
   let presetTouched = false;
 
@@ -328,6 +329,9 @@ async function showSettingsModal(
   };
 
   const fetchEncoderStatus = async () => {
+    // 5秒間隔のポーリングが多重実行されても、進行中の1本だけ通す (Issue #90 review)
+    if (encoderStatusInFlight) return;
+    encoderStatusInFlight = true;
     try {
       const res = await fetch('/api/health');
       if (res.ok) {
@@ -336,6 +340,8 @@ async function showSettingsModal(
       }
     } catch {
       // 通信失敗時は現在の表示を維持する
+    } finally {
+      encoderStatusInFlight = false;
     }
     // クローズ後のdetached DOMへの適用を避ける (Issue #90 review)
     if (encoderModalClosed) return;
