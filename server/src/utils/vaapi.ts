@@ -148,7 +148,9 @@ function hasH264EncodeCapability(result: VaapiProbeResult): boolean {
     return false;
   }
   const output = result.stdout || '';
-  return output.includes('VAProfileH264') && output.includes('VAEntrypointEncSlice');
+  // 同一行内 (`VAProfileH264... : VAEntrypointEncSlice`) の一致のみを H.264 エンコード対応とみなす。
+  // 別コーデックの EncSlice と H.264 の VLD をまたいだ誤判定を防ぐ。
+  return /VAProfileH264[^\n]*VAEntrypointEncSlice/.test(output);
 }
 
 function probeDriverCapability(
@@ -320,7 +322,7 @@ export function detectVaapiConfig(deps?: VaapiDetectDeps): VaapiDetectedConfig {
   const readFileSync =
     deps?.readFileSync ?? ((filePath: string) => fs.readFileSync(filePath, 'utf-8'));
   const runVainfo = deps?.runVainfo ?? defaultRunVainfo;
-  const useRealFs = !deps?.existsSync;
+  const useRealFs = !deps?.existsSync && !deps?.readFileSync;
 
   const explicitDevice = normalizeVaapiOverride(env.VAAPI_DEVICE);
   const explicitDriver = normalizeVaapiOverride(env.LIBVA_DRIVER_NAME);

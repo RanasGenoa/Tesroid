@@ -106,12 +106,12 @@ probe_intel_vaapi_driver() {
   local out=""
   if command -v vainfo >/dev/null 2>&1 && [ -n "$dev" ] && [ -e "$dev" ]; then
     out="$(timeout 3 env LIBVA_DRIVER_NAME=iHD vainfo --display drm --device "$dev" 2>/dev/null || true)"
-    if printf '%s' "$out" | grep -q 'VAProfileH264' && printf '%s' "$out" | grep -q 'VAEntrypointEncSlice'; then
+    if printf '%s' "$out" | grep -qE 'VAProfileH264.*VAEntrypointEncSlice'; then
       printf 'iHD'
       return 0
     fi
     out="$(timeout 3 env LIBVA_DRIVER_NAME=i965 vainfo --display drm --device "$dev" 2>/dev/null || true)"
-    if printf '%s' "$out" | grep -q 'VAProfileH264' && printf '%s' "$out" | grep -q 'VAEntrypointEncSlice'; then
+    if printf '%s' "$out" | grep -qE 'VAProfileH264.*VAEntrypointEncSlice'; then
       printf 'i965'
       return 0
     fi

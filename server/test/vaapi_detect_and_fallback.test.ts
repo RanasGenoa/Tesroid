@@ -333,6 +333,21 @@ describe('Multi-GPU VAAPI Detection, D3D12 Scoping & libx264 Fallback', () => {
       }),
     });
     expect(decodeOnly.vaapiEncodeSupported).toBe(false);
+
+    // H.264 is decode-only (VLD) while another codec (HEVC) has EncSlice -> must NOT match across lines
+    const crossLine = detectVaapiConfig({
+      env: {},
+      existsSync: (p) => p === '/dev/dri' || p === '/dev/dri/renderD128',
+      readdirSync: () => ['renderD128'],
+      readFileSync: () => '0x8086\n',
+      runVainfo: () => ({
+        status: 0,
+        stdout:
+          '      VAProfileH264Main               :\tVAEntrypointVLD\n' +
+          '      VAProfileHEVCMain               :\tVAEntrypointEncSlice\n',
+      }),
+    });
+    expect(crossLine.vaapiEncodeSupported).toBe(false);
   });
 
   it('hasHardwareVideoDevice detects renderD129, card1, /dev/dxg, configured device, and updates /api/status hasDri', async () => {
