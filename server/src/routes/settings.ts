@@ -3,6 +3,7 @@ import { type AuthService, isValidPin } from '../auth.js';
 import { type BrowserManager, isSafeHttpUrl } from '../browser/manager.js';
 import {
   ALLOWED_LOCALES,
+  ALLOWED_X264_PRESETS,
   type AppConfig,
   type ConfigStore,
   DEFAULT_FAVORITES,
@@ -41,6 +42,7 @@ interface UpdateSettingsBody {
     vaapiCompressionLevel?: number;
     vaapiLowPower?: boolean;
     vaapiGpuColorConversion?: boolean;
+    x264Preset?: string;
   };
 }
 
@@ -263,7 +265,14 @@ export function registerSettingsRoutes(
           stream.audioBitrate = normalizedBitrate;
         }
         const currentStream = configStore.getConfig().stream;
-        const allowedPresets: PerformancePreset[] = ['high', 'balanced', 'low_power', 'custom'];
+        const allowedPresets: PerformancePreset[] = [
+          'high',
+          'balanced',
+          'low_power',
+          'cpu_balanced',
+          'cpu_low_power',
+          'custom',
+        ];
         const nextPreset =
           stream.performancePreset && allowedPresets.includes(stream.performancePreset)
             ? stream.performancePreset
@@ -298,6 +307,14 @@ export function registerSettingsRoutes(
           stream.vaapiGpuColorConversion !== undefined
             ? Boolean(stream.vaapiGpuColorConversion)
             : (presetDefaults?.vaapiGpuColorConversion ?? currentStream.vaapiGpuColorConversion);
+        // libx264 speed preset: only set for CPU presets / explicit value; GPU presets keep current.
+        const requestedX264Preset =
+          typeof stream.x264Preset === 'string' &&
+          ALLOWED_X264_PRESETS.includes(stream.x264Preset.trim())
+            ? stream.x264Preset.trim()
+            : undefined;
+        const nextX264Preset =
+          requestedX264Preset ?? presetDefaults?.x264Preset ?? currentStream.x264Preset;
 
         updates.stream = {
           bitrate: nextBitrate,
@@ -311,6 +328,7 @@ export function registerSettingsRoutes(
           vaapiCompressionLevel: nextCompressionLevel,
           vaapiLowPower: nextLowPower,
           vaapiGpuColorConversion: nextGpuCsc,
+          x264Preset: nextX264Preset,
         };
       }
 
@@ -335,6 +353,7 @@ export function registerSettingsRoutes(
           vaapiCompressionLevel,
           vaapiLowPower,
           vaapiGpuColorConversion,
+          x264Preset,
         } = stream;
         // Only forward VAAPI tuning options when explicitly changed or when a preset was applied,
         // avoiding unnecessary encoder restarts when only unrelated fields (e.g. bitrate/fps) change.
@@ -343,16 +362,19 @@ export function registerSettingsRoutes(
         const applyLowPower = vaapiLowPower !== undefined || stream.performancePreset !== undefined;
         const applyGpuCsc =
           vaapiGpuColorConversion !== undefined || stream.performancePreset !== undefined;
+        // libx264 speed preset (software backend, Issue #90)
+        const applyX264Preset = x264Preset !== undefined || stream.performancePreset !== undefined;
         if (
           maxFps !== undefined ||
           bitrate !== undefined ||
           audioBitrate !== undefined ||
           applyCompression ||
           applyLowPower ||
-          applyGpuCsc
+          applyGpuCsc ||
+          applyX264Preset
         ) {
           console.log(
-            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${updates.stream.vaapiCompressionLevel}, lowPower=${updates.stream.vaapiLowPower}, gpuCsc=${updates.stream.vaapiGpuColorConversion}`,
+            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${updates.stream.vaapiCompressionLevel}, lowPower=${updates.stream.vaapiLowPower}, gpuCsc=${updates.stream.vaapiGpuColorConversion}, x264Preset=${updates.stream.x264Preset}`,
           );
           await encoder.updateConfig({
             fps: maxFps,
@@ -361,6 +383,7 @@ export function registerSettingsRoutes(
             compressionLevel: applyCompression ? updates.stream.vaapiCompressionLevel : undefined,
             lowPower: applyLowPower ? updates.stream.vaapiLowPower : undefined,
             gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
+            x264Preset: applyX264Preset ? updates.stream.x264Preset : undefined,
           });
         }
       }

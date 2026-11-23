@@ -1,13 +1,43 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type PerformancePreset = 'high' | 'balanced' | 'low_power' | 'custom';
+export type PerformancePreset =
+  | 'high'
+  | 'balanced'
+  | 'low_power'
+  | 'cpu_balanced'
+  | 'cpu_low_power'
+  | 'custom';
+
+// GPU前提プリセット（VAAPIバックエンドでのみ有効）とCPU向けプリセット（libx264でのみ有効）の区分 (Issue #90)
+export const GPU_PERFORMANCE_PRESETS: readonly PerformancePreset[] = [
+  'high',
+  'balanced',
+  'low_power',
+] as const;
+export const CPU_PERFORMANCE_PRESETS: readonly PerformancePreset[] = [
+  'cpu_balanced',
+  'cpu_low_power',
+] as const;
+
+// libx264 の -preset に渡せる値（低速側ほど高圧縮・高CPU負荷。リアルタイム配信のため medium まで）
+export const ALLOWED_X264_PRESETS: readonly string[] = [
+  'ultrafast',
+  'superfast',
+  'veryfast',
+  'faster',
+  'fast',
+  'medium',
+] as const;
 
 export interface PerformancePresetConfig {
   maxSize: number;
-  vaapiCompressionLevel: number;
-  vaapiLowPower: boolean;
-  vaapiGpuColorConversion: boolean;
+  // GPUプリセットのみ有効（CPUプリセットでは undefined）
+  vaapiCompressionLevel?: number;
+  vaapiLowPower?: boolean;
+  vaapiGpuColorConversion?: boolean;
+  // CPUプリセットのみ有効（libx264 の -preset 相当の内部既定値）
+  x264Preset?: string;
 }
 
 export const PERFORMANCE_PRESET_DEFAULTS: Record<
@@ -32,6 +62,14 @@ export const PERFORMANCE_PRESET_DEFAULTS: Record<
     vaapiLowPower: false,
     vaapiGpuColorConversion: true,
   },
+  cpu_balanced: {
+    maxSize: 1280,
+    x264Preset: 'veryfast',
+  },
+  cpu_low_power: {
+    maxSize: 960,
+    x264Preset: 'ultrafast',
+  },
 };
 
 export interface StreamConfig {
@@ -43,6 +81,7 @@ export interface StreamConfig {
   vaapiCompressionLevel?: number; // 1 (best quality/heaviest) - 7 (fastest/lightest)
   vaapiLowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
   vaapiGpuColorConversion?: boolean; // Offload RGB->NV12 conversion to GPU via scale_vaapi
+  x264Preset?: string; // libx264 speed preset (software backend only, Issue #90)
 }
 
 export interface FavoriteItem {
