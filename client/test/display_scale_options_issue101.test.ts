@@ -214,6 +214,24 @@ describe('Display scale options 60-130 & legacy preservation (Issue #101) - Fron
     elementRegistry.get('modal-close-btn').click();
   });
 
+  // PR #102 レビュー 6th L: 空白のみの localStorage 値で不正な option を作らない。
+  it('blank localStorage values never create a malformed "(現在の保存値)" option', async () => {
+    (globalThis as any).localStorage.setItem('tesroid_display_scale', '   ');
+    mockFetchWithSettings(120);
+    openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
+
+    const scaleEl = elementRegistry.get('cfg-display-scale');
+    expect(scaleEl).toBeDefined();
+    await new Promise((r) => setTimeout(r, 10));
+
+    const malformed = (scaleEl.children as any[]).filter((c) =>
+      String(c.textContent || '').includes('(現在の保存値)'),
+    );
+    expect(malformed).toHaveLength(0);
+
+    elementRegistry.get('modal-close-btn').click();
+  });
+
   // PR #102 レビュー L2: localStorage 先行表示で挿入された旧値の動的 option が、
   // サーバー反映値が別値になった後もプルダウンに残らないことを検証する。
   it('stale "(現在の保存値)" option is cleared when the server value differs', async () => {

@@ -28,7 +28,10 @@ type LegacyOptionElement = Element & { __tesroidLegacySaved?: boolean };
 
 function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue: unknown): void {
   if (!selectEl) return;
-  const target = String(rawValue);
+  const target = String(rawValue).trim();
+  if (!target) {
+    return; // 空文字・空白のみの localStorage 値では不正な "(現在の保存値)" option を作らない
+  }
   // 以前に追加した「(現在の保存値)」動的オプションを先にクリアする (PR #102 レビュー L2)。
   // localStorage 先行表示で挿入した後、サーバー反映値が別値になった場合に旧値 option を残さない。
   const childEls = selectEl.children
