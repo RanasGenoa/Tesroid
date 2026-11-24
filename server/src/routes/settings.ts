@@ -5,6 +5,8 @@ import {
   ALLOWED_LOCALES,
   ALLOWED_X264_PRESETS,
   type AppConfig,
+  type ClientPerformanceProfile,
+  type ClientProfileConfig,
   type ConfigStore,
   CPU_PERFORMANCE_PRESETS,
   DEFAULT_FAVORITES,
@@ -14,6 +16,7 @@ import {
   PERFORMANCE_PRESET_DEFAULTS,
   type PerformancePreset,
   pinHomeFavoriteFirst,
+  resolveClientProfile,
   resolveHomeUrl,
 } from '../config.js';
 import type { VaapiEncoder } from '../encoder/ffmpeg.js';
@@ -45,6 +48,7 @@ interface UpdateSettingsBody {
     vaapiLowPower?: boolean;
     vaapiGpuColorConversion?: boolean;
     x264Preset?: string;
+    clientProfile?: ClientProfileConfig; // Issue #11
   };
 }
 
@@ -102,6 +106,8 @@ export function registerSettingsRoutes(
       homeFavoriteId: config.homeFavoriteId,
       homeUrl: resolveHomeUrl(config),
       stream: config.stream,
+      // Issue #11: 保存値そのものではなく、HUD/設定UIが使う実効値（選択肢・スケール）を併記
+      clientProfileResolved: resolveClientProfile(config.stream),
       browserState: browserManager.getState(),
       browserUrl: browserManager.getCurrentUrl(),
       browserTitle:
@@ -239,6 +245,22 @@ export function registerSettingsRoutes(
         }
         await authService.setPin(pin);
       }
+      // Issue #11: クライアント負荷プロファイルの実効値 (ブロードキャストと再適用判定に使用)
+      let clientProfileChanged = false;
+      let resolvedClientProfileEffective = resolveClientProfile(configStore.getConfig().stream);
+      // PR #94 レビュー (High): エンコーダへ渡すのは常に検証・スナップ・連動済みの updates.stream 側のみ。
+      // 明示指定が無くなっても連動値 (D1 bitrate / D4 fps) は current と比較して差分があれば適用する。
+      let streamUpdateForEncoder:
+        | {
+            fps?: number;
+            bitrate?: string | number;
+            audioBitrate?: string | number;
+            compressionLevel?: number;
+            lowPower?: boolean;
+            gpuColorConversion?: boolean;
+            x264Preset?: string;
+          }
+        | undefined;
       if (stream) {
         if (stream.audioBitrate !== undefined) {
           let ab: number;
@@ -282,14 +304,76 @@ export function registerSettingsRoutes(
             ? PERFORMANCE_PRESET_DEFAULTS[nextPreset]
             : undefined;
 
+        // Issue #11: クライアント負荷プロファイル (standard / lightweight / custom) の検証と保存。
+        // プリセット時は規定値を resolveClientProfile が展開するため profile 名のみ保存する。
+        const allowedClientProfiles: ClientPerformanceProfile[] = [
+          'standard',
+          'lightweight',
+          'custom',
+        ];
+        let nextClientProfile: ClientProfileConfig | undefined = currentStream.clientProfile;
+        if (stream.clientProfile !== undefined) {
+          if (
+            stream.clientProfile === null ||
+            typeof stream.clientProfile !== 'object' ||
+            Array.isArray(stream.clientProfile)
+          ) {
+            return reply.status(400).send({ error: 'Invalid clientProfile: Must be an object.' });
+          }
+          const requestedProfile = stream.clientProfile.profile;
+          if (!allowedClientProfiles.includes(requestedProfile)) {
+            return reply.status(400).send({
+              error: 'Invalid clientProfile.profile: Must be standard, lightweight or custom.',
+            });
+          }
+          if (requestedProfile === 'custom') {
+            const resolvedCustom = resolveClientProfile({
+              ...currentStream,
+              clientProfile: stream.clientProfile,
+            });
+            nextClientProfile = {
+              profile: 'custom',
+              resolutionScale: resolvedCustom.resolutionScale,
+              fpsOptions: resolvedCustom.fpsOptions,
+              bitrateDefault: resolvedCustom.bitrateDefault,
+            };
+          } else {
+            nextClientProfile = { profile: requestedProfile };
+          }
+        }
+        resolvedClientProfileEffective = resolveClientProfile({
+          ...currentStream,
+          clientProfile: nextClientProfile,
+        });
+        // 実効値（スケール / FPS 選択肢 / 既定ビットレート）が変わったときのみ再適用・連動とする
+        const resolvedCurrentProfile = resolveClientProfile(currentStream);
+        clientProfileChanged =
+          stream.clientProfile !== undefined &&
+          (resolvedCurrentProfile.resolutionScale !==
+            resolvedClientProfileEffective.resolutionScale ||
+            resolvedCurrentProfile.bitrateDefault !==
+              resolvedClientProfileEffective.bitrateDefault ||
+            resolvedCurrentProfile.fpsOptions.join(',') !==
+              resolvedClientProfileEffective.fpsOptions.join(','));
+
         const nextBitrate =
           stream.bitrate !== undefined && Number.isFinite(Number(stream.bitrate))
-            ? Math.max(300000, Math.min(10000000, Math.round(Number(stream.bitrate))))
-            : currentStream.bitrate;
-        const nextMaxFps =
+            ? Math.max(250000, Math.min(10000000, Math.round(Number(stream.bitrate))))
+            : clientProfileChanged && resolvedClientProfileEffective.bitrateDefault !== undefined
+              ? resolvedClientProfileEffective.bitrateDefault // プロファイル切替時のビットレート連動 (D1 裁定)
+              : currentStream.bitrate;
+        let nextMaxFps =
           stream.maxFps !== undefined && Number.isFinite(Number(stream.maxFps))
-            ? Math.max(15, Math.min(60, Math.round(Number(stream.maxFps))))
+            ? Math.max(24, Math.min(60, Math.round(Number(stream.maxFps)))) // D2 裁定: 24fps 未満は不可
             : currentStream.maxFps;
+        // FPS 選択肢はプロファイルが制御 (D4 裁定): 範囲外値は最も近い下位許可値へ寄せる
+        const allowedFpsOptions = resolvedClientProfileEffective.fpsOptions;
+        if (allowedFpsOptions.length > 0 && !allowedFpsOptions.includes(nextMaxFps)) {
+          const lowerOrEqual = [...allowedFpsOptions]
+            .sort((a, b) => b - a)
+            .find((n) => n <= nextMaxFps);
+          nextMaxFps = lowerOrEqual ?? allowedFpsOptions[0];
+        }
         const nextMaxSize =
           stream.maxSize !== undefined && Number.isFinite(Number(stream.maxSize))
             ? Math.max(640, Math.min(1920, Math.round(Number(stream.maxSize))))
@@ -329,6 +413,31 @@ export function registerSettingsRoutes(
           vaapiLowPower: nextLowPower,
           vaapiGpuColorConversion: nextGpuCsc,
           x264Preset: nextX264Preset,
+          clientProfile: nextClientProfile,
+        };
+
+        // PR #94 レビュー (High): 明示有無に関わらず、エンコーダへ渡す値は常に正規化済み (next*) とする。
+        // 連動・スナップで保存値が変わった場合 (D1 bitrate / D4 fps) も差分として encoder に適用する。
+        const applyCompression =
+          stream.vaapiCompressionLevel !== undefined || stream.performancePreset !== undefined;
+        const applyLowPower =
+          stream.vaapiLowPower !== undefined || stream.performancePreset !== undefined;
+        const applyGpuCsc =
+          stream.vaapiGpuColorConversion !== undefined || stream.performancePreset !== undefined;
+        // libx264 speed preset (software backend, Issue #90)
+        const applyX264Preset =
+          stream.x264Preset !== undefined || stream.performancePreset !== undefined;
+        const applyFps = stream.maxFps !== undefined || nextMaxFps !== currentStream.maxFps;
+        const applyBitrate = stream.bitrate !== undefined || nextBitrate !== currentStream.bitrate;
+        const applyAudioBitrate = stream.audioBitrate !== undefined;
+        streamUpdateForEncoder = {
+          fps: applyFps ? nextMaxFps : undefined,
+          bitrate: applyBitrate ? nextBitrate : undefined,
+          audioBitrate: applyAudioBitrate ? updates.stream.audioBitrate : undefined,
+          compressionLevel: applyCompression ? nextCompressionLevel : undefined,
+          lowPower: applyLowPower ? nextLowPower : undefined,
+          gpuColorConversion: applyGpuCsc ? nextGpuCsc : undefined,
+          x264Preset: applyX264Preset ? nextX264Preset : undefined,
         };
       }
 
@@ -345,54 +454,38 @@ export function registerSettingsRoutes(
         await browserManager.setDisplayScale(updates.displayScale);
       }
 
-      if (stream && encoder && updates.stream) {
-        const {
-          maxFps,
-          bitrate,
-          audioBitrate,
-          vaapiCompressionLevel,
-          vaapiLowPower,
-          vaapiGpuColorConversion,
-          x264Preset,
-        } = stream;
-        // Only forward VAAPI tuning options when explicitly changed or when a preset was applied,
-        // avoiding unnecessary encoder restarts when only unrelated fields (e.g. bitrate/fps) change.
-        const applyCompression =
-          vaapiCompressionLevel !== undefined || stream.performancePreset !== undefined;
-        const applyLowPower = vaapiLowPower !== undefined || stream.performancePreset !== undefined;
-        const applyGpuCsc =
-          vaapiGpuColorConversion !== undefined || stream.performancePreset !== undefined;
-        // libx264 speed preset (software backend, Issue #90)
-        const applyX264Preset = x264Preset !== undefined || stream.performancePreset !== undefined;
-        if (
-          maxFps !== undefined ||
-          bitrate !== undefined ||
-          audioBitrate !== undefined ||
-          applyCompression ||
-          applyLowPower ||
-          applyGpuCsc ||
-          applyX264Preset
-        ) {
+      if (stream && updates.stream) {
+        // PR #94 レビュー (Medium): プロファイル変更時はここで再起動せず reapplyClientProfile へ
+        // 委譲し、ビットレート・FPS 連動と新しいエンコード寸法を 1 回の再起動へ統合する
+        const deferEncoderToProfile = clientProfileChanged && wsHandler !== undefined;
+        // PR #94 レビュー (High): エンコーダへ渡すのは正規化済み値のみ (未指定フィールドは非適用)
+        const streamUpdate = streamUpdateForEncoder;
+        const hasStreamChanges =
+          streamUpdate !== undefined && Object.values(streamUpdate).some((v) => v !== undefined);
+        if (encoder && !deferEncoderToProfile && hasStreamChanges && streamUpdate) {
           console.log(
-            `[SettingsRoute] Applying updated stream config to encoder: maxFps=${maxFps}, bitrate=${bitrate}, audioBitrate=${audioBitrate}, compressionLevel=${updates.stream.vaapiCompressionLevel}, lowPower=${updates.stream.vaapiLowPower}, gpuCsc=${updates.stream.vaapiGpuColorConversion}, x264Preset=${updates.stream.x264Preset}`,
+            `[SettingsRoute] Applying validated stream config to encoder: fps=${streamUpdate.fps}, bitrate=${streamUpdate.bitrate}, audioBitrate=${streamUpdate.audioBitrate}, compressionLevel=${streamUpdate.compressionLevel}, lowPower=${streamUpdate.lowPower}, gpuCsc=${streamUpdate.gpuColorConversion}, x264Preset=${streamUpdate.x264Preset}`,
           );
-          await encoder.updateConfig({
-            fps: maxFps,
-            bitrate,
-            audioBitrate,
-            compressionLevel: applyCompression ? updates.stream.vaapiCompressionLevel : undefined,
-            lowPower: applyLowPower ? updates.stream.vaapiLowPower : undefined,
-            gpuColorConversion: applyGpuCsc ? updates.stream.vaapiGpuColorConversion : undefined,
-            x264Preset: applyX264Preset ? updates.stream.x264Preset : undefined,
+          await encoder.updateConfig(streamUpdate);
+        }
+
+        if (wsHandler) {
+          // Issue #11: プロファイル変更時はレイアウト寸法を変えず、エンコード出力寸法のみ再適用
+          if (clientProfileChanged) {
+            try {
+              await wsHandler.reapplyClientProfile(
+                deferEncoderToProfile ? streamUpdate : undefined,
+              );
+            } catch (err) {
+              console.error('[SettingsRoute] reapplyClientProfile failed:', err);
+            }
+          }
+          wsHandler.broadcastStreamSettings({
+            maxFps: updates.stream.maxFps,
+            bitrate: updates.stream.bitrate,
+            fpsOptions: resolvedClientProfileEffective.fpsOptions,
           });
         }
-      }
-
-      if (stream && updates.stream && wsHandler) {
-        wsHandler.broadcastStreamSettings({
-          maxFps: updates.stream.maxFps,
-          bitrate: updates.stream.bitrate,
-        });
       }
 
       if (browserUrl) {

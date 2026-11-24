@@ -263,4 +263,43 @@ describe('Settings Modal Custom-Preset Touching (Issue #90 review) - Frontend Te
 
     elementRegistry.get('modal-close-btn').click();
   });
+
+  it('custom プロファイルのグリッド外 resolutionScale は「現在の保存値」option として追加し選択する (PR #94 レビュー M1)', async () => {
+    (globalThis as any).fetch = vi.fn().mockImplementation((url: string, opts?: any) => {
+      if (url === '/api/settings' && (!opts || opts.method !== 'PUT')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            locale: 'ja-JP',
+            stream: { ...savedStream, clientProfile: { profile: 'custom' } },
+            clientProfileResolved: {
+              resolutionScale: 0.6,
+              fpsOptions: [24, 30],
+              bitrateDefault: 500000,
+            },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+    });
+
+    openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
+    const scaleEl = elementRegistry.get('cfg-client-scale');
+    expect(scaleEl).toBeDefined();
+    // 実 <select> の option 一覧 (5段階グリッド) を用意し、選択肢外 0.6 の動的追加経路を発火させる
+    scaleEl.options = ['1', '0.85', '0.75', '0.65', '0.5'].map((value) => ({ value }));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // 既定選択 (0.65) に潰えず、保存値 0.6 が選択されたまま維持される
+    expect(scaleEl.value).toBe('0.6');
+    const legacyOption = (scaleEl.children as any[]).find((c) => c.value === '0.6');
+    expect(legacyOption).toBeDefined();
+    expect(String(legacyOption.textContent)).toContain('(現在の保存値)');
+
+    // FPS チェックボックスは実効 fpsOptions [24,30] を反映
+    expect(elementRegistry.get('cfg-client-fps-24').checked).toBe(true);
+    expect(elementRegistry.get('cfg-client-fps-60').checked).toBe(false);
+
+    elementRegistry.get('modal-close-btn').click();
+  });
 });

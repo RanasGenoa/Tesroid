@@ -21,6 +21,10 @@ export interface ClientQualityMetrics {
   // AV Sync
   avDriftMs: number;
 
+  // Issue #11 (D5): 1フレーム描画処理時間の中央値/95パーセンタイル (ms)
+  frameProcessP50Ms?: number;
+  frameProcessP95Ms?: number;
+
   // Viewport
   displayWidth?: number;
   displayHeight?: number;
@@ -76,6 +80,12 @@ export class MetricsManager {
       audioPacketsReceived: metrics.audioPacketsReceived || 0,
       bitrateKbps: Math.round(metrics.bitrateKbps || 0),
       avDriftMs: Math.round((metrics.avDriftMs || 0) * 10) / 10,
+      frameProcessP50Ms: Number.isFinite(metrics.frameProcessP50Ms)
+        ? Math.round((metrics.frameProcessP50Ms as number) * 10) / 10
+        : undefined,
+      frameProcessP95Ms: Number.isFinite(metrics.frameProcessP95Ms)
+        ? Math.round((metrics.frameProcessP95Ms as number) * 10) / 10
+        : undefined,
       displayWidth: metrics.displayWidth,
       displayHeight: metrics.displayHeight,
       devicePixelRatio: metrics.devicePixelRatio,
@@ -90,7 +100,10 @@ export class MetricsManager {
       `[ClientMetrics] FPS: ${entry.renderFps} (min: ${entry.minFps}, max: ${entry.maxFps}) | ` +
         `RTT: ${entry.rttMs}ms | Bitrate: ${entry.bitrateKbps}kbps | ` +
         `Drops: ${entry.droppedFrames} | DecErrors: ${entry.decoderErrors} | ` +
-        `AV-Drift: ${entry.avDriftMs}ms`,
+        `AV-Drift: ${entry.avDriftMs}ms` +
+        (entry.frameProcessP95Ms !== undefined
+          ? ` | FrameMs p50/p95: ${entry.frameProcessP50Ms}/${entry.frameProcessP95Ms}`
+          : ''),
     );
   }
 

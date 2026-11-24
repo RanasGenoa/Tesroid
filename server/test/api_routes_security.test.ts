@@ -359,9 +359,11 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     });
     expect(streamRes.statusCode).toBe(200);
     expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledTimes(1);
+    // Issue #11 (D4 裁定): FPS はプロファイル選択肢のみ。45 は選択肢外のため最も近い下位値 30 へスナップ
     expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledWith({
-      maxFps: 45,
+      maxFps: 30,
       bitrate: 3_500_000,
+      fpsOptions: [24, 30, 60],
     });
 
     // Partial/out-of-bounds stream update broadcasts clamped maxFps and persisted bitrate
@@ -377,6 +379,7 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     expect(mockWsHandler.broadcastStreamSettings).toHaveBeenCalledWith({
       maxFps: 60,
       bitrate: 3_500_000,
+      fpsOptions: [24, 30, 60],
     });
   });
 

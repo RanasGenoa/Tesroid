@@ -103,6 +103,11 @@ describe('Server Performance Tuning (Issue #46)', () => {
         x264Preset: 'ultrafast',
         libvaDriverName: null,
         lastFallback: null,
+        // Issue #11: 標準時はエンコード出力 = キャプチャ寸法
+        captureWidth: 1280,
+        captureHeight: 720,
+        encodeWidth: 1280,
+        encodeHeight: 720,
       });
 
       const restartSpy = vi

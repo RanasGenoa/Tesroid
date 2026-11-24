@@ -22,6 +22,8 @@ class MockEncoder extends EventEmitter {
     this.running = false;
   });
   public restart = vi.fn(async () => {});
+  public updateConfig = vi.fn(async () => {});
+  public setEncodeDimensions = vi.fn(async () => {});
   public restartAll = vi.fn(async () => {});
   public isRunning = vi.fn(() => this.running);
   public getCachedSpsPps = vi.fn(() => null);
@@ -331,6 +333,73 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
       width: 1448,
       height: 816,
     });
+  });
+
+  it('Issue #11: プロファイル切替とビットレート・FPS 連動を単一の updateConfig 再起動へ統合する (PR #94 レビュー Medium)', async () => {
+    configStore.updateConfig({
+      stream: {
+        ...configStore.getConfig().stream,
+        clientProfile: { profile: 'lightweight' },
+      },
+    });
+    const client = new MockSocket();
+    wsHandler.handleConnection(client as any);
+    await sendClientMsg(client, ClientProtocol.packAuth('1234'));
+    client.sentPackets = [];
+
+    await wsHandler.reapplyClientProfile({ fps: 30, bitrate: 500_000 });
+
+    // 寸法 (1280x720 x 0.65 -> 832x468) と fps / bitrate が 1 回の updateConfig で適用される
+    expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
+    const applied = (mockEncoder.updateConfig as any).mock.calls[0]?.[0];
+    expect(applied?.fps).toBe(30);
+    expect(applied?.bitrate).toBe(500_000);
+    expect(applied?.encodeDimensions).toEqual({ width: 832, height: 468 });
+    // 二重再起動経路 (setEncodeDimensions / 直接 restart) は呼ばれない
+    expect(mockEncoder.setEncodeDimensions).not.toHaveBeenCalled();
+    expect(mockEncoder.restart).not.toHaveBeenCalled();
+
+    const controls = parseControlMessages(client.sentPackets);
+    expect(controls).toContainEqual({ type: 'RESOLUTION_CHANGED', width: 832, height: 468 });
+  });
+
+  it('Issue #11: RESIZE デバウンス待機中にプロファイル変更があった場合、タイマー発火時点で新スケールを再計算する (PR #94 レビュー Medium)', async () => {
+    vi.useFakeTimers();
+    configStore.updateConfig({
+      stream: { ...configStore.getConfig().stream, maxSize: 1920 },
+    });
+    const client = new MockSocket();
+    wsHandler.handleConnection(client as any);
+    await sendClientMsg(client, ClientProtocol.packAuth('1234'));
+    client.sentPackets = [];
+
+    // 標準プロファイルで RESIZE 受付 (400ms デバウンス保留) -> 待機中に lightweight へ切替
+    await sendClientMsg(client, ClientProtocol.packResize(1453, 817, 1));
+    configStore.updateConfig({
+      stream: {
+        ...configStore.getConfig().stream,
+        clientProfile: { profile: 'lightweight' },
+      },
+    });
+    await wsHandler.reapplyClientProfile(); // 現行レイアウト 1280x720 -> 832x468 を即時適用
+
+    await vi.advanceTimersByTimeAsync(450);
+
+    // 旧スケール (標準=寸法なし) の restart で上書きせず、新レイアウト x 0.65 = 936x530 を適用
+    expect(mockBrowser.resize).toHaveBeenCalledWith(1448, 816);
+    expect(mockEncoder.restart).toHaveBeenLastCalledWith(
+      1448,
+      816,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { width: 936, height: 530 },
+    );
+    const controls = parseControlMessages(client.sentPackets);
+    expect(controls).toContainEqual({ type: 'RESOLUTION_CHANGED', width: 936, height: 530 });
   });
 
   it('triggers auto-sleep after configured idle timeout and cancels sleep if a client reconnects', async () => {

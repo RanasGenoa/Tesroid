@@ -95,10 +95,10 @@ export function renderStreamingView(
             <span id="hud-fps" class="hud-badge telemetry-value" title="実測描画フレームレート">-- FPS</span>
 
             <!-- Stream Quality Quick Toggles -->
-            <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで 30 / 60 切替)">
+            <button id="hud-fps-toggle" class="hud-pill-btn" title="フレームレート切替 (タップで選択可能なFPS段階を循環)">
               ${ICONS.zap} <span id="hud-fps-val" class="telemetry-value">30</span>
             </button>
-            <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.5M 〜 2.0M 切替)">
+            <button id="hud-bitrate-toggle" class="hud-pill-btn" title="ビットレート切替 (タップで 0.25M 〜 2.0M の 6 段階循環)">
               ${ICONS.signal} <span id="hud-bitrate-val" class="telemetry-value">1.0M</span>
             </button>
           </div>
@@ -258,8 +258,18 @@ export function renderStreamingView(
   let currentFps = 30;
   let currentBitrate = 1000000;
 
-  const fpsOptions = [30, 60];
-  const bitrateOptions = [500000, 750000, 1000000, 1500000, 2000000];
+  // Issue #11 (D4): 標準の既定選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
+  let fpsOptions = [24, 30, 60];
+  // 500k は lightweight プロファイルの bitrateDefault と一致させる (HUD 循環で段階飛ばし防止)
+  const bitrateOptions = [250000, 500000, 750000, 1000000, 1500000, 2000000];
+
+  const applyFpsOptionsFromServer = (raw: unknown): void => {
+    if (!Array.isArray(raw)) return;
+    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 24 && n <= 60); // D2 下限
+    if (opts.length > 0) {
+      fpsOptions = [...new Set(opts)].sort((a, b) => a - b);
+    }
+  };
 
   const fpsToggleBtn = document.getElementById('hud-fps-toggle') as HTMLButtonElement;
   const bitrateToggleBtn = document.getElementById('hud-bitrate-toggle') as HTMLButtonElement;
@@ -287,6 +297,7 @@ export function renderStreamingView(
   resetHudDimTimer();
 
   const formatBitrateLabel = (bps: number): string => {
+    if (bps === 250000) return '0.25M';
     if (bps === 500000) return '0.5M';
     if (bps === 750000) return '0.75M';
     if (bps === 1000000) return '1.0M';
@@ -517,6 +528,8 @@ export function renderStreamingView(
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
+        // Issue #11: HUD の FPS 選択肢をクライアント負荷プロファイルの実効値へ (D4 裁定)
+        applyFpsOptionsFromServer(data?.clientProfileResolved?.fpsOptions);
         if (data?.stream?.maxFps) {
           applyTargetFps(Number(data.stream.maxFps));
         }
@@ -600,7 +613,7 @@ export function renderStreamingView(
   bitrateToggleBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     let idx = bitrateOptions.indexOf(currentBitrate);
-    if (idx === -1) idx = 2; // Default to 1.0M
+    if (idx === -1) idx = bitrateOptions.indexOf(1_000_000); // 保存値がグリッド外なら 1.0M から循環再開
     const nextIdx = (idx + 1) % bitrateOptions.length;
     currentBitrate = bitrateOptions[nextIdx];
     updateToggleButtons();
@@ -716,6 +729,11 @@ export function renderStreamingView(
       typeof framePacer.getQueueLength === 'function' ? framePacer.getQueueLength() : 0,
     );
   }
+
+  // Issue #11 (D5): クライアント処理負荷のベースライン比較用 (描画所要時間 p50/p95)
+  framePacer.onFrameRenderTimed = (durationMs: number) => {
+    metricsCollector.recordFrameProcessed(durationMs);
+  };
 
   framePacer.onFrameProcessed = () => {
     if (typeof decoder.pumpPendingPackets === 'function') {
@@ -1333,6 +1351,8 @@ export function renderStreamingView(
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
       executeJumpToLive(true, false);
     } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
+      // Issue #11: プロファイル変更で HUD の FPS 選択肢もライブ更新 (D4 裁定)
+      applyFpsOptionsFromServer(msg.stream?.fpsOptions);
       let streamSettingsChanged = false;
       if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
         const nextFps = Number(msg.stream.maxFps);

@@ -106,6 +106,49 @@ describe('Settings Routes & Dynamic Stream Config', () => {
     });
   });
 
+  it('HUD 0.25M 段階を許容し、下限未満は 250kbps へクランプする (MCU2 グリッド拡張)', async () => {
+    const configStore = new ConfigStore(tmpDir + '-lowbr');
+    const lockoutManager = new LockoutManager(tmpDir + '-lowbr');
+    const authService = new AuthService(configStore, lockoutManager);
+    await authService.setPin('1234');
+    const tokenResult = await authService.verifyPin('1234');
+    const token = tokenResult.token;
+
+    const browserManager = {
+      getState: vi.fn().mockReturnValue('active'),
+      getCurrentUrl: vi.fn().mockReturnValue('https://www.youtube.com'),
+      navigate: vi.fn().mockResolvedValue(undefined),
+    } as unknown as BrowserManager;
+    const mockEncoder = {
+      updateConfig: vi.fn().mockResolvedValue(undefined),
+    } as unknown as VaapiEncoder;
+
+    const app = fastify();
+    registerSettingsRoutes(app, configStore, authService, browserManager, mockEncoder);
+
+    const okRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { stream: { bitrate: 250000 } }, // 0.25 Mbps = HUD 最小段階
+    });
+    expect(okRes.statusCode).toBe(200);
+    expect(configStore.getConfig().stream.bitrate).toBe(250000);
+
+    const clampRes = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { stream: { bitrate: 100000 } }, // 下限未満 → 250kbps へクランプ
+    });
+    expect(clampRes.statusCode).toBe(200);
+    expect(configStore.getConfig().stream.bitrate).toBe(250000);
+
+    try {
+      fs.rmSync(tmpDir + '-lowbr', { recursive: true, force: true });
+    } catch {}
+  });
+
   it('should default displayScale to 120% and persist displayScale updates via BrowserManager', async () => {
     const configStore = new ConfigStore(tmpDir + '-scale');
     expect(configStore.getConfig().displayScale).toBe(120);
