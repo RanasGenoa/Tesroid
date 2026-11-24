@@ -28,7 +28,7 @@ interface SetupBody {
 // 新しいプリセット概念は永続化せず、設定画面と同じフィールドへ初期値をセットするショートカットのみ。
 export type OnboardingQualityPreset = 'high' | 'standard' | 'lightweight';
 
-// 'custom' を含まれるプリセット名（オンボーディング 3 択のマップ先。Issue #90 の GPU/CPU 一覧と同一）
+// 'custom' を除くプリセット名（オンボーディング 3 択のマップ先。Issue #90 の GPU/CPU 一覧と同一）
 type NonCustomPerformancePreset = Exclude<PerformancePreset, 'custom'>;
 
 interface QualityPresetSpec {
@@ -220,13 +220,21 @@ export function registerSetupRoutes(
     }
 
     // 選択プリセットを稼働中のブラウザズーム / エンコーダ / エンコード寸法へ即時反映する。
-    // 反映失敗でセットアップ自体を失敗させない（設定は保存済み、次回起動・接続時に再適用される）。
+    // 各系統は個別に try/catch で分離し、1系統の失敗が他系統の即時反映を妨げない (PR #102 2nd レビュー M)。
+    // 反映失敗でセットアップ自体は失敗しない（設定は保存済み、次回起動・接続時に再適用される）。
     if (qualityUpdate) {
       try {
         if (typeof browserManager.setDisplayScale === 'function') {
           await browserManager.setDisplayScale(qualityUpdate.displayScale);
         }
-        const s = qualityUpdate.stream;
+      } catch (err) {
+        console.error(
+          '[SetupRoute] Quality preset zoom re-apply failed (saved config is authoritative):',
+          err,
+        );
+      }
+      const s = qualityUpdate.stream;
+      try {
         if (encoder && typeof encoder.updateConfig === 'function') {
           await encoder.updateConfig({
             fps: s.maxFps,
@@ -241,15 +249,19 @@ export function registerSetupRoutes(
             ...(s.x264Preset !== undefined ? { x264Preset: s.x264Preset } : {}),
           });
         }
+      } catch (err) {
+        console.error(
+          '[SetupRoute] Quality preset encoder re-apply failed (saved config is authoritative):',
+          err,
+        );
+      }
+      try {
         // Issue #11 と同一経路: lightweight 選択時は最初の RESIZE 前から縮小エンコードを維持する
         if (wsHandler && typeof wsHandler.syncEncodeDimensionsFromConfig === 'function') {
           await wsHandler.syncEncodeDimensionsFromConfig();
         }
       } catch (err) {
-        console.error(
-          '[SetupRoute] Quality preset live re-apply failed (saved config is authoritative):',
-          err,
-        );
+        console.error('[SetupRoute] Quality preset encode-dimension sync failed:', err);
       }
     }
 

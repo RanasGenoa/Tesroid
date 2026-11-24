@@ -24,12 +24,14 @@ import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pi
 // Issue #101: 拡大率選択肢は 60〜130% へ刷新したが、旧バージョンで 140%/150% 等を保存済み環境では
 // 選択値が既定 120% へ勝手にリセットされないよう、cfg-max-size と同一方針で
 // 「(現在の保存値)」動的オプションを挿入して非破壊保持する。
+type LegacyOptionElement = Element & { __tesroidLegacySaved?: boolean };
+
 function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue: unknown): void {
   if (!selectEl) return;
   const target = String(rawValue);
   // 以前に追加した「(現在の保存値)」動的オプションを先にクリアする (PR #102 レビュー L2)。
   // localStorage 先行表示で挿入した後、サーバー反映値が別値になった場合に旧値 option を残さない。
-  const childEls: any[] = selectEl.children ? Array.from(selectEl.children as any) : [];
+  const childEls = Array.from(selectEl.children) as LegacyOptionElement[];
   for (const child of childEls) {
     if (child.__tesroidLegacySaved === true && typeof child.remove === 'function') {
       child.remove();
@@ -38,9 +40,8 @@ function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue
   // クライアントテストの手書きモック要素には .options が無い (実 DOM との差異) ためガードする
   const optionEls = selectEl.options ? Array.from(selectEl.options) : [];
   if (optionEls.length > 0 && !optionEls.some((o) => o.value === target)) {
-    const legacyOption = document.createElement('option') as HTMLOptionElement & {
-      __tesroidLegacySaved?: boolean;
-    };
+    const legacyOption = document.createElement('option') as HTMLOptionElement &
+      LegacyOptionElement;
     legacyOption.value = target;
     legacyOption.textContent = `${target}% (現在の保存値)`;
     legacyOption.__tesroidLegacySaved = true;

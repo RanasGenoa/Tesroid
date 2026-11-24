@@ -184,8 +184,11 @@ describe('Onboarding quality presets via POST /api/setup (Issue #101)', () => {
     expect(second.statusCode).toBe(403);
   });
 
-  it('setup still succeeds even when live re-apply to encoder fails (saved config is authoritative)', async () => {
+  it('setup still succeeds even when live re-apply fails, and one failing system does not skip the others (PR #102 2nd レビュー M)', async () => {
     await setupAppWithBackend('vaapi');
+    mockBrowser.setDisplayScale = vi.fn(async () => {
+      throw new Error('CDP zoom error right after boot');
+    });
     mockEncoder.updateConfig = vi.fn(async () => {
       throw new Error('encoder restart failed');
     });
@@ -196,5 +199,8 @@ describe('Onboarding quality presets via POST /api/setup (Issue #101)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(configStore.getConfig().stream.performancePreset).toBe('low_power');
+    // ズーム失敗でもエンコーダ反映・寸法同期までスキップされない
+    expect(mockEncoder.updateConfig).toHaveBeenCalledTimes(1);
+    expect(mockWsHandler.syncEncodeDimensionsFromConfig).toHaveBeenCalledTimes(1);
   });
 });
