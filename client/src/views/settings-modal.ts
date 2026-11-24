@@ -28,6 +28,9 @@ type LegacyOptionElement = Element & { __tesroidLegacySaved?: boolean };
 
 function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue: unknown): void {
   if (!selectEl) return;
+  if (rawValue === null || rawValue === undefined) {
+    return; // 'null' / 'undefined' 文字列からの不正 option を防止する単体防御 (PR #102 7th L)
+  }
   const target = String(rawValue).trim();
   if (!target) {
     return; // 空文字・空白のみの localStorage 値では不正な "(現在の保存値)" option を作らない
