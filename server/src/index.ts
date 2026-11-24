@@ -16,7 +16,13 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerSoundRoutes } from './routes/sound.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
-import { detectVaapiConfig, type EncoderBackend, resolveEncoderMode } from './utils/vaapi.js';
+import { detectNvencConfig, shouldProbeNvenc } from './utils/nvenc.js';
+import {
+  detectVaapiConfig,
+  type EncoderBackend,
+  resolveEncoderMode,
+  selectInitialEncoderBackend,
+} from './utils/vaapi.js';
 import { WebSocketHandler } from './ws/handler.js';
 
 async function bootstrap() {
@@ -36,17 +42,36 @@ async function bootstrap() {
 
   const vaapiInfo = detectVaapiConfig();
   const encoderMode = resolveEncoderMode();
-  const initialBackend: EncoderBackend =
-    encoderMode === 'software' || (encoderMode === 'auto' && !vaapiInfo.vaapiEncodeSupported)
-      ? 'software'
-      : 'vaapi';
+  // NVENC プローブは必要時のみ実行 (VAAPI 成功環境や固定モードで起動毎に最大 8s の spawnSync を走らせない)
+  const nvencInfo = shouldProbeNvenc(encoderMode, vaapiInfo.vaapiEncodeSupported)
+    ? detectNvencConfig()
+    : {
+        hasNvidiaDevice: false,
+        nvencEncodeSupported: false,
+        reason: `nvenc probe skipped (encoderMode=${encoderMode}, vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported})`,
+      };
+  const initialBackend: EncoderBackend = selectInitialEncoderBackend(encoderMode, {
+    vaapiEncodeSupported: vaapiInfo.vaapiEncodeSupported,
+    nvencEncodeSupported: nvencInfo.nvencEncodeSupported,
+  });
 
   console.log(
     `[Bootstrap] Video config: device=${vaapiInfo.vaapiDevice || '<none>'}, ` +
       `driver=${vaapiInfo.libvaDriverName}, hasDri=${vaapiInfo.hasDri}, hasDxg=${vaapiInfo.hasDxg}, ` +
-      `vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported}, encoderMode=${encoderMode}, ` +
-      `initialBackend=${initialBackend} (${vaapiInfo.reason})`,
+      `vaapiEncodeSupported=${vaapiInfo.vaapiEncodeSupported}, ` +
+      `nvencDevice=${nvencInfo.hasNvidiaDevice}, nvencEncodeSupported=${nvencInfo.nvencEncodeSupported}, ` +
+      `encoderMode=${encoderMode}, initialBackend=${initialBackend} ` +
+      `(vaapi: ${vaapiInfo.reason} | nvenc: ${nvencInfo.reason})`,
   );
+
+  // NVENC 固定なのに能力プローブが失敗した場合、降格せず原因を明示警告する (Issue #36)
+  if (encoderMode === 'nvenc' && !nvencInfo.nvencEncodeSupported) {
+    console.warn(
+      '[Bootstrap] ENCODER_MODE=nvenc is fixed but the NVENC capability probe failed: ' +
+        `${nvencInfo.reason}. h264_nvenc will likely fail at runtime ` +
+        '(check NVIDIA Container Toolkit installation and driver mount).',
+    );
+  }
 
   const initialConfig = configStore.getConfig();
   const browserManager = new BrowserManager({

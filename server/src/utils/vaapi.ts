@@ -5,8 +5,8 @@ import path from 'node:path';
 export const DEFAULT_LIBVA_DRIVER_NAME = 'iHD';
 export const DEFAULT_VAAPI_DEVICE = '/dev/dri/renderD128';
 
-export type EncoderMode = 'auto' | 'vaapi' | 'software';
-export type EncoderBackend = 'vaapi' | 'software';
+export type EncoderMode = 'auto' | 'vaapi' | 'nvenc' | 'software';
+export type EncoderBackend = 'vaapi' | 'nvenc' | 'software';
 
 export interface VaapiProbeResult {
   status: number | null;
@@ -64,15 +64,42 @@ export function resolveLibvaDriverName(override?: string): string {
 }
 
 /**
- * Resolves `ENCODER_MODE` (`'auto' | 'vaapi' | 'software'`) from an optional explicit override,
+ * Resolves `ENCODER_MODE` (`'auto' | 'vaapi' | 'nvenc' | 'software'`) from an optional explicit override,
  * `process.env.ENCODER_MODE`, or defaults to `'auto'`.
  */
 export function resolveEncoderMode(override?: string): EncoderMode {
   const candidate = (override?.trim() || process.env.ENCODER_MODE?.trim() || 'auto').toLowerCase();
-  if (candidate === 'vaapi' || candidate === 'software' || candidate === 'auto') {
+  if (
+    candidate === 'vaapi' ||
+    candidate === 'nvenc' ||
+    candidate === 'software' ||
+    candidate === 'auto'
+  ) {
     return candidate;
   }
   return 'auto';
+}
+
+/**
+ * Selects the initial encoder backend from capability-gate results (Issue #36 Phase 3).
+ * `auto` prefers VAAPI (Intel/AMD), then NVENC (NVIDIA), and finally libx264 software.
+ */
+export function selectInitialEncoderBackend(
+  encoderMode: EncoderMode,
+  capabilities: { vaapiEncodeSupported: boolean; nvencEncodeSupported: boolean },
+): EncoderBackend {
+  switch (encoderMode) {
+    case 'software':
+      return 'software';
+    case 'vaapi':
+      return 'vaapi';
+    case 'nvenc':
+      return 'nvenc';
+    default:
+      if (capabilities.vaapiEncodeSupported) return 'vaapi';
+      if (capabilities.nvencEncodeSupported) return 'nvenc';
+      return 'software';
+  }
 }
 
 function listDriNodes(

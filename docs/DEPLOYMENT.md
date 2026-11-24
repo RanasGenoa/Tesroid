@@ -22,7 +22,8 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   - **AMD Radeon GPU (VAAPI)**: `radeonsi` に対応（コンテナベースを Ubuntu 24.04 / Mesa `25.2.x` へ刷新し、RDNA 4 を含む Radeon 系列の VAAPI に対応。起動時にベンダー ID `0x1002` を自動判定、または `.env` で `LIBVA_DRIVER_NAME=radeonsi` を指定）。
   - **Windows (Docker Desktop / WSL2 D3D12)**: [`docker-compose.windows.yml`](../docker-compose.windows.yml) により `/dev/dxg` + `/usr/lib/wsl` を用いた D3D12 ブリッジ構成に対応。ただし Docker Desktop 既定の VM で `vgem`（`/dev/dri/renderD*`）が露出されない環境や、AMD RX 9070 XT の WSL D3D12 UMD のように `VideoProc` のみで H.264 VAAPI エンコード非対応の環境では、`ENCODER_MODE=auto`（既定値）により自動的に **`libx264` ソフトウェアエンコード** へフォールバックします。
   - **マルチ GPU 環境**: Linux ホストで複数 GPU が存在する場合、`/dev/dri/renderD*` を自動走査し、NVIDIA (`0x10de`) より Intel (`0x8086`) / AMD (`0x1002`) のレンダーノードを優先選択します。
-  - **エンコーダ フォールバック連鎖**: 起動時に `vainfo` で `VAProfileH264 + VAEntrypointEncSlice` を厳密検証し、対応ドライバが無い場合は最初から CPU (`libx264`) で起動します。稼働中に FFmpeg が即死した場合のみ `-low_power` 解除 → GPU CSC (`scale_vaapi`) 解除（HW エンコードは維持）→ `libx264` ソフトウェアエンコードの順に段階降格し、発生した降格は `/api/health` の `lastFallback` に記録されます。安定重視で CPU 固定を望む環境では `.env` で `ENCODER_MODE=software` を指定できます。
+  - **NVIDIA GPU (NVENC)**: NVIDIA Container Toolkit（Linux）または Docker Desktop の GPU サポート（Windows WSL2）で GPU を露出する構成に対応。[`docker-compose.nvidia.yml`](../docker-compose.nvidia.yml)（`deploy.resources.reservations.devices` driver: nvidia、`/dev/dri` 非マウント）を使用します。NVIDIA のみの環境では VAAPI プローブ失敗後、FFmpeg `h264_nvenc` の 1 フレーム実エンコードプローブに成功した場合のみ NVENC（`-preset p1 -tune ll -zerolatency`）を選択し、失敗時は `libx264` へ自動降格します。`.env` で `ENCODER_MODE=nvenc` の明示固定も可能です（Issue #36 Phase 3、実機検証は未了）。
+  - **エンコーダ フォールバック連鎖**: 起動時に `vainfo` で `VAProfileH264 + VAEntrypointEncSlice` を厳密検証し、対応ドライバが無い場合は NVIDIA デバイス露出時の `h264_nvenc` 実エンコードプローブを経て、CPU (`libx264`) で起動します。稼働中に FFmpeg が即死した場合のみ `-low_power` 解除 → GPU CSC (`scale_vaapi`) 解除（HW エンコードは維持）→ `libx264` ソフトウェアエンコードの順に段階降格し、発生した降格は `/api/health` の `lastFallback` に記録されます。安定重視で CPU 固定を望む環境では `.env` で `ENCODER_MODE=software` を指定できます。
 - **動作確認済み GPU / 環境リスト**:
   | GPU / 環境 | アーキテクチャ / 方式 | ドライバ / バックエンド | ステータス | 備考 |
   | :--- | :--- | :--- | :--- | :--- |
@@ -31,6 +32,7 @@ Tesroid は、仮想 X11 画面キャプチャとハードウェア支援エン�
   | **旧世代 Intel iGPU** | Haswell 以前 (Core i5-4590 / Intel HD Graphics 4600 等) | `i965` (`i965-va-driver-shaders`) | ✅ 動作確認済み | HD Graphics 4600 実機で H.264 ハードウェアエンコード動作確認。起動時に `vainfo` プローブで `iHD` 非対応時に自動選択（`.env` で `LIBVA_DRIVER_NAME=i965` の明示指定も可） |
   | **Windows 10/11 + Docker Desktop** (AMD Radeon RX 9070 XT) | D3D12 ブリッジ + 自動フォールバック | `libx264` (Software) | ✅ 動作確認済み | `vgem` 不在および RX 9070 XT WSL UMD 制限のため `ENCODER_MODE=auto` により `libx264` で 1280x720@30fps リアルタイム動作を確認 |
   | **AMD Radeon (Linux)** | RDNA 3/4 系等 (Ubuntu 24.04 Mesa 25.2.x) | `radeonsi` (VAAPI) | ✅ 動作確認済み | RX 9070 XT (Navi 48) + Linux amdgpu (VCN v5) 実機で検証済: `radeonsi` / `renderD128` 自動判定、H.264 `EncSlice` プロファイル検出、`scale_vaapi` GPU CSC で VCN エンコード 20 倍超速度、Chrome ハードウェア動画デコード確認（XR 環境では Xvfb 安定性のため 2D ラスタは CPU 維持のまま動画のみ HW） |
+  | **NVIDIA GPU (GeForce RTX 等)** | Linux + NVIDIA Container Toolkit / Windows Docker Desktop (WSL2) | `h264_nvenc` (NVENC) | 🧪 実装済み（実機検証未了） | `docker-compose.nvidia.yml` で NVENC パイプライン対応（Issue #36 Phase 3）。コミュニティから RTX 4060 Laptop + WSL2 環境での動作報告あり（未検証・参考情報）。実機での安定性確認は次フェーズ |
 - **メモリ**: 2GB 以上推奨（コンテナ内 Google Chrome + FFmpeg + PulseAudio + Node.js が稼働）
 - **ストレージ**: コンテナイメージ用（約 2GB）+ ブラウザプロファイル・設定永続化用（1GB〜）
 

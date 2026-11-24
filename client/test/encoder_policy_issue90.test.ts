@@ -36,7 +36,11 @@ describe('Encoder backend-aware settings UI policy (Issue #90)', () => {
     it('ステータス未取得・不明時は既存挙動を維持し操作可能とする', () => {
       expect(vaapiControlsEnabled(null)).toBe(true);
       expect(vaapiControlsEnabled({ backend: undefined })).toBe(true);
-      expect(vaapiControlsEnabled({ backend: 'nvenc' })).toBe(true);
+      expect(vaapiControlsEnabled({ backend: 'qsv' })).toBe(true);
+    });
+
+    it('nvencバックエンドではVAAPI依存コントロールを無効化する (Issue #36)', () => {
+      expect(vaapiControlsEnabled({ backend: 'nvenc', encoderMode: 'auto' })).toBe(false);
     });
   });
 
