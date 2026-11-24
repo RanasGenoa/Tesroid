@@ -1,6 +1,32 @@
 import { renderOnboardingGuide } from './onboarding.js';
 import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pin-validation.js';
 
+// Issue #101: 3 択はサーバー側の既存設定項目（clientProfile / performancePreset / displayScale 等）
+// への初期値ショートカット。先行バッファ深度のみクライアント側の localStorage 設定のため、
+// セットアップ完了時に同一プリセット対応の初期値をローカルへ書き込む。
+type QualityPresetChoice = 'high' | 'standard' | 'lightweight';
+const QUALITY_PRESET_BUFFER_DEPTH_MS: Record<QualityPresetChoice, number> = {
+  high: 10000, // 推奨 10秒 (cfg-buffer-depth と同一段階)
+  standard: 10000,
+  lightweight: 2000, // 軽量 2秒 (Intel / MCU2 向け)
+};
+
+function normalizeQualityPreset(raw: unknown): QualityPresetChoice {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return value === 'high' || value === 'lightweight' ? value : 'standard';
+}
+
+function applyQualityPresetLocalDefaults(choice: QualityPresetChoice): void {
+  try {
+    localStorage.setItem(
+      'tesroid_prefetch_buffer_ms',
+      String(QUALITY_PRESET_BUFFER_DEPTH_MS[choice]),
+    );
+  } catch {
+    // localStorage 不可環境 (テスト / プライベートモード) ではサーバー側設定のみ適用する
+  }
+}
+
 export function renderSetupWizard(container: HTMLElement, onCompleted: () => void): void {
   let step = 1;
 
@@ -64,6 +90,19 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
             <option value="en-US">English (en-US)</option>
           </select>
 
+          <!-- Issue #101: 3 択は設定画面内の既存項目（クライアント負荷・サーバー性能・拡大率等）の初期値ショートカット -->
+          <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">
+            負荷・品質の初期プリセット
+          </label>
+          <select id="setup-quality-preset">
+            <option value="high">最高品質 (MCU3 / ハイエンドサーバー推奨)</option>
+            <option value="standard" selected>標準 (MCU3)（おすすめ）</option>
+            <option value="lightweight">軽量 (Intel / MCU2 車両・低解像度低負荷推奨)</option>
+          </select>
+          <p style="font-size: 12px; color: var(--text-muted); margin: 6px 0 8px 0; line-height: 1.5;">
+            ※ この選択は設定画面内の各項目（クライアント負荷・サーバー性能・拡大率など）の初期値をまとめて設定するものです。セットアップ後も設定画面からいつでも個別にすぐ変更できます。
+          </p>
+
           <div id="setup-error" style="color: var(--danger-color); font-size: 14px; margin-bottom: 12px; display: none;"></div>
 
           <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px;">
@@ -90,6 +129,10 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
         (document.getElementById('setup-tz') as HTMLSelectElement | null)?.value || 'Asia/Tokyo';
       const locale =
         (document.getElementById('setup-locale') as HTMLSelectElement | null)?.value || 'ja-JP';
+      // 未選択・想定外値は「標準」へフォールバック（サーバー既定と同一）
+      const qualityPreset = normalizeQualityPreset(
+        (document.getElementById('setup-quality-preset') as HTMLSelectElement | null)?.value,
+      );
       const errDiv = document.getElementById('setup-error') as HTMLElement | null;
 
       const pinError = validatePinInput(pin);
@@ -124,11 +167,14 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
             allowedDomains,
             timezone: tz,
             locale,
+            qualityPreset,
           }),
         });
 
         const data = await res.json();
         if (res.ok && data.success) {
+          // 先行バッファ深度のみクライアント側設定のため同一プリセット値を初期適用する
+          applyQualityPresetLocalDefaults(qualityPreset);
           onCompleted();
         } else if (errDiv) {
           errDiv.textContent = data.error || 'セットアップに失敗しました。';

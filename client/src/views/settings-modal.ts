@@ -21,6 +21,23 @@ import {
 } from './icons.js';
 import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pin-validation.js';
 
+// Issue #101: 拡大率選択肢は 60〜130% へ刷新したが、旧バージョンで 140%/150% 等を保存済み環境では
+// 選択値が既定 120% へ勝手にリセットされないよう、cfg-max-size と同一方針で
+// 「(現在の保存値)」動的オプションを挿入して非破壊保持する。
+function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue: unknown): void {
+  if (!selectEl) return;
+  const target = String(rawValue);
+  // クライアントテストの手書きモック要素には .options が無い (実 DOM との差異) ためガードする
+  const optionEls = selectEl.options ? Array.from(selectEl.options) : [];
+  if (optionEls.length > 0 && !optionEls.some((o) => o.value === target)) {
+    const legacyOption = document.createElement('option');
+    legacyOption.value = target;
+    legacyOption.textContent = `${target}% (現在の保存値)`;
+    selectEl.appendChild(legacyOption);
+  }
+  selectEl.value = target;
+}
+
 export function openSettingsWithAuth(
   container: HTMLElement,
   authToken: string | null,
@@ -128,14 +145,16 @@ async function showSettingsModal(
         <p style="font-size: 11px; color: var(--text-muted); margin: 0 0 4px 0;">※ 車載ログイン画面の数字テンキーで入力するため、0〜9 の半角数字のみ設定できます。</p>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">ブラウザ表示拡大率 (文字サイズ・UI拡大)</label>
+        <!-- Issue #101: 縮小側 60%/70% を追加し、実用性の低い 140%/150% を廃止 (60〜130% の 8 段階)。既定 120% は維持 -->
         <select id="cfg-display-scale">
-          <option value="80">80% (縮小 / 情報量重視)</option>
+          <option value="60">60% (超縮小 / 一覧・情報量最大)</option>
+          <option value="70">70% (縮小 / 低解像度・情報量重視)</option>
+          <option value="80">80% (やや縮小 / 広め表示)</option>
+          <option value="90">90% (控えめ縮小)</option>
           <option value="100">100% (等倍)</option>
           <option value="110">110% (やや拡大)</option>
           <option value="120" selected>120% (標準・車載画面推奨)</option>
-          <option value="130">130% (拡大)</option>
-          <option value="140">140% (大文字)</option>
-          <option value="150">150% (特大)</option>
+          <option value="130">130% (拡大・文字大きめ)</option>
         </select>
 
         <label style="display: block; font-size: 14px; margin-bottom: 6px; margin-top: 12px;">システム表示言語 (ブラウザ言語)</label>
@@ -1034,7 +1053,10 @@ async function showSettingsModal(
   // Load current settings
   const savedLocalScale = localStorage.getItem('tesroid_display_scale');
   if (savedLocalScale && overlay.querySelector('#cfg-display-scale')) {
-    (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = savedLocalScale;
+    setDisplayScaleSelectValue(
+      overlay.querySelector('#cfg-display-scale') as HTMLSelectElement,
+      savedLocalScale,
+    );
   }
 
   const savedBufferDepth = localStorage.getItem('tesroid_prefetch_buffer_ms') || '10000';
@@ -1170,7 +1192,9 @@ async function showSettingsModal(
       }
       renderFavoritesManageList();
       if (data.displayScale) {
-        (overlay.querySelector('#cfg-display-scale') as HTMLSelectElement).value = String(
+        // 選択肢外の旧保存値 (140 / 150 等) は「現在の保存値」として明示し非破壊保持 (Issue #101)
+        setDisplayScaleSelectValue(
+          overlay.querySelector('#cfg-display-scale') as HTMLSelectElement,
           data.displayScale,
         );
         localStorage.setItem('tesroid_display_scale', String(data.displayScale));

@@ -50,7 +50,7 @@ const HUD_CONTROL_ITEMS: OnboardingHudItem[] = [
     description: '省電力スタンバイへの移行、ブラウザ＆配信の再起動、セッション切断を行います。',
   },
   {
-    badgeHtml: `<span class="onboarding-icon">${ICONS.zap}</span><span>30 / 60</span>・<span class="onboarding-icon">${ICONS.signal}</span><span>0.5M〜2.0M</span>`,
+    badgeHtml: `<span class="onboarding-icon">${ICONS.zap}</span><span>24 / 30 / 60</span>・<span class="onboarding-icon">${ICONS.signal}</span><span>0.25M〜2.0M</span>`,
     description:
       '通信環境や走行状況に合わせて、フレームレート（FPS）とビットレートをワンタップで切り替えます。',
   },
@@ -67,7 +67,7 @@ const HUD_CONTROL_ITEMS: OnboardingHudItem[] = [
   {
     badgeHtml: `<span class="onboarding-icon">${ICONS.settings}</span><span>設定・管理</span>`,
     description:
-      'URL 直接移動、お気に入り編集・ホーム設定、表示拡大率・言語・先行バッファ深度（トンネル対策）・音質・PIN 変更、品質統計を確認できます。',
+      'URL 直接移動、お気に入り編集・ホーム設定、クライアント負荷設定（Intel搭載車 MCU2 向け軽量モードなど）、ブラウザ表示拡大率（60%〜130%）、言語・先行バッファ深度（トンネル対策）・音質・PIN 変更、品質統計を確認できます。これらの項目は初期セットアップ後もいつでも個別に変更できます。',
   },
 ];
 

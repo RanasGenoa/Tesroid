@@ -80,6 +80,18 @@ function setupMockDom() {
     createElement: () => makeOverlayElement(),
   };
 
+  // Issue #101: 先行バッファ深度のみクライアント localStorage 設定のため、検証用モックを用意する
+  const localStore: Record<string, string> = {};
+  (globalThis as any).localStorage = {
+    getItem: (key: string) => (key in localStore ? localStore[key] : null),
+    setItem: (key: string, val: string) => {
+      localStore[key] = String(val);
+    },
+    removeItem: (key: string) => {
+      delete localStore[key];
+    },
+  };
+
   let htmlValue = '';
   const container: any = {
     appendChild: (el: any) => {
@@ -104,21 +116,28 @@ function setupMockDom() {
         elementsById.set('setup-domain', makeFieldElement('setup-domain'));
         elementsById.set('setup-tz', makeFieldElement('setup-tz', 'Asia/Tokyo'));
         elementsById.set('setup-locale', makeFieldElement('setup-locale', 'ja-JP'));
+        // Issue #101: 負荷・品質の 3 択（既定: 標準）
+        elementsById.set(
+          'setup-quality-preset',
+          makeFieldElement('setup-quality-preset', 'standard'),
+        );
         elementsById.set('setup-error', makeFieldElement('setup-error'));
       }
     },
   });
 
-  return { container, nextBtn, appendedOverlays, elementsById, setupForm };
+  return { container, nextBtn, appendedOverlays, elementsById, setupForm, localStore };
 }
 
 describe('Onboarding Guide & Setup Wizard', () => {
   const originalDocument = (globalThis as any).document;
   const originalFetch = (globalThis as any).fetch;
+  const originalLocalStorage = (globalThis as any).localStorage;
 
   afterEach(() => {
     (globalThis as any).document = originalDocument;
     (globalThis as any).fetch = originalFetch;
+    (globalThis as any).localStorage = originalLocalStorage;
     vi.restoreAllMocks();
   });
 
@@ -147,6 +166,14 @@ describe('Onboarding Guide & Setup Wizard', () => {
     expect(container.innerHTML).toContain('LIVE');
     expect(container.innerHTML).toContain('後席モニター待ち受けモード');
 
+    // Issue #101: HUD 説明の現行仕様化（24/30/60・0.25M〜2.0M）と設定画面変更可能な旨の明記
+    expect(container.innerHTML).toContain('24 / 30 / 60');
+    expect(container.innerHTML).toContain('0.25M〜2.0M');
+    expect(container.innerHTML).not.toContain('0.5M〜2.0M');
+    expect(container.innerHTML).toContain('クライアント負荷設定');
+    expect(container.innerHTML).toContain('MCU2 向け軽量モード');
+    expect(container.innerHTML).toContain('60%〜130%');
+
     nextBtn.click();
     expect(onNext).toHaveBeenCalledTimes(1);
   });
@@ -163,6 +190,15 @@ describe('Onboarding Guide & Setup Wizard', () => {
     expect(container.innerHTML).toContain('半角数字 4〜8桁');
     expect(container.innerHTML).toContain('inputmode="numeric"');
     expect(container.innerHTML).toContain('pattern="[0-9]*"');
+
+    // Issue #101: 負荷・品質の 3 択（既定は標準）と、設定画面で個別変更できる旨の併記
+    expect(container.innerHTML).toContain('id="setup-quality-preset"');
+    expect(container.innerHTML).toContain('<option value="high">');
+    expect(container.innerHTML).toContain('<option value="standard" selected>');
+    expect(container.innerHTML).toContain('<option value="lightweight">');
+    expect(container.innerHTML).toContain(
+      'セットアップ後も設定画面からいつでも個別にすぐ変更できます',
+    );
   });
 
   it('validates numeric-only 4-8 digit PIN in setup wizard on input and submit', async () => {
@@ -213,10 +249,59 @@ describe('Onboarding Guide & Setup Wizard', () => {
           allowedDomains: [],
           timezone: 'Asia/Tokyo',
           locale: 'ja-JP',
+          qualityPreset: 'standard',
         }),
       }),
     );
     expect(onCompleted).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #101: 3 択の選択は既存設定項目への初期値ショートカットとして POST /api-setup へ送り、
+  // クライアント側設定の先行バッファ深度のみローカルへ同一プリセット値を初期適用する。
+  it('sends the selected quality preset to /api/setup and applies matching local buffer depth (Issue #101)', async () => {
+    const { container, nextBtn, elementsById, setupForm, localStore } = setupMockDom();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    });
+    (globalThis as any).fetch = fetchMock;
+    const onCompleted = vi.fn();
+
+    renderSetupWizard(container, onCompleted);
+    nextBtn.click();
+
+    const qualityEl = elementsById.get('setup-quality-preset');
+    expect(qualityEl.value).toBe('standard'); // 既定は標準 (MCU3)
+    qualityEl.value = 'lightweight';
+    elementsById.get('setup-pin').value = '1234';
+    await setupForm.submit();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(sentBody.qualityPreset).toBe('lightweight');
+    expect(onCompleted).toHaveBeenCalledTimes(1);
+    // 軽量 (MCU2) は先行バッファ深度 2秒 をローカルへ初期適用（設定画面で後から変更可能）
+    expect(localStore['tesroid_prefetch_buffer_ms']).toBe('2000');
+  });
+
+  it('falls back to the standard preset when the quality select is missing or has an unknown value', async () => {
+    const { container, nextBtn, elementsById, setupForm, localStore } = setupMockDom();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    });
+    (globalThis as any).fetch = fetchMock;
+
+    renderSetupWizard(container, vi.fn());
+    nextBtn.click();
+
+    elementsById.get('setup-quality-preset').value = 'turbo-9000';
+    elementsById.get('setup-pin').value = '1234';
+    await setupForm.submit();
+
+    const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(sentBody.qualityPreset).toBe('standard');
+    expect(localStore['tesroid_prefetch_buffer_ms']).toBe('10000');
   });
 
   it('opens onboarding guide modal overlay and closes via header close button, footer button, or backdrop', () => {
