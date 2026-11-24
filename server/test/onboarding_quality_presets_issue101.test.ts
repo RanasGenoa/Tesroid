@@ -114,6 +114,10 @@ describe('Onboarding quality presets via POST /api/setup (Issue #101)', () => {
 
     const encoderCall = mockEncoder.updateConfig.mock.calls[0]?.[0];
     expect(encoderCall).toMatchObject({ fps: 60, bitrate: 2_000_000, x264Preset: 'veryfast' });
+    // software 系統では VAAPI 調整項目をエンコーダへ渡さない (PR #102 3rd レビュー L)
+    expect(encoderCall.compressionLevel).toBeUndefined();
+    expect(encoderCall.lowPower).toBeUndefined();
+    expect(encoderCall.gpuColorConversion).toBeUndefined();
     // CPU プリセットでは保存済みの VAAPI 調整値を config 上で変更しない (settings PUT と同一意味論)
     expect(config.stream.vaapiCompressionLevel).toBe(7);
     expect(config.stream.vaapiLowPower).toBe(false);

@@ -2,13 +2,17 @@ import { renderOnboardingGuide } from './onboarding.js';
 import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pin-validation.js';
 
 // Issue #101: 3 択はサーバー側の既存設定項目（clientProfile / performancePreset / displayScale 等）
-// への初期値ショートカット。先行バッファ深度のみクライアント側の localStorage 設定のため、
-// セットアップ完了時に同一プリセット対応の初期値をローカルへ書き込む。
+// への初期値ショートカット。先行バッファ深度と表示拡大率のローカル先行表示のみクライアント側
+// localStorage 設定のため、セットアップ完了時に同一プリセット対応の初期値をローカルへ書き込む
+// （再セットアップ時の旧 `tesroid_display_scale` 残留による一瞬の旧値表示を防ぐ。PR #102 3rd L）。
 type QualityPresetChoice = 'high' | 'standard' | 'lightweight';
-const QUALITY_PRESET_BUFFER_DEPTH_MS: Record<QualityPresetChoice, number> = {
-  high: 10000, // 推奨 10秒 (cfg-buffer-depth と同一段階)
-  standard: 10000,
-  lightweight: 2000, // 軽量 2秒 (Intel / MCU2 向け)
+const QUALITY_PRESET_LOCAL_DEFAULTS: Record<
+  QualityPresetChoice,
+  { bufferDepthMs: number; displayScale: number }
+> = {
+  high: { bufferDepthMs: 10000, displayScale: 120 }, // 推奨 10秒 / 標準ズーム (cfg-* と同一段階)
+  standard: { bufferDepthMs: 10000, displayScale: 120 },
+  lightweight: { bufferDepthMs: 2000, displayScale: 70 }, // 軽量 2秒・70% (Intel / MCU2 向け)
 };
 
 function normalizeQualityPreset(raw: unknown): QualityPresetChoice {
@@ -17,11 +21,10 @@ function normalizeQualityPreset(raw: unknown): QualityPresetChoice {
 }
 
 function applyQualityPresetLocalDefaults(choice: QualityPresetChoice): void {
+  const defaults = QUALITY_PRESET_LOCAL_DEFAULTS[choice];
   try {
-    localStorage.setItem(
-      'tesroid_prefetch_buffer_ms',
-      String(QUALITY_PRESET_BUFFER_DEPTH_MS[choice]),
-    );
+    localStorage.setItem('tesroid_prefetch_buffer_ms', String(defaults.bufferDepthMs));
+    localStorage.setItem('tesroid_display_scale', String(defaults.displayScale));
   } catch {
     // localStorage 不可環境 (テスト / プライベートモード) ではサーバー側設定のみ適用する
   }

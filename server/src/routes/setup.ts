@@ -188,9 +188,10 @@ export function registerSetupRoutes(
     const normalizedChoice =
       typeof qualityPreset === 'string' ? qualityPreset.trim().toLowerCase() : undefined;
     let qualityUpdate: { displayScale: number; stream: StreamConfig } | undefined;
+    let backendIsSoftware = false;
     if (isOnboardingQualityPreset(normalizedChoice)) {
       // CPU (libx264) 稼働環境では Issue #90 の方針に沿って有効な CPU プリセットへ安全マップする
-      const backendIsSoftware = Boolean(
+      backendIsSoftware = Boolean(
         encoder &&
           typeof encoder.getActiveBackend === 'function' &&
           encoder.getActiveBackend() === 'software',
@@ -236,17 +237,23 @@ export function registerSetupRoutes(
       const s = qualityUpdate.stream;
       try {
         if (encoder && typeof encoder.updateConfig === 'function') {
+          // 稼働バックエンドが実際に使う調整項目のみ渡す (PR #102 3rd レビュー L)。
+          // VAAPI 項目は GPU 系統、x264Preset は CPU (libx264) 系統でのみ有効。
           await encoder.updateConfig({
             fps: s.maxFps,
             bitrate: s.bitrate,
-            ...(s.vaapiCompressionLevel !== undefined
+            ...(!backendIsSoftware && s.vaapiCompressionLevel !== undefined
               ? { compressionLevel: s.vaapiCompressionLevel }
               : {}),
-            ...(s.vaapiLowPower !== undefined ? { lowPower: s.vaapiLowPower } : {}),
-            ...(s.vaapiGpuColorConversion !== undefined
+            ...(!backendIsSoftware && s.vaapiLowPower !== undefined
+              ? { lowPower: s.vaapiLowPower }
+              : {}),
+            ...(!backendIsSoftware && s.vaapiGpuColorConversion !== undefined
               ? { gpuColorConversion: s.vaapiGpuColorConversion }
               : {}),
-            ...(s.x264Preset !== undefined ? { x264Preset: s.x264Preset } : {}),
+            ...(backendIsSoftware && s.x264Preset !== undefined
+              ? { x264Preset: s.x264Preset }
+              : {}),
           });
         }
       } catch (err) {

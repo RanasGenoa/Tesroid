@@ -280,8 +280,9 @@ describe('Onboarding Guide & Setup Wizard', () => {
     const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(sentBody.qualityPreset).toBe('lightweight');
     expect(onCompleted).toHaveBeenCalledTimes(1);
-    // 軽量 (MCU2) は先行バッファ深度 2秒 をローカルへ初期適用（設定画面で後から変更可能）
+    // 軽量 (MCU2) は先行バッファ深度 2秒 と拡大率 70% をローカルへ初期適用（設定画面で後から変更可能）
     expect(localStore['tesroid_prefetch_buffer_ms']).toBe('2000');
+    expect(localStore['tesroid_display_scale']).toBe('70');
   });
 
   it('falls back to the standard preset when the quality select is missing or has an unknown value', async () => {
@@ -302,6 +303,7 @@ describe('Onboarding Guide & Setup Wizard', () => {
     const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(sentBody.qualityPreset).toBe('standard');
     expect(localStore['tesroid_prefetch_buffer_ms']).toBe('10000');
+    expect(localStore['tesroid_display_scale']).toBe('120');
   });
 
   it('opens onboarding guide modal overlay and closes via header close button, footer button, or backdrop', () => {
