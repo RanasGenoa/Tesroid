@@ -28,10 +28,13 @@ interface SetupBody {
 // 新しいプリセット概念は永続化せず、設定画面と同じフィールドへ初期値をセットするショートカットのみ。
 export type OnboardingQualityPreset = 'high' | 'standard' | 'lightweight';
 
+// 'custom' を含まれるプリセット名（オンボーディング 3 択のマップ先。Issue #90 の GPU/CPU 一覧と同一）
+type NonCustomPerformancePreset = Exclude<PerformancePreset, 'custom'>;
+
 interface QualityPresetSpec {
   // CPU (libx264) 環境では Issue #90 の方針に沿って有効な CPU プリセットへ安全マップする
-  gpuPreset: PerformancePreset;
-  cpuPreset: PerformancePreset;
+  gpuPreset: NonCustomPerformancePreset;
+  cpuPreset: NonCustomPerformancePreset;
   clientProfile: ClientPerformanceProfile;
   maxFps: number;
   bitrate: number;
@@ -67,8 +70,9 @@ const ONBOARDING_QUALITY_PRESETS: Record<OnboardingQualityPreset, QualityPresetS
   },
 };
 
+// 厳密一致の型ガード（PR #102 レビュー M1）: 前後空白や大文字は呼び出し元が先に正規化してから渡す。
 export function isOnboardingQualityPreset(value: unknown): value is OnboardingQualityPreset {
-  return typeof value === 'string' && Object.hasOwn(ONBOARDING_QUALITY_PRESETS, value.trim());
+  return typeof value === 'string' && Object.hasOwn(ONBOARDING_QUALITY_PRESETS, value);
 }
 
 // 選択プリセットを既存 stream.* / displayScale の正規化済み差分へ展開する。
@@ -79,9 +83,10 @@ export function buildQualityPresetUpdate(
   backendIsSoftware: boolean,
 ): { displayScale: number; stream: StreamConfig } {
   const spec = ONBOARDING_QUALITY_PRESETS[choice];
-  const performancePreset = backendIsSoftware ? spec.cpuPreset : spec.gpuPreset;
-  const presetDefaults =
-    PERFORMANCE_PRESET_DEFAULTS[performancePreset as Exclude<PerformancePreset, 'custom'>];
+  const performancePreset: NonCustomPerformancePreset = backendIsSoftware
+    ? spec.cpuPreset
+    : spec.gpuPreset;
+  const presetDefaults = PERFORMANCE_PRESET_DEFAULTS[performancePreset];
   const clientProfile: ClientProfileConfig = { profile: spec.clientProfile };
   const resolvedProfile = resolveClientProfile({ ...currentStream, clientProfile });
 

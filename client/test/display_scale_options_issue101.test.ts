@@ -214,6 +214,37 @@ describe('Display scale options 60-130 & legacy preservation (Issue #101) - Fron
     elementRegistry.get('modal-close-btn').click();
   });
 
+  // PR #102 レビュー L2: localStorage 先行表示で挿入された旧値の動的 option が、
+  // サーバー反映値が別値になった後もプルダウンに残らないことを検証する。
+  it('stale "(現在の保存値)" option is cleared when the server value differs', async () => {
+    (globalThis as any).localStorage.setItem('tesroid_display_scale', '150');
+    mockFetchWithSettings(120);
+    openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());
+
+    const scaleEl = elementRegistry.get('cfg-display-scale');
+    expect(scaleEl).toBeDefined();
+    // 実 DOM の localStorage 先行表示で挿入された旧値 option を再現する
+    const stale: any = {
+      value: '150',
+      textContent: '150% (現在の保存値)',
+      __tesroidLegacySaved: true,
+      remove: vi.fn(() => {
+        scaleEl.children = (scaleEl.children as any[]).filter((c) => c !== stale);
+      }),
+    };
+    scaleEl.children.push(stale);
+    scaleEl.options = DISPLAY_SCALE_GRID.map((value) => ({ value }));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // サーバー保存値 120 が選択され、旧 150% の動的 option は残留しない
+    expect(scaleEl.value).toBe('120');
+    expect(
+      (scaleEl.children as any[]).find((c) => c.__tesroidLegacySaved === true),
+    ).toBeUndefined();
+
+    elementRegistry.get('modal-close-btn').click();
+  });
+
   it('selecting the new 60% step saves displayScale=60 via PUT /api/settings', async () => {
     const getPut = mockFetchWithSettings(120);
     openSettingsWithAuth(mockContainer, testToken, vi.fn(), vi.fn());

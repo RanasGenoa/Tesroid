@@ -27,12 +27,23 @@ import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pi
 function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue: unknown): void {
   if (!selectEl) return;
   const target = String(rawValue);
+  // 以前に追加した「(現在の保存値)」動的オプションを先にクリアする (PR #102 レビュー L2)。
+  // localStorage 先行表示で挿入した後、サーバー反映値が別値になった場合に旧値 option を残さない。
+  const childEls: any[] = selectEl.children ? Array.from(selectEl.children as any) : [];
+  for (const child of childEls) {
+    if (child.__tesroidLegacySaved === true && typeof child.remove === 'function') {
+      child.remove();
+    }
+  }
   // クライアントテストの手書きモック要素には .options が無い (実 DOM との差異) ためガードする
   const optionEls = selectEl.options ? Array.from(selectEl.options) : [];
   if (optionEls.length > 0 && !optionEls.some((o) => o.value === target)) {
-    const legacyOption = document.createElement('option');
+    const legacyOption = document.createElement('option') as HTMLOptionElement & {
+      __tesroidLegacySaved?: boolean;
+    };
     legacyOption.value = target;
     legacyOption.textContent = `${target}% (現在の保存値)`;
+    legacyOption.__tesroidLegacySaved = true;
     selectEl.appendChild(legacyOption);
   }
   selectEl.value = target;
