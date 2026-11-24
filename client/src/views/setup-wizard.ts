@@ -176,7 +176,7 @@ export function renderSetupWizard(container: HTMLElement, onCompleted: () => voi
 
         const data = await res.json();
         if (res.ok && data.success) {
-          // 先行バッファ深度のみクライアント側設定のため同一プリセット値を初期適用する
+          // 先行バッファ深度・表示拡大率のローカル初期値を同一プリセット値へ揃える
           applyQualityPresetLocalDefaults(qualityPreset);
           onCompleted();
         } else if (errDiv) {

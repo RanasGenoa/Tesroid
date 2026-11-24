@@ -31,7 +31,9 @@ function setDisplayScaleSelectValue(selectEl: HTMLSelectElement | null, rawValue
   const target = String(rawValue);
   // 以前に追加した「(現在の保存値)」動的オプションを先にクリアする (PR #102 レビュー L2)。
   // localStorage 先行表示で挿入した後、サーバー反映値が別値になった場合に旧値 option を残さない。
-  const childEls = Array.from(selectEl.children) as LegacyOptionElement[];
+  const childEls = selectEl.children
+    ? (Array.from(selectEl.children) as LegacyOptionElement[])
+    : [];
   for (const child of childEls) {
     if (child.__tesroidLegacySaved === true && typeof child.remove === 'function') {
       child.remove();
