@@ -41,6 +41,8 @@ interface QualityPresetSpec {
   displayScale: number;
 }
 
+// 注意: displayScale の値はクライアント側 client/src/views/setup-wizard.ts の
+// QUALITY_PRESET_LOCAL_DEFAULTS.displayScale と必ず同期させること（プリセット調整時は両方を更新）。
 const ONBOARDING_QUALITY_PRESETS: Record<OnboardingQualityPreset, QualityPresetSpec> = {
   high: {
     gpuPreset: 'high',

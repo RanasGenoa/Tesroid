@@ -6,6 +6,8 @@ import { bindPinInputValidation, setPinFieldError, validatePinInput } from './pi
 // localStorage 設定のため、セットアップ完了時に同一プリセット対応の初期値をローカルへ書き込む
 // （再セットアップ時の旧 `tesroid_display_scale` 残留による一瞬の旧値表示を防ぐ。PR #102 3rd L）。
 type QualityPresetChoice = 'high' | 'standard' | 'lightweight';
+// 注意: displayScale の値はサーバー側 server/src/routes/setup.ts の
+// ONBOARDING_QUALITY_PRESETS.displayScale と必ず同期させること（プリセット調整時は両方を更新）。
 const QUALITY_PRESET_LOCAL_DEFAULTS: Record<
   QualityPresetChoice,
   { bufferDepthMs: number; displayScale: number }

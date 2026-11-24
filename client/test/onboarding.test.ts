@@ -256,8 +256,8 @@ describe('Onboarding Guide & Setup Wizard', () => {
     expect(onCompleted).toHaveBeenCalledTimes(1);
   });
 
-  // Issue #101: 3 択の選択は既存設定項目への初期値ショートカットとして POST /api-setup へ送り、
-  // クライアント側設定の先行バッファ深度のみローカルへ同一プリセット値を初期適用する。
+  // Issue #101: 3 択の選択は既存設定項目への初期値ショートカットとして POST /api/setup へ送り、
+  // クライアント側設定（先行バッファ深度・表示拡大率）のみローカルへ同一プリセット値を初期適用する。
   it('sends the selected quality preset to /api/setup and applies matching local buffer depth (Issue #101)', async () => {
     const { container, nextBtn, elementsById, setupForm, localStore } = setupMockDom();
     const fetchMock = vi.fn().mockResolvedValue({
