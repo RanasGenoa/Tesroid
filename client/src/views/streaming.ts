@@ -263,6 +263,20 @@ export function renderStreamingView(
   // 届いた時点でのみ RTT 表示を再開する）
   let rttStaleCleared = false;
   const RTT_STALE_MS = 5000;
+
+  /**
+   * Issue #105: RTT 鮮度切れ判定。PONG の鮮度タイムスタンプが閾値超過なら最後の計測値を
+   * 破棄し、HUD・メトリクスとも未計測として扱う（HUD 表示は呼び出し側の updateHudConnStatus で更新）。
+   * PONG ハンドラと ackTimer の両方から呼ぶことで、汚染 PONG が届き続ける状態でも
+   * 古い値の余分な報告・凍結表示を発生させない。
+   */
+  function clearStaleRttIfExpired(now: number): void {
+    if (instantRtt > 0 && now - lastPongAtMs > RTT_STALE_MS) {
+      instantRtt = 0;
+      rttStaleCleared = true;
+      metricsCollector.updateRtt(0);
+    }
+  }
   // Issue #103: PONG ペイロードのサーバー最新 PTS（LIVE ジャンプ時の暫定音声バリア外挿用）
   let lastKnownServerLatestPtsUs = 0;
   let lastKnownServerLatestAtMs = 0;
@@ -818,13 +832,8 @@ export function renderStreamingView(
       targetTitle = '接続状態: 切断';
     } else {
       // Issue #105: PONG が閾値を超えて届かない場合、最後の RTT 値は鮮度切れとして破棄する
-      // （CATCHUP バースト中のソケット滞留で汚染された値が凍結表示される問題の防止）。
-      // 遷移の瞬間に 1 回だけメトリクスへも未計測 (0) を報告し、凍結値の再報告を止める。
-      if (instantRtt > 0 && performance.now() - lastPongAtMs > RTT_STALE_MS) {
-        instantRtt = 0;
-        rttStaleCleared = true;
-        metricsCollector.updateRtt(0);
-      }
+      // （CATCHUP バースト中のソケット滞留で汚染された値が凍結表示される問題の防止）
+      clearStaleRttIfExpired(performance.now());
       const elapsed = performance.now() - lastPacketReceivedTime;
 
       if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
@@ -1335,6 +1344,9 @@ export function renderStreamingView(
     lastPacketReceivedTime = performance.now();
     if (msg.type === 'PONG') {
       const now = performance.now();
+      // Issue #105: 鮮度切れ判定を測定の前に行う（汚染 PONG のみ継続到着時に、
+      // クリア前の古い instantRtt が metrics へ余分に報告される境界タイミングの排除）
+      clearStaleRttIfExpired(now);
       if (
         typeof msg.latestPts === 'number' &&
         Number.isFinite(msg.latestPts) &&

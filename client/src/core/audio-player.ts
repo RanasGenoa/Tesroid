@@ -389,7 +389,7 @@ export class AudioPlayer {
     return Math.round((scheduledAheadSec + queuedSec + this.totalOverflowDurationSec) * 1000);
   }
 
-  /** Issue #103: ジャンプ基準 PTS バリアの設定（0 以下は無効化）。TTL 自動失効付き。 */
+  /** Issue #103: ジャンプ基準 PTS バリアの設定（0 以下は無視。明示解除は clearLiveEdgeBarrier を使用）。TTL 自動失効付き。 */
   public setLiveEdgeBarrier(ptsUs: number, ttlMs: number = AudioPlayer.LIVE_BARRIER_TTL_MS): void {
     if (!Number.isFinite(ptsUs) || ptsUs <= 0) return;
     this.liveBarrierPtsUs = ptsUs;

@@ -1176,13 +1176,26 @@ export class WebSocketHandler {
   }
 
   /**
+   * targetBufferMs の解決単一正典。スライディングウィンドウ実制御と Issue #107 の診断ログで
+   * 参照が食い違わないよう共通化する（再接続直後等で session.targetBufferMs が未設定でも、
+   * 直前の有効値 lastKnownTargetBufferMs を基準にする）。
+   */
+  private getBaseTargetBufferMs(session: ClientSession): number {
+    return (
+      session.targetBufferMs ??
+      this.lastKnownTargetBufferMs ??
+      WebSocketHandler.DEFAULT_TARGET_BUFFER_MS
+    );
+  }
+
+  /**
    * Issue #104: CATCHUP のスライディングウィンドウを実測排水レートへ適応させる。
    * 健全なリンク（排水レート >= 0.9x）では従来どおり targetBufferMs をそのまま使用し、
    * 排水が実時間未満のリンクでは in-flight を「target × レート（下限2.5秒、target を
    * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
-    const target = session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
+    const target = this.getBaseTargetBufferMs(session);
     const rate = session.ackDrainRateEwma;
     if (rate === undefined || rate >= 0.9) {
       return target;
@@ -1217,10 +1230,7 @@ export class WebSocketHandler {
     }
     if (firstPts === null || lastPts === null || lastPts <= firstPts) return;
     const spanMs = Number(lastPts - firstPts) / 1000;
-    const capMs = Math.max(
-      2 * (session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS),
-      15000,
-    );
+    const capMs = Math.max(2 * this.getBaseTargetBufferMs(session), 15000);
     if (spanMs > capMs) {
       const before = session.playbackQueue.length;
       this.pruneSessionQueue(session);
@@ -1247,7 +1257,7 @@ export class WebSocketHandler {
     // Issue #107: 実効スライディングウィンドウとバーストモードを記録。これらの値はこれまで
     // どのログにも出力されておらず、インシデント解析時に当日のフロー制御設定を復元できなかった。
     console.log(
-      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${this.isBurstCatchupEnabled()})`,
+      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${this.getBaseTargetBufferMs(session)}, burst=${this.isBurstCatchupEnabled()})`,
     );
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
@@ -1293,7 +1303,7 @@ export class WebSocketHandler {
 
     // Issue #107: 通信悪化による LIVE→CATCHUP 遷移も実効窓・バースト設定を記録する
     console.log(
-      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${session.isBurstMode}`,
+      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${this.getBaseTargetBufferMs(session)}, burst=${session.isBurstMode}`,
     );
 
     if (!session.pacingTimer) {
