@@ -76,4 +76,49 @@ describe('Issue #103: post-LIVE-jump straggler audio barrier', () => {
       vi.useRealTimers();
     }
   });
+
+  it('TCP FIFO で LIVE_JUMPED 前に滑り込んだ古い straggler キュー/スケジュールは setLiveEdgeBarrier 時に即パージされる', () => {
+    const player = makePlayer();
+    const stopSpy = vi.fn();
+    (player as any).scheduledSources.add({ stop: stopSpy, disconnect: vi.fn() });
+    (player as any).lastScheduledPtsUs = 8_000_000;
+    (player as any).bufferQueue.push({ buffer: { duration: 0.02 } as any, ptsUs: 8_020_000 });
+    (player as any).isPlaying = true;
+
+    // ライブエッジ 10_000_000us を設定 → 8s の straggler が既に滑り込んでいるためパージされる
+    player.setLiveEdgeBarrier(10_000_000);
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect((player as any).bufferQueue.length).toBe(0);
+    expect((player as any).isPlaying).toBe(false);
+
+    // すでにバリア以上の健全なライブ音声のみ再生中の場合はパージしない
+    const liveStopSpy = vi.fn();
+    (player as any).scheduledSources.add({ stop: liveStopSpy, disconnect: vi.fn() });
+    (player as any).lastScheduledPtsUs = 10_500_000;
+    (player as any).isPlaying = true;
+    player.setLiveEdgeBarrier(10_000_000);
+    expect(liveStopSpy).not.toHaveBeenCalled();
+  });
+
+  it('非同期 AudioDecoder.output で遅れて出てきた pre-jump straggler も playAudioData で破棄される', () => {
+    const player = makePlayer();
+    (player as any).ctx = { state: 'running', currentTime: 1.0, createBuffer: vi.fn() };
+    player.setLiveEdgeBarrier(10_000_000);
+
+    // 新しいライブ音声が decodeAndPlayChunk を通過して liveBarrierPtsUs が解除された状態を模擬
+    expect(isStale(player, 10_040_000)).toBe(false);
+    expect((player as any).liveBarrierPtsUs).toBe(0);
+
+    // しかし AudioDecoder 内に残っていた古い pre-jump straggler (9_900_000) が output で到着
+    const staleClose = vi.fn();
+    (player as any).playAudioData({
+      numberOfChannels: 2,
+      numberOfFrames: 960,
+      sampleRate: 48000,
+      timestamp: 9_900_000,
+      close: staleClose,
+    });
+    expect(staleClose).toHaveBeenCalledTimes(1);
+    expect((player as any).ctx.createBuffer).not.toHaveBeenCalled();
+  });
 });

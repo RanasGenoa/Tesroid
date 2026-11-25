@@ -39,6 +39,7 @@ export interface ClientSession {
   lastAckProgressAtMs?: number;
   lastAckProgressPts?: bigint;
   lastBacklogPruneAtMs?: number;
+  catchupCongestionStreak?: number;
 }
 
 export class WebSocketHandler {
@@ -60,6 +61,11 @@ export class WebSocketHandler {
   private static readonly MAX_TARGET_BUFFER_MS = 30000;
   // 60fps video + 50pps (20ms) Opus audio = 110 frames/s -> 30s = 3,300 frames, 60s = 6,600 frames
   private static readonly MAX_CATCHUP_QUEUE_FRAMES = 6600;
+  private static readonly ACK_PROGRESS_MIN_WINDOW_MS = 250;
+  private static readonly ACK_PROGRESS_MAX_WINDOW_MS = 5000;
+  private static readonly DRAIN_RATE_CONGESTION_THRESHOLD = 0.85;
+  private static readonly CATCHUP_DEFAULT_SOCKET_GUARD_BYTES = 128 * 1024;
+  private static readonly CATCHUP_MIN_BACKLOG_CAP_MS = 30000;
 
   // Playback ring buffer & CATCHUP state machine
   private playbackBuffer: PlaybackBuffer;
@@ -279,6 +285,16 @@ export class WebSocketHandler {
       }
     }
     return false;
+  }
+
+  private sendLiveJumped(socket: WebSocket): void {
+    const liveEdgePtsUs =
+      typeof this.encoder.getCurrentPts === 'function' ? Number(this.encoder.getCurrentPts()) : 0;
+    this.sendControl(socket, {
+      type: 'LIVE_JUMPED',
+      timestamp: Date.now(),
+      ...(liveEdgePtsUs > 0 ? { dropAudioBeforePts: liveEdgePtsUs } : {}),
+    });
   }
 
   private notifyOtherSessionsLiveJump(sourceSocket: WebSocket): void {
@@ -510,6 +526,7 @@ export class WebSocketHandler {
           '[WebSocketHandler] Auto-Hybrid: User input detected during CATCHUP. Switching immediately to LIVE mode.',
         );
         this.abortCatchupAndSwitchToLive(session);
+        this.sendLiveJumped(socket);
         switchedAnyCatchup = true;
       }
       for (const otherClient of this.authenticatedClients) {
@@ -575,6 +592,7 @@ export class WebSocketHandler {
     session.mode = 'LIVE';
     session.isFlowPaused = false;
     session.lastSentVideoPts = null;
+    session.catchupCongestionStreak = 0;
     // Issue #104: LIVE ジャンプによる PTS 不連続跳躍を排水レート推定に混ぜない。
     // 学習済みの EWMA は保持し、基準点のみ再初期化する（ジャンプ直後の擬似高レート防止）
     session.lastAckProgressPts = undefined;
@@ -1152,7 +1170,7 @@ export class WebSocketHandler {
    * 低速リンクへ自己輻輳を招く前に、窓を排水速度に見合った大きさへ縮めるための入力信号。
    */
   private observeAckProgress(session: ClientSession, newPts: bigint): void {
-    const nowMs = Date.now();
+    const nowMs = performance.now();
     // 基準点未設定（計測開始時・LIVE ジャンプ後の再初期化時）は基準だけを置く。
     // 学習済み排水レート（EWMA）はリンク特性なので消さない
     if (session.lastAckProgressPts === undefined) {
@@ -1170,10 +1188,16 @@ export class WebSocketHandler {
     if (session.lastAckProgressAtMs === undefined || newPts === session.lastAckProgressPts) {
       return;
     }
+    const wallDeltaMs = nowMs - session.lastAckProgressAtMs;
     // 短間隔サンプルは分母が制御メッセージ粒度に律速されレートが過小評価になるため、
     // 250ms 以上の窓が溜まるまで計測しない（ACK と BUFFER_FEEDBACK の連続到着対策）
-    const wallDeltaMs = nowMs - session.lastAckProgressAtMs;
-    if (wallDeltaMs < 250) {
+    if (wallDeltaMs < WebSocketHandler.ACK_PROGRESS_MIN_WINDOW_MS) {
+      return;
+    }
+    // 5秒超の無通信・停止明け後の1サンプルで極小レート（例: 0.01x）が混入するのを防ぐ
+    if (wallDeltaMs > WebSocketHandler.ACK_PROGRESS_MAX_WINDOW_MS) {
+      session.lastAckProgressPts = newPts;
+      session.lastAckProgressAtMs = nowMs;
       return;
     }
     const mediaDeltaMs = Number(newPts - session.lastAckProgressPts) / 1000;
@@ -1201,17 +1225,38 @@ export class WebSocketHandler {
 
   /**
    * Issue #104: CATCHUP のスライディングウィンドウを実測排水レートへ適応させる。
-   * 健全なリンク（排水レート >= 0.9x）では従来どおり targetBufferMs をそのまま使用し、
+   * 健全なリンク（排水レート >= 0.85x）では従来どおり targetBufferMs をそのまま使用し、
    * 排水が実時間未満のリンクでは in-flight を「target × レート（下限2.5秒、target を
    * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
     const target = this.getBaseTargetBufferMs(session);
     const rate = session.ackDrainRateEwma;
-    if (rate === undefined || rate >= 0.9) {
+    if (rate === undefined || rate >= WebSocketHandler.DRAIN_RATE_CONGESTION_THRESHOLD) {
       return target;
     }
     return Math.min(target, Math.max(2500, Math.round(target * rate)));
+  }
+
+  private isCatchupLinkCongested(session: ClientSession): boolean {
+    return (
+      (session.catchupCongestionStreak ?? 0) >= 3 ||
+      (session.ackDrainRateEwma !== undefined &&
+        session.ackDrainRateEwma < WebSocketHandler.DRAIN_RATE_CONGESTION_THRESHOLD)
+    );
+  }
+
+  /**
+   * Issue #104: CATCHUP 時のソケット送出ガード閾値。
+   * 健全時は従来どおり 128KB、ソケット滞留連続または低排水レート検知時は 32KB〜64KB へ絞り、
+   * 浅いモバイルリンクの中間バッファへの詰め込み（bufferbloat）を抑制する。
+   */
+  private getEffectiveCatchupSocketGuardBytes(session: ClientSession): number {
+    if (!this.isCatchupLinkCongested(session)) {
+      return WebSocketHandler.CATCHUP_DEFAULT_SOCKET_GUARD_BYTES;
+    }
+    const bps = this.configStore.getConfig().stream?.bitrate || 1000000;
+    return Math.max(32 * 1024, Math.min(64 * 1024, Math.round((bps / 8) * 0.25)));
   }
 
   /** バースト CATCHUP の有効無効（環境変数、既定有効）。 */
@@ -1222,13 +1267,13 @@ export class WebSocketHandler {
   }
 
   /**
-   * Issue #104: CATCHUP キューのバックログ上限。先行バッファ深度の2倍（最低15秒）を超える
-   * 古い GOP を安全に間引き、キャッチアップが無限に続かないことを保証する。
-   * （2026-11-25 の別窓では 872 フレーム分のバックログが約2分間排水されず未完に終わった）
+   * Issue #104: CATCHUP キューのバックログ上限。先行バッファ深度の2倍（最低30秒）を超える
+   * 古い GOP を安全に間引き、キャッチアップが無限に続かないことを保証しつつ、
+   * Issue #26 / #56 の 25〜30 秒無欠落復旧を保護する。
    */
   private enforceCatchupBacklogCap(session: ClientSession): void {
     if (session.playbackQueue.length === 0) return;
-    const nowMs = Date.now();
+    const nowMs = performance.now();
     if (session.lastBacklogPruneAtMs !== undefined && nowMs - session.lastBacklogPruneAtMs < 2000) {
       return;
     }
@@ -1241,14 +1286,19 @@ export class WebSocketHandler {
     }
     if (firstPts === null || lastPts === null || lastPts <= firstPts) return;
     const spanMs = Number(lastPts - firstPts) / 1000;
-    const capMs = Math.max(2 * this.getBaseTargetBufferMs(session), 15000);
+    const capMs = Math.max(
+      2 * this.getBaseTargetBufferMs(session),
+      WebSocketHandler.CATCHUP_MIN_BACKLOG_CAP_MS,
+    );
     if (spanMs > capMs) {
       const before = session.playbackQueue.length;
       this.pruneSessionQueue(session);
-      session.lastBacklogPruneAtMs = nowMs;
-      console.log(
-        `[WebSocketHandler] CATCHUP backlog ${Math.round(spanMs)}ms exceeds cap ${capMs}ms. Pruned oldest GOP (${before} -> ${session.playbackQueue.length} frames).`,
-      );
+      if (session.playbackQueue.length < before) {
+        session.lastBacklogPruneAtMs = nowMs;
+        console.log(
+          `[WebSocketHandler] CATCHUP backlog ${Math.round(spanMs)}ms exceeds cap ${capMs}ms. Pruned oldest GOP (${before} -> ${session.playbackQueue.length} frames).`,
+        );
+      }
     }
   }
 
@@ -1264,11 +1314,15 @@ export class WebSocketHandler {
     session.playbackQueue = muteAudio
       ? catchupData.frames.filter((f) => f.type !== 'audio')
       : [...catchupData.frames];
+    session.lastAckProgressPts = undefined;
+    session.lastAckProgressAtMs = undefined;
+    session.catchupCongestionStreak = 0;
+    session.isBurstMode = this.isBurstCatchupEnabled();
 
     // Issue #107: 実効スライディングウィンドウとバーストモードを記録。これらの値はこれまで
     // どのログにも出力されておらず、インシデント解析時に当日のフロー制御設定を復元できなかった。
     console.log(
-      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${this.getBaseTargetBufferMs(session)}, burst=${this.isBurstCatchupEnabled()})`,
+      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${this.getBaseTargetBufferMs(session)}, effectiveWindowMs=${this.effectiveCatchupWindowMs(session)}, socketGuardKB=${Math.round(this.getEffectiveCatchupSocketGuardBytes(session) / 1024)}, burst=${session.isBurstMode})`,
     );
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
@@ -1283,7 +1337,6 @@ export class WebSocketHandler {
     }
     session.lastSentVideoPts = session.lastAckPts;
     session.isFlowPaused = false;
-    session.isBurstMode = this.isBurstCatchupEnabled();
 
     // クライアントの VideoDecoder / AudioPlayer を確実に初期化するための CONFIG パケットを送出
     if (catchupData.configVideo && session.socket.readyState === 1) {
@@ -1309,12 +1362,15 @@ export class WebSocketHandler {
 
     session.mode = 'CATCHUP';
     session.isFlowPaused = true;
+    session.lastAckProgressPts = undefined;
+    session.lastAckProgressAtMs = undefined;
+    session.catchupCongestionStreak = 0;
 
     session.isBurstMode = this.isBurstCatchupEnabled();
 
     // Issue #107: 通信悪化による LIVE→CATCHUP 遷移も実効窓・バースト設定を記録する
     console.log(
-      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${this.getBaseTargetBufferMs(session)}, burst=${session.isBurstMode}`,
+      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${this.getBaseTargetBufferMs(session)}, effectiveWindowMs=${this.effectiveCatchupWindowMs(session)}, socketGuardKB=${Math.round(this.getEffectiveCatchupSocketGuardBytes(session) / 1024)}, burst=${session.isBurstMode}`,
     );
 
     if (!session.pacingTimer) {
@@ -1358,6 +1414,7 @@ export class WebSocketHandler {
       );
       session.mode = 'LIVE';
       session.isFlowPaused = false;
+      session.catchupCongestionStreak = 0;
       return;
     }
     if (session.pacingTimer) {
@@ -1366,7 +1423,9 @@ export class WebSocketHandler {
 
     // ソケットの詰まり確認: 送信バッファに溜まっている間は通信悪化継続中なので送出しない
     const socketBuffered = (session.socket as any).bufferedAmount || 0;
-    if (socketBuffered > 128 * 1024) {
+    const socketGuardBytes = this.getEffectiveCatchupSocketGuardBytes(session);
+    if (socketBuffered > socketGuardBytes) {
+      session.catchupCongestionStreak = Math.min(20, (session.catchupCongestionStreak ?? 0) + 1);
       session.isFlowPaused = true;
       session.pacingTimer = setTimeout(() => {
         session.pacingTimer = null;
@@ -1402,6 +1461,7 @@ export class WebSocketHandler {
       console.log('[WebSocketHandler] CATCHUP playback queue empty. Transitioning to LIVE mode.');
       session.mode = 'LIVE';
       session.isFlowPaused = false;
+      session.catchupCongestionStreak = 0;
       return;
     }
 
@@ -1410,7 +1470,9 @@ export class WebSocketHandler {
 
     // ソケットの詰まり確認: 送信バッファに溜まっている間は送出を控える
     const socketBuffered = (session.socket as any).bufferedAmount || 0;
-    if (socketBuffered > 128 * 1024) {
+    const socketGuardBytes = this.getEffectiveCatchupSocketGuardBytes(session);
+    if (socketBuffered > socketGuardBytes) {
+      session.catchupCongestionStreak = Math.min(20, (session.catchupCongestionStreak ?? 0) + 1);
       session.isFlowPaused = true;
       if (!session.pacingTimer) {
         session.pacingTimer = setTimeout(() => {
@@ -1419,6 +1481,9 @@ export class WebSocketHandler {
         }, 50);
       }
       return;
+    }
+    if (socketBuffered <= socketGuardBytes / 2 && (session.catchupCongestionStreak ?? 0) > 0) {
+      session.catchupCongestionStreak = Math.max(0, (session.catchupCongestionStreak ?? 0) - 1);
     }
 
     // クライアント先行バッファ上限チェック（スライディングウィンドウ・フロー制御）
@@ -1439,8 +1504,8 @@ export class WebSocketHandler {
 
     session.isFlowPaused = false;
 
-    // In burst mode, deliver frames with minimal interval (e.g. 2-4ms) so 10s of buffer pre-fills within 1 second,
-    // while keeping timer ticks non-blocking and preserving backpressure limits.
+    // In burst mode, deliver frames with minimal interval (e.g. 2ms on healthy links, relaxed to 10ms when congested)
+    // so 10s of buffer pre-fills rapidly without flooding shallow mobile buffers.
     const frame = session.playbackQueue.shift()!;
     if (
       frame.type === 'video' ||
@@ -1469,10 +1534,11 @@ export class WebSocketHandler {
       );
       session.mode = 'LIVE';
       session.isFlowPaused = false;
+      session.catchupCongestionStreak = 0;
       return;
     }
 
-    let delayMs = session.isBurstMode ? 2 : 4;
+    let delayMs = session.isBurstMode ? (this.isCatchupLinkCongested(session) ? 10 : 2) : 4;
     if (!session.isBurstMode) {
       const nextFrame = session.playbackQueue[0];
       let deltaUs = nextFrame.pts - frame.pts;
@@ -1800,6 +1866,7 @@ export class WebSocketHandler {
             // If client is in interactive mode, abort any pending catchup queue immediately
             if (session.isInteractive && session.mode === 'CATCHUP') {
               this.abortCatchupAndSwitchToLive(session);
+              this.sendLiveJumped(socket);
             } else if (session.mode === 'CATCHUP') {
               this.checkAndResumeCatchup(session);
             }
@@ -1894,7 +1961,9 @@ export class WebSocketHandler {
           if (this.clientSessions.get(socket)?.isStandby) {
             break;
           }
-          this.recordInputActivity(socket);
+          // Issue #103: recordInputActivity(socket) を呼ぶと CATCHUP 中に abortCatchupAndSwitchToLive と
+          // notifyOtherSessionsLiveJump が二重実行されるため、入力時刻のみ更新して下の単一経路に集約する
+          this.lastInputAt = Date.now();
           const session = this.clientSessions.get(socket);
           if (session) {
             // Issue #104: クライアント側の LIVE ジャンプでも再生 PTS が一気に進むため、
@@ -1909,15 +1978,7 @@ export class WebSocketHandler {
           }
           // Issue #103: 破棄基準となるライブエッジ PTS を権威値としてクライアントへ返し、
           // 経路上を漂流中の古い音声（straggler）を受信側で確実に破棄できるようにする
-          const liveEdgePtsUs =
-            typeof this.encoder.getCurrentPts === 'function'
-              ? Number(this.encoder.getCurrentPts())
-              : 0;
-          this.sendControl(socket, {
-            type: 'LIVE_JUMPED',
-            timestamp: Date.now(),
-            ...(liveEdgePtsUs > 0 ? { dropAudioBeforePts: liveEdgePtsUs } : {}),
-          });
+          this.sendLiveJumped(socket);
           break;
         }
 

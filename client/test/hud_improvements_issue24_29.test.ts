@@ -596,4 +596,106 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
       vi.useRealTimers();
     }
   });
+
+  it('Issue #103: PONG が3秒超途絶かつ lastDecodedPts=0 のフォールバックでも jumpToLive リセット前の音声 PTS を使う', () => {
+    vi.useFakeTimers();
+    try {
+      let storedPts = 42_000_000;
+      mockAudioPlayer.getLastKnownPtsUs.mockImplementation(() => storedPts);
+      mockAudioPlayer.jumpToLive.mockImplementation(() => {
+        storedPts = 0; // AudioPlayer.resetJitterBuffer() と同じ挙動
+      });
+
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
+      const controlHandler = eventListeners['control']?.[0];
+      expect(controlHandler).toBeDefined();
+
+      // PONG 未受信のままジャンプが発生した場合でも、リセット前に退避した 42_000_000 がバリアになる
+      controlHandler({ type: 'PRIMARY_JUMP_TO_LIVE' });
+      expect(mockAudioPlayer.setLiveEdgeBarrier).toHaveBeenCalledWith(42_000_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Issue #105: 再接続直後 CATCHUP（minRtt 未確立）で汚染 RTT 531ms を採用せず「接続中」を維持し、open で鮮度状態をリセットする', () => {
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
+      const controlHandler = eventListeners['control']?.[0];
+      const openHandler = eventListeners['open']?.[0];
+      expect(controlHandler).toBeDefined();
+      expect(openHandler).toBeDefined();
+
+      const connText = elementRegistry.get('hud-conn-text');
+      const metrics = captured.metricsInstances[captured.metricsInstances.length - 1];
+
+      // 1. まず健全な RTT 40ms を確立後、PONG 不着かつメディア到達継続で鮮度切れ（rttStaleCleared = true）にする
+      const t1 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 1,
+        clientTime: t1 - 40,
+        serverTime: t1,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
+      for (let i = 0; i < 12; i++) {
+        vi.advanceTimersByTime(500);
+        controlHandler({ type: 'LIVE_JUMPED', timestamp: Date.now() });
+      }
+      expect(connText.textContent).toBe('接続中');
+
+      // 2. 再接続 (open) 後、最初から CATCHUP の汚染 PONG (rawRtt=531ms) が届いた場合
+      openHandler();
+      const t2 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 2,
+        clientTime: t2 - 531,
+        serverTime: t2,
+        serverMode: 'CATCHUP',
+        catchupQueueMs: 2500,
+        serverBufferMs: 5000,
+      });
+
+      // minRtt 未確立のため 531ms を採用せず「接続中」のまま、metrics へも 0 を報告する
+      expect(connText.textContent).toBe('接続中');
+      expect(metrics.updateRtt).toHaveBeenLastCalledWith(0);
+
+      // 3. LIVE 復帰後に健全な PONG (35ms) が届けば通常表示に戻る
+      const t3 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 3,
+        clientTime: t3 - 35,
+        serverTime: t3,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
+      expect(connText.textContent).toBe('35ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

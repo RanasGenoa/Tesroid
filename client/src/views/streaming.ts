@@ -841,21 +841,28 @@ export function renderStreamingView(
         targetClass = 'status-dot status-offline';
         signalLevelClass = 'signal-meter signal-level-0';
         targetText = '瞬断中';
-        targetTitle = `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`;
+        targetTitle =
+          instantRtt > 0
+            ? `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (瞬間RTT: ${instantRtt}ms)`
+            : `通信断 / パケット未着: ${(elapsed / 1000).toFixed(1)}秒 (RTT計測待機)`;
       } else if (elapsed > PACKET_STALL_WARN_THRESHOLD_MS || instantRtt >= RTT_WARN_THRESHOLD_MS) {
         // パケット到着間隔の拡大、または回線RTTが警告レベル
         targetClass = 'status-dot status-warning';
         signalLevelClass =
           instantRtt >= 130 ? 'signal-meter signal-level-1' : 'signal-meter signal-level-2';
         targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-        targetTitle = `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`;
+        targetTitle =
+          instantRtt > 0
+            ? `通信不安定 (瞬間RTT: ${instantRtt}ms, 受信間隔: ${Math.round(elapsed)}ms)`
+            : `通信不安定 (RTT計測待機, 受信間隔: ${Math.round(elapsed)}ms)`;
       } else {
         // パケットが円滑に届いており回線も良好
         targetClass = 'status-dot status-online';
         signalLevelClass =
           instantRtt >= 60 ? 'signal-meter signal-level-3' : 'signal-meter signal-level-4';
         targetText = instantRtt > 0 ? `${instantRtt}ms` : '接続中';
-        targetTitle = `通信良好 (瞬間RTT: ${instantRtt}ms)`;
+        targetTitle =
+          instantRtt > 0 ? `通信良好 (瞬間RTT: ${instantRtt}ms)` : '接続状態: 接続中 (RTT計測待機)';
       }
     }
 
@@ -875,13 +882,7 @@ export function renderStreamingView(
     const isInteractive =
       typeof framePacer.getMode === 'function' && framePacer.getMode() === 'ACTIVE_INTERACTION';
 
-    const pacerMs =
-      typeof framePacer.getBufferedDurationMs === 'function'
-        ? framePacer.getBufferedDurationMs()
-        : 0;
-    const decoderMs =
-      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const localMs = pacerMs + decoderMs;
+    const localMs = getVideoPathBufferedMs();
     const serverMs = Math.max(serverCatchupQueueMs, serverBufferMs);
 
     const localSec = (localMs / 1000).toFixed(1);
@@ -953,6 +954,10 @@ export function renderStreamingView(
   }
 
   const executeJumpToLive = (silent = false, notifyServer = true) => {
+    // Issue #103: jumpToLive()/resetJitterBuffer() が lastChunkPtsUs を 0 へクリアするため、
+    // フォールバック用の最終受信音声 PTS はフラッシュ前に退避しておく
+    const prevAudioPtsUs =
+      typeof audioPlayer.getLastKnownPtsUs === 'function' ? audioPlayer.getLastKnownPtsUs() : 0;
     if (typeof decoder.flushPendingForLiveJump === 'function') {
       decoder.flushPendingForLiveJump();
     }
@@ -975,7 +980,7 @@ export function renderStreamingView(
         barrierUs =
           lastKnownServerLatestPtsUs + Math.round((nowMs - lastKnownServerLatestAtMs) * 1000);
       } else {
-        barrierUs = Math.max(lastDecodedPts, audioPlayer.getLastKnownPtsUs?.() ?? 0);
+        barrierUs = Math.max(lastDecodedPts, prevAudioPtsUs);
       }
       if (barrierUs > 0) {
         audioPlayer.setLiveEdgeBarrier(barrierUs);
@@ -1196,6 +1201,9 @@ export function renderStreamingView(
   const triggerStop = () => {
     wsClient.send(ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));
     audioPlayer.resetJitterBuffer();
+    if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+      audioPlayer.clearLiveEdgeBarrier();
+    }
     decoder.reset();
     showSleepingScreen();
     showToast('ブラウザと配信プロセスを停止しました (CPU/GPU 0%)', 'info');
@@ -1319,6 +1327,8 @@ export function renderStreamingView(
       audioPlayer.clearLiveEdgeBarrier();
     }
     lastKnownServerLatestPtsUs = 0;
+    lastPongAtMs = 0;
+    rttStaleCleared = false;
     jitterController.reset();
     renderer.resetFirstFrame();
     avSync.reset();
@@ -1382,17 +1392,17 @@ export function renderStreamingView(
         if (rttHistory.length > RTT_HISTORY_WINDOW_SIZE) rttHistory.shift();
         minRtt = rttHistory.length > 0 ? Math.min(...rttHistory) : rawRtt;
         instantRtt = instantRtt === 0 ? rawRtt : Math.round(instantRtt * 0.7 + rawRtt * 0.3);
+        jitterController.updateRtt(instantRtt);
       } else {
         // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ。
-        // 初回起動直後かつ最初から CATCHUP 状態であった場合（instantRtt未決定時）は、
-        // 過去の最小物理RTT（minRtt）またはフォールバック値を使用する。
-        if (instantRtt === 0 && !rttStaleCleared) {
-          instantRtt = Number.isFinite(minRtt) ? minRtt : rawRtt;
+        // 接続直後・再接続直後でまだ一度も健全な LIVE RTT（minRtt）を計測できていない場合は
+        // 汚染された rawRtt を採用せず 0（'接続中'）のまま維持する（Issue #105）。
+        if (instantRtt === 0 && !rttStaleCleared && Number.isFinite(minRtt)) {
+          instantRtt = minRtt;
           lastPongAtMs = now; // 初期基準を確定させた時点も鮮度タイムスタンプとして記録
         }
       }
       metricsCollector.updateRtt(instantRtt);
-      jitterController.updateRtt(instantRtt);
 
       if (isSecondarySession && !isActingPrimary) {
         if (
@@ -1492,6 +1502,9 @@ export function renderStreamingView(
           resizeTimer = null;
         }
         audioPlayer.resetJitterBuffer();
+        if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+          audioPlayer.clearLiveEdgeBarrier();
+        }
         if (wasActingPrimary) {
           showToast('メインセッションが復帰したため、セカンドディスプレイ表示に戻りました', 'info');
         }
@@ -1512,6 +1525,9 @@ export function renderStreamingView(
         renderer.resetFirstFrame();
         avSync.reset();
         audioPlayer.resetJitterBuffer();
+        if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+          audioPlayer.clearLiveEdgeBarrier();
+        }
         lastDecodedPts = 0;
         lastAckSentPts = -1;
         primaryAnchorPtsUs = 0;
@@ -1637,6 +1653,8 @@ export function renderStreamingView(
     instantRtt = 0;
     minRtt = Number.POSITIVE_INFINITY;
     rttHistory = [];
+    lastPongAtMs = 0;
+    rttStaleCleared = false;
 
     if (connText) connText.textContent = '接続中';
     if (connDot) connDot.className = 'status-dot status-online';
@@ -1662,13 +1680,7 @@ export function renderStreamingView(
     if (connDot) connDot.className = 'status-dot status-warning';
     if (hudConn) hudConn.title = '接続状態: 一時切断';
 
-    const pendingBufferedMs =
-      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs =
-      typeof framePacer.getBufferedDurationMs === 'function'
-        ? framePacer.getBufferedDurationMs()
-        : 0;
-    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 正典集計関数へ統一
 
     if (totalBufferedMs > 250) {
       // Survive temporary network drops by playing through local prefetch buffer

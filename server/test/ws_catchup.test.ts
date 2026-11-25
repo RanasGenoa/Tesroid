@@ -887,7 +887,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       vi.setSystemTime(0);
       (handler as any).observeAckProgress(session, 0n);
       // 実時間1秒でメディア500ms分しか再生進行しなかった = 0.5x 排水
-      vi.setSystemTime(1000);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 500000n);
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
 
@@ -898,7 +898,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       session.ackDrainRateEwma = 0.1;
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(2500);
 
-      // 健全リンク (>= 0.9x) は従来窓のまま（非回帰）
+      // 健全リンク (>= 0.85x) は従来窓のまま（非回帰）
       session.ackDrainRateEwma = 1.2;
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(10000);
 
@@ -928,18 +928,18 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     try {
       vi.setSystemTime(0);
       (handler as any).observeAckProgress(session, 0n);
-      vi.setSystemTime(1000);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 500000n); // 0.5x 排水
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
 
       // 再エンコード等で PTS が逆行 → 基準点と EWMA をクリアし、保守的に従来窓へ戻す
-      vi.setSystemTime(2000);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 100000n);
       expect(session.ackDrainRateEwma).toBeUndefined();
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(10000);
 
       // 再基準化後も追従が再開されている（1秒で500ms分 = 0.5x）
-      vi.setSystemTime(3000);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 600000n);
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
@@ -950,7 +950,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     handler.close();
   });
 
-  it('Issue #104: 250ms 未満の短間隔サンプルは分母水増しを避け、窓が溜まるまで計測しない', () => {
+  it('Issue #104: 250ms 未満の短間隔サンプルと 5秒超の無通信ギャップは排水レートに混入しない', () => {
     const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
     const session: any = {
@@ -967,13 +967,18 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       vi.setSystemTime(0);
       (handler as any).observeAckProgress(session, 0n);
       // ACK と BUFFER_FEEDBACK が 100ms 間隔で連続到着した状況（33ms 進行）
-      vi.setSystemTime(100);
+      vi.advanceTimersByTime(100);
       (handler as any).observeAckProgress(session, 33000n);
       expect(session.ackDrainRateEwma).toBeUndefined(); // 分母を 50ms 等に底上げして計測しない
 
       // 400ms の窓が溜まった時点で正しく 0.5x を推定する
-      vi.setSystemTime(400);
+      vi.advanceTimersByTime(300);
       (handler as any).observeAckProgress(session, 200000n);
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+
+      // 10秒間の無通信・一時停止明けに1フレーム分だけ進んでも 0.003x で汚染しない
+      vi.advanceTimersByTime(10000);
+      (handler as any).observeAckProgress(session, 233000n);
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
     } finally {
       vi.useRealTimers();
@@ -998,7 +1003,7 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     try {
       vi.setSystemTime(0);
       (handler as any).observeAckProgress(session, 0n);
-      vi.setSystemTime(1000);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 500000n); // 0.5x 排水を学習
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
 
@@ -1008,12 +1013,12 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
 
       // ジャンプで再生位置が 30 秒先へ飛んでも、その跳躍自体はレートに混ぜない
-      vi.setSystemTime(1100);
+      vi.advanceTimersByTime(100);
       (handler as any).observeAckProgress(session, 30_500_000n);
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
 
       // 跳躍後の正常な低速進行（1秒で500ms分）は引き続き 0.5x のまま
-      vi.setSystemTime(2100);
+      vi.advanceTimersByTime(1000);
       (handler as any).observeAckProgress(session, 31_000_000n);
       expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
       expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
@@ -1024,12 +1029,32 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     handler.close();
   });
 
-  it('Issue #104: CATCHUP バックログが上限（先行バッファ深度の2倍・最低15秒）を超えると最古 GOP を間引く', () => {
+  it('Issue #104 & Issue #26: 25秒トンネル復旧（MCU2 2秒バッファ含む）は無欠落で保護し、30秒超の無限バックログのみ間引く', () => {
     const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
-    // 30秒分の映像フレーム（10秒地点に次のキーフレーム）
+    // 1. Issue #26 非回帰: 25秒分の映像フレーム（2秒間隔キーフレーム、targetBufferMs=2000 の MCU2 設定）
+    const tunnelFrames: any[] = [];
+    for (let i = 0; i <= 250; i++) {
+      tunnelFrames.push({
+        type: 'video',
+        flags: i % 20 === 0 ? VIDEO_FLAGS.KEYFRAME : 0,
+        pts: BigInt(i * 100000),
+        data: Buffer.alloc(16),
+      });
+    }
+    const mcu2Session: any = {
+      socket: { readyState: 3 },
+      playbackQueue: tunnelFrames,
+      mode: 'CATCHUP',
+      pacingTimer: null,
+      targetBufferMs: 2000, // cap = max(2*2000, 30000) = 30000ms → 25秒は一切間引かれない
+    };
+    (handler as any).enforceCatchupBacklogCap(mcu2Session);
+    expect(mcu2Session.playbackQueue.length).toBe(251);
+
+    // 2. 40秒分のバックログ（10秒地点に次のキーフレーム）→ cap 30秒を超過するため最古 GOP を間引く
     const frames: any[] = [];
-    for (let i = 0; i <= 300; i++) {
+    for (let i = 0; i <= 400; i++) {
       frames.push({
         type: 'video',
         flags: i === 100 ? VIDEO_FLAGS.KEYFRAME : 0,
@@ -1042,13 +1067,13 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       playbackQueue: frames,
       mode: 'CATCHUP',
       pacingTimer: null,
-      targetBufferMs: 10000, // cap = max(2*10000, 15000) = 20000ms
+      targetBufferMs: 10000, // cap = max(2*10000, 30000) = 30000ms
     };
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       (handler as any).enforceCatchupBacklogCap(session);
-      // ギャップ間引き: キューは次キーフレーム (pts=10s) から開始 → 残存スパン 20秒 = 上限ちょうど
+      // ギャップ間引き: キューは次キーフレーム (pts=10s) から開始 → 残存スパン 30秒 = 上限ちょうど
       expect(session.playbackQueue[0].flags & VIDEO_FLAGS.KEYFRAME).toBeTruthy();
       expect(session.playbackQueue[0].pts).toBe(10_000_000n);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Pruned oldest GOP'));
@@ -1057,6 +1082,25 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       const len = session.playbackQueue.length;
       (handler as any).enforceCatchupBacklogCap(session);
       expect(session.playbackQueue.length).toBe(len);
+
+      // 3. 次キーフレーム不在で間引き不能のときは虚偽の Pruned ログを出さない
+      logSpy.mockClear();
+      const singleGopFrames = Array.from({ length: 350 }, (_, i) => ({
+        type: 'video',
+        flags: i === 0 ? VIDEO_FLAGS.KEYFRAME : 0,
+        pts: BigInt(i * 100000),
+        data: Buffer.alloc(16),
+      }));
+      const singleGopSession: any = {
+        socket: { readyState: 3 },
+        playbackQueue: singleGopFrames,
+        mode: 'CATCHUP',
+        pacingTimer: null,
+        targetBufferMs: 10000,
+      };
+      (handler as any).enforceCatchupBacklogCap(singleGopSession);
+      expect(singleGopSession.playbackQueue.length).toBe(350);
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('Pruned oldest GOP'));
     } finally {
       logSpy.mockRestore();
     }
@@ -1064,7 +1108,114 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     handler.close();
   });
 
-  it('Issue #107: CATCHUP 開始ログに実効 targetBufferMs とバーストモードを併記する', () => {
+  it('Issue #104: 輻輳検知時は CATCHUP ソケットガードを 32〜64KB へ縮小しバースト間隔を 10ms へ緩和する（健全時は 128KB/2ms 維持）', () => {
+    vi.useFakeTimers();
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+    try {
+      const mockSocket: any = { readyState: 1, bufferedAmount: 0, send: vi.fn() };
+      const session: any = {
+        socket: mockSocket,
+        playbackQueue: [
+          { type: 'video', flags: VIDEO_FLAGS.KEYFRAME, pts: 1_000_000n, data: Buffer.alloc(8) },
+          { type: 'video', flags: 0, pts: 1_033_000n, data: Buffer.alloc(8) },
+        ],
+        mode: 'CATCHUP',
+        pacingTimer: null,
+        lastAckPts: 1_000_000n,
+        lastSentVideoPts: 1_000_000n,
+        targetBufferMs: 10000,
+        isBurstMode: true,
+      };
+
+      // 健全時: 128KB ガード
+      expect((handler as any).getEffectiveCatchupSocketGuardBytes(session)).toBe(128 * 1024);
+
+      // 80KB 滞留は健全時ガード(128KB)未満だが、低排水レート学習後は縮小ガード(32KB)超過で一時停止する
+      session.ackDrainRateEwma = 0.5;
+      expect((handler as any).getEffectiveCatchupSocketGuardBytes(session)).toBe(32 * 1024);
+      mockSocket.bufferedAmount = 80 * 1024;
+      (handler as any).scheduleNextCatchupFrame(session);
+      expect(session.isFlowPaused).toBe(true);
+      expect(mockSocket.send).not.toHaveBeenCalled();
+
+      // 滞留解消時は送信するが、輻輳モード中のバーストタイマーは 10ms に緩和されている
+      if (session.pacingTimer) {
+        clearTimeout(session.pacingTimer);
+        session.pacingTimer = null;
+      }
+      mockSocket.bufferedAmount = 0;
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+      (handler as any).scheduleNextCatchupFrame(session);
+      expect(mockSocket.send).toHaveBeenCalledTimes(1);
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 10);
+      setTimeoutSpy.mockRestore();
+    } finally {
+      handler.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('Issue #103: JUMP_TO_LIVE は二重実行せず、TOUCH Auto-Hybrid でも LIVE_JUMPED(dropAudioBeforePts) を送出する', async () => {
+    vi.useFakeTimers();
+    const playbackBuffer = new PlaybackBuffer({ bufferSeconds: 10 });
+    playbackBuffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(100));
+    playbackBuffer.addVideo(0, 1_033_000n, Buffer.alloc(100));
+    mockEncoder.getCurrentPts = vi.fn(() => 9_876_543n);
+
+    const handler = new WebSocketHandler(
+      mockAuth,
+      mockBrowser,
+      mockEncoder,
+      mockInput,
+      mockConfig,
+      playbackBuffer,
+    );
+    handler.setLastInputAt(Date.now() - 10000);
+
+    const socket1: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(socket1);
+    const msg1 = socket1.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+    const s1 = handler.getClientSession(socket1)!;
+    s1.lastAckPts = 1_000_000n;
+    await msg1(Buffer.concat([Buffer.from([WSS_CHANNEL.AUTH]), Buffer.from('1234')]));
+    expect(s1.mode).toBe('CATCHUP');
+
+    // 1. JUMP_TO_LIVE 実行時: sendCachedKeyframeAndConfig（VIDEO_FLAGS.CONFIG）が1回だけ送られる（二重実行なし）
+    socket1.send.mockClear();
+    await msg1(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'JUMP_TO_LIVE' })),
+      ]),
+    );
+    const configSends = socket1.send.mock.calls.filter(
+      (c: any[]) =>
+        Buffer.isBuffer(c[0]) &&
+        c[0][0] === WSS_CHANNEL.VIDEO &&
+        (c[0][1] & VIDEO_FLAGS.CONFIG) !== 0,
+    );
+    expect(configSends.length).toBe(1);
+
+    // 2. TOUCH Auto-Hybrid 時も操作元クライアントへ LIVE_JUMPED (dropAudioBeforePts付き) を送出する
+    s1.mode = 'CATCHUP';
+    s1.playbackQueue = [{ type: 'video', flags: 0, pts: 1_066_000n, data: Buffer.alloc(16) }];
+    socket1.send.mockClear();
+    const touchBuf = Buffer.alloc(33);
+    touchBuf[0] = WSS_CHANNEL.TOUCH;
+    await msg1(touchBuf);
+
+    const controlMsgs = socket1.send.mock.calls
+      .filter((c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === WSS_CHANNEL.CONTROL_RESPONSE)
+      .map((c: any[]) => JSON.parse(c[0].subarray(1).toString('utf-8')));
+    expect(
+      controlMsgs.some((m: any) => m.type === 'LIVE_JUMPED' && m.dropAudioBeforePts === 9876543),
+    ).toBe(true);
+
+    handler.close();
+    vi.useRealTimers();
+  });
+
+  it('Issue #107: CATCHUP 開始ログに実効 targetBufferMs・effectiveWindowMs・socketGuardKB・バーストモードを併記する', () => {
     const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 
     const session: any = {
@@ -1084,6 +1235,8 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
       (handler as any).startCatchup(session, { frames });
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('CATCHUP pacing started'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('targetBufferMs=8000'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('effectiveWindowMs=8000'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('socketGuardKB=128'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('burst=true'));
     } finally {
       logSpy.mockRestore();
