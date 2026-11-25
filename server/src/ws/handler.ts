@@ -1141,40 +1141,52 @@ export class WebSocketHandler {
    */
   private observeAckProgress(session: ClientSession, newPts: bigint): void {
     const nowMs = Date.now();
-    if (
-      session.lastAckProgressPts !== undefined &&
-      session.lastAckProgressAtMs !== undefined &&
-      newPts > session.lastAckProgressPts
-    ) {
-      const mediaDeltaMs = Number(newPts - session.lastAckProgressPts) / 1000;
-      const wallDeltaMs = Math.max(50, nowMs - session.lastAckProgressAtMs);
-      const rate = mediaDeltaMs / wallDeltaMs;
-      if (Number.isFinite(rate) && rate >= 0 && rate <= 20) {
-        session.ackDrainRateEwma =
-          session.ackDrainRateEwma === undefined
-            ? rate
-            : session.ackDrainRateEwma * 0.7 + rate * 0.3;
-      }
-    }
-    if (session.lastAckProgressPts === undefined || newPts > session.lastAckProgressPts) {
+    // PTS 逆行（再エンコード・再接続で 0 から再カウント）は基準点と EWMA を再初期化する
+    if (session.lastAckProgressPts === undefined || newPts < session.lastAckProgressPts) {
       session.lastAckProgressPts = newPts;
       session.lastAckProgressAtMs = nowMs;
+      session.ackDrainRateEwma = undefined;
+      return;
     }
+    if (session.lastAckProgressAtMs === undefined || newPts === session.lastAckProgressPts) {
+      return;
+    }
+    // 短間隔サンプルは分母が制御メッセージ粒度に律速されレートが過小評価になるため、
+    // 250ms 以上の窓が溜まるまで計測しない（ACK と BUFFER_FEEDBACK の連続到着対策）
+    const wallDeltaMs = nowMs - session.lastAckProgressAtMs;
+    if (wallDeltaMs < 250) {
+      return;
+    }
+    const mediaDeltaMs = Number(newPts - session.lastAckProgressPts) / 1000;
+    const rate = mediaDeltaMs / wallDeltaMs;
+    if (Number.isFinite(rate) && rate >= 0 && rate <= 20) {
+      session.ackDrainRateEwma =
+        session.ackDrainRateEwma === undefined ? rate : session.ackDrainRateEwma * 0.7 + rate * 0.3;
+    }
+    session.lastAckProgressPts = newPts;
+    session.lastAckProgressAtMs = nowMs;
   }
 
   /**
    * Issue #104: CATCHUP のスライディングウィンドウを実測排水レートへ適応させる。
    * 健全なリンク（排水レート >= 0.9x）では従来どおり targetBufferMs をそのまま使用し、
-   * 排水が実時間未満のリンクでは in-flight を窓ではなく「約1秒分のメディア+下限2.5秒」へ
-   * 縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
+   * 排水が実時間未満のリンクでは in-flight を「target × レート（下限2.5秒、target を
+   * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
-    const target = session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
+    const target = session.targetBufferMs ?? 10_000;
     const rate = session.ackDrainRateEwma;
-    if (rate === undefined || !Number.isFinite(rate) || rate >= 0.9) {
+    if (rate === undefined || rate >= 0.9) {
       return target;
     }
-    return Math.max(2500, Math.min(target, Math.round(target * rate)));
+    return Math.min(target, Math.max(2500, Math.round(target * rate)));
+  }
+
+  /** バースト CATCHUP の有効無効（環境変数、既定有効）。 */
+  private isBurstCatchupEnabled(): boolean {
+    return (
+      process.env.BURST_CATCHUP_ENABLED !== 'false' && process.env.BURST_CATCHUP_ENABLED !== '0'
+    );
   }
 
   /**
@@ -1226,9 +1238,8 @@ export class WebSocketHandler {
 
     // Issue #107: 実効スライディングウィンドウとバーストモードを記録。これらの値はこれまで
     // どのログにも出力されておらず、インシデント解析時に当日のフロー制御設定を復元できなかった。
-    const diagBurstEnv = process.env.BURST_CATCHUP_ENABLED;
     console.log(
-      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${diagBurstEnv !== undefined ? diagBurstEnv === 'true' || diagBurstEnv === '1' : true})`,
+      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${this.isBurstCatchupEnabled()})`,
     );
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
@@ -1243,8 +1254,7 @@ export class WebSocketHandler {
     }
     session.lastSentVideoPts = session.lastAckPts;
     session.isFlowPaused = false;
-    const burstEnv = process.env.BURST_CATCHUP_ENABLED;
-    session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
+    session.isBurstMode = this.isBurstCatchupEnabled();
 
     // クライアントの VideoDecoder / AudioPlayer を確実に初期化するための CONFIG パケットを送出
     if (catchupData.configVideo && session.socket.readyState === 1) {
@@ -1271,8 +1281,7 @@ export class WebSocketHandler {
     session.mode = 'CATCHUP';
     session.isFlowPaused = true;
 
-    const burstEnv = process.env.BURST_CATCHUP_ENABLED;
-    session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
+    session.isBurstMode = this.isBurstCatchupEnabled();
 
     // Issue #107: 通信悪化による LIVE→CATCHUP 遷移も実効窓・バースト設定を記録する
     console.log(

@@ -258,6 +258,10 @@ export function renderStreamingView(
   // 最後の instantRtt をリアルタイム計測値として表示・報告し続ける（凍結）のを防ぐ
   // （2026-11-25 実測: 531ms が 4 メトリクス窓にわたり凍結表示された）。
   let lastPongAtMs = 0;
+  // 鮮度切れで破棄した後、汚染 PONG だけの状態で minRtt から自動的に復活させないためのフラグ
+  // （Issue #24 の CATCHUP 初期化分岐が古い凍結値を再導入するのを防ぎ、真に有効なサンプルが
+  // 届いた時点でのみ RTT 表示を再開する）
+  let rttStaleCleared = false;
   const RTT_STALE_MS = 5000;
   // Issue #103: PONG ペイロードのサーバー最新 PTS（LIVE ジャンプ時の暫定音声バリア外挿用）
   let lastKnownServerLatestPtsUs = 0;
@@ -818,6 +822,7 @@ export function renderStreamingView(
       // 遷移の瞬間に 1 回だけメトリクスへも未計測 (0) を報告し、凍結値の再報告を止める。
       if (instantRtt > 0 && performance.now() - lastPongAtMs > RTT_STALE_MS) {
         instantRtt = 0;
+        rttStaleCleared = true;
         metricsCollector.updateRtt(0);
       }
       const elapsed = performance.now() - lastPacketReceivedTime;
@@ -1330,7 +1335,6 @@ export function renderStreamingView(
     lastPacketReceivedTime = performance.now();
     if (msg.type === 'PONG') {
       const now = performance.now();
-      lastPongAtMs = now; // Issue #105: 鮮度タイムスタンプ更新
       if (
         typeof msg.latestPts === 'number' &&
         Number.isFinite(msg.latestPts) &&
@@ -1357,6 +1361,11 @@ export function renderStreamingView(
       // rawRtt が肥大化するため、キュー滞留時間と回線自体の遅延（物理RTT）を明確に分離する。
       const hasQueueDelay = serverMode === 'CATCHUP' || serverCatchupQueueMs > 0;
       if (!hasQueueDelay) {
+        // Issue #105: 実際に有効な RTT サンプルを採用した時点のみ鮮度タイムスタンプを更新する。
+        // 汚染ガードでスキップされ続ける状態（PONG は届くが採用されない）も 5 秒で鮮度切れになり、
+        // CATCHUP 突入前の古い instantRtt の凍結表示・再報告を防止する。
+        lastPongAtMs = now;
+        rttStaleCleared = false; // 有効なサンプルが採用されたので鮮度管理を再開する
         rttHistory.push(rawRtt);
         if (rttHistory.length > RTT_HISTORY_WINDOW_SIZE) rttHistory.shift();
         minRtt = rttHistory.length > 0 ? Math.min(...rttHistory) : rawRtt;
@@ -1365,8 +1374,9 @@ export function renderStreamingView(
         // CATCHUP中は直近の有効な物理RTTまたは安定値を維持し、回線状態指標の肥大化を防ぐ。
         // 初回起動直後かつ最初から CATCHUP 状態であった場合（instantRtt未決定時）は、
         // 過去の最小物理RTT（minRtt）またはフォールバック値を使用する。
-        if (instantRtt === 0) {
+        if (instantRtt === 0 && !rttStaleCleared) {
           instantRtt = Number.isFinite(minRtt) ? minRtt : rawRtt;
+          lastPongAtMs = now; // 初期基準を確定させた時点も鮮度タイムスタンプとして記録
         }
       }
       metricsCollector.updateRtt(instantRtt);

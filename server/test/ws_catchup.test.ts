@@ -912,6 +912,76 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     handler.close();
   });
 
+  it('Issue #104: ストリーム再構築で PTS が再基準化されたら排水レートの基準と EWMA を再初期化する', () => {
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+
+    const session: any = {
+      socket: { readyState: 3 },
+      playbackQueue: [],
+      mode: 'CATCHUP',
+      pacingTimer: null,
+      lastAckPts: null,
+      targetBufferMs: 10000,
+    };
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      (handler as any).observeAckProgress(session, 0n);
+      vi.setSystemTime(1000);
+      (handler as any).observeAckProgress(session, 500000n); // 0.5x 排水
+      expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
+
+      // 再エンコード等で PTS が逆行 → 基準点と EWMA をクリアし、保守的に従来窓へ戻す
+      vi.setSystemTime(2000);
+      (handler as any).observeAckProgress(session, 100000n);
+      expect(session.ackDrainRateEwma).toBeUndefined();
+      expect((handler as any).effectiveCatchupWindowMs(session)).toBe(10000);
+
+      // 再基準化後も追従が再開されている（1秒で500ms分 = 0.5x）
+      vi.setSystemTime(3000);
+      (handler as any).observeAckProgress(session, 600000n);
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+      expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    handler.close();
+  });
+
+  it('Issue #104: 250ms 未満の短間隔サンプルは分母水増しを避け、窓が溜まるまで計測しない', () => {
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+
+    const session: any = {
+      socket: { readyState: 3 },
+      playbackQueue: [],
+      mode: 'CATCHUP',
+      pacingTimer: null,
+      lastAckPts: null,
+      targetBufferMs: 10000,
+    };
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      (handler as any).observeAckProgress(session, 0n);
+      // ACK と BUFFER_FEEDBACK が 100ms 間隔で連続到着した状況（33ms 進行）
+      vi.setSystemTime(100);
+      (handler as any).observeAckProgress(session, 33000n);
+      expect(session.ackDrainRateEwma).toBeUndefined(); // 分母を 50ms 等に底上げして計測しない
+
+      // 400ms の窓が溜まった時点で正しく 0.5x を推定する
+      vi.setSystemTime(400);
+      (handler as any).observeAckProgress(session, 200000n);
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    handler.close();
+  });
+
   it('Issue #104: CATCHUP バックログが上限（先行バッファ深度の2倍・最低15秒）を超えると最古 GOP を間引く', () => {
     const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 

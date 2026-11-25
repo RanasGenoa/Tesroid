@@ -466,6 +466,59 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
     }
   });
 
+  it('Issue #105: CATCHUP の汚染 PONG だけが到着し続ける状態でも古い RTT を凍結報告し続けない', () => {
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
+      const controlHandler = eventListeners['control']?.[0];
+      expect(controlHandler).toBeDefined();
+      const connText = elementRegistry.get('hud-conn-text');
+
+      // 健全な PONG で 40ms を確立
+      const now1 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 1,
+        clientTime: now1 - 40,
+        serverTime: now1,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
+      expect(connText.textContent).toBe('40ms');
+
+      // CATCHUP 滞留を含む汚染 PONG だけが 6 秒間届き続ける（Issue #24 のガードで採用されない）。
+      // 「PONG 自体が届いている」が有効サンプルが一切更新されないため、鮮度タイムスタンプは
+      // 最後の健全サンプル時点のまま → 5 秒で凍結値を破棄する。
+      for (let i = 0; i < 12; i++) {
+        vi.advanceTimersByTime(500);
+        const now2 = performance.now();
+        controlHandler({
+          type: 'PONG',
+          id: 10 + i,
+          clientTime: now2 - 900,
+          serverTime: now2,
+          serverMode: 'CATCHUP',
+          catchupQueueMs: 1200,
+          serverBufferMs: 8000,
+        });
+      }
+
+      expect(connText.textContent).toBe('接続中');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('Issue #103: LIVE_JUMPED の dropAudioBeforePts を音声 straggler バリアとして適用する', () => {
     cleanups.push(
       renderStreamingView(

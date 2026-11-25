@@ -394,6 +394,8 @@ export class AudioPlayer {
     if (!Number.isFinite(ptsUs) || ptsUs <= 0) return;
     this.liveBarrierPtsUs = ptsUs;
     this.liveBarrierUntilMs = Date.now() + Math.max(1000, ttlMs);
+    // ジャンプ毎のエピソードとして初回ドロップログを必ず出力し、調査時の追跡性を確保する
+    this.staleBarrierDropped = 0;
   }
 
   public clearLiveEdgeBarrier(): void {
