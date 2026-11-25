@@ -575,6 +575,10 @@ export class WebSocketHandler {
     session.mode = 'LIVE';
     session.isFlowPaused = false;
     session.lastSentVideoPts = null;
+    // Issue #104: LIVE ジャンプによる PTS 不連続跳躍を排水レート推定に混ぜない。
+    // 学習済みの EWMA は保持し、基準点のみ再初期化する（ジャンプ直後の擬似高レート防止）
+    session.lastAckProgressPts = undefined;
+    session.lastAckProgressAtMs = undefined;
 
     // ライブ最新 IDR（必要なら encoder.restart()）へ即ジャンプ (目標切替遅延: 1秒以内)
     const cachedKeyframe = this.encoder.getCachedKeyframe();
@@ -1149,8 +1153,15 @@ export class WebSocketHandler {
    */
   private observeAckProgress(session: ClientSession, newPts: bigint): void {
     const nowMs = Date.now();
-    // PTS 逆行（再エンコード・再接続で 0 から再カウント）は基準点と EWMA を再初期化する
-    if (session.lastAckProgressPts === undefined || newPts < session.lastAckProgressPts) {
+    // 基準点未設定（計測開始時・LIVE ジャンプ後の再初期化時）は基準だけを置く。
+    // 学習済み排水レート（EWMA）はリンク特性なので消さない
+    if (session.lastAckProgressPts === undefined) {
+      session.lastAckProgressPts = newPts;
+      session.lastAckProgressAtMs = nowMs;
+      return;
+    }
+    // PTS 逆行（再エンコード・再接続で 0 から再カウント）は基準点と EWMA を共に再初期化する
+    if (newPts < session.lastAckProgressPts) {
       session.lastAckProgressPts = newPts;
       session.lastAckProgressAtMs = nowMs;
       session.ackDrainRateEwma = undefined;
@@ -1338,6 +1349,9 @@ export class WebSocketHandler {
     if (session.mode !== 'CATCHUP' || session.isStandby || session.socket.readyState !== 1) {
       return;
     }
+    // Issue #104: ソケット滞留でペーシングが停止している間もフレームはキューへ積み続くため、
+    // 再開判定のたびにバックログ上限を監視する（完全ストール時の無限成長防止。内部 2 秒スロットル）
+    this.enforceCatchupBacklogCap(session);
     if (session.playbackQueue.length === 0) {
       console.log(
         '[WebSocketHandler] CATCHUP playback queue empty on resume check. Transitioning to LIVE mode.',
@@ -1883,6 +1897,10 @@ export class WebSocketHandler {
           this.recordInputActivity(socket);
           const session = this.clientSessions.get(socket);
           if (session) {
+            // Issue #104: クライアント側の LIVE ジャンプでも再生 PTS が一気に進むため、
+            // 排水レート推定の基準点だけ再初期化する（LIVE 滞在時のジャンプも対象）
+            session.lastAckProgressPts = undefined;
+            session.lastAckProgressAtMs = undefined;
             console.log(
               '[WebSocketHandler] Explicit JUMP_TO_LIVE requested by client. Switching immediately to LIVE.',
             );

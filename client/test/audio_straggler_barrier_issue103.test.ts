@@ -18,6 +18,15 @@ describe('Issue #103: post-LIVE-jump straggler audio barrier', () => {
   const isStale = (player: AudioPlayer, ptsUs: number): boolean =>
     (player as any).isStaleByLiveBarrier(ptsUs);
 
+  it('ストリーム再構築（resetJitterBuffer）では旧ストリームの PTS 基準も破棄される', () => {
+    const player = makePlayer();
+    (player as any).lastChunkPtsUs = 50_000_000; // 旧ストリームの音声受信済み状態
+    expect(player.getLastKnownPtsUs()).toBe(50_000_000);
+
+    player.resetJitterBuffer();
+    expect(player.getLastKnownPtsUs()).toBe(0); // 再構築直後の外挿フォールバックに旧値は混入しない
+  });
+
   it('バリア未満の音声は破棄し、バリア以上のライブ音声最初の1フレームでガードを解く', () => {
     const player = makePlayer();
     player.setLiveEdgeBarrier(10_000_000);

@@ -982,6 +982,48 @@ describe('WebSocketHandler CATCHUP Playback Mode & Live Transition', () => {
     handler.close();
   });
 
+  it('Issue #104: LIVE ジャンプによる PTS 不連続跳躍は排水レートを汚染しない（基準点のみ再初期化・EWMA 保持）', () => {
+    const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
+
+    const session: any = {
+      socket: { readyState: 3 },
+      playbackQueue: [],
+      mode: 'CATCHUP',
+      pacingTimer: null,
+      lastAckPts: null,
+      targetBufferMs: 10000,
+    };
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      (handler as any).observeAckProgress(session, 0n);
+      vi.setSystemTime(1000);
+      (handler as any).observeAckProgress(session, 500000n); // 0.5x 排水を学習
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+
+      // LIVE ジャンプ（CATCHUP 中断経由）で基準点のみ再初期化され、学習値は保持される
+      (handler as any).abortCatchupAndSwitchToLive(session);
+      expect(session.lastAckProgressPts).toBeUndefined();
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+
+      // ジャンプで再生位置が 30 秒先へ飛んでも、その跳躍自体はレートに混ぜない
+      vi.setSystemTime(1100);
+      (handler as any).observeAckProgress(session, 30_500_000n);
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+
+      // 跳躍後の正常な低速進行（1秒で500ms分）は引き続き 0.5x のまま
+      vi.setSystemTime(2100);
+      (handler as any).observeAckProgress(session, 31_000_000n);
+      expect(session.ackDrainRateEwma).toBeCloseTo(0.5);
+      expect((handler as any).effectiveCatchupWindowMs(session)).toBe(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    handler.close();
+  });
+
   it('Issue #104: CATCHUP バックログが上限（先行バッファ深度の2倍・最低15秒）を超えると最古 GOP を間引く', () => {
     const handler = new WebSocketHandler(mockAuth, mockBrowser, mockEncoder, mockInput, mockConfig);
 

@@ -726,6 +726,9 @@ export class AudioPlayer {
     this.overflowQueue = [];
     this.totalOverflowDurationSec = 0;
     this.nextPlayTime = 0;
+    // Issue #103: ストリーム再構築では旧ストリームの PTS 基準も破棄する（再構築直後の
+    // 暫定バリア外挿フォールバックに古い値が混入しないため）
+    this.lastChunkPtsUs = 0;
     this.stopAllScheduledSources();
     this.avSync.clearAudioAnchor();
   }
