@@ -282,6 +282,10 @@ export class WebSocketHandler {
   }
 
   private notifyOtherSessionsLiveJump(sourceSocket: WebSocket): void {
+    // Issue #103: セカンダリセッションにも権威的なライブエッジ PTS を伝え、PONG 外挿の
+    // 暫定バリアだけでなく同一の権威値で straggler 音声から保護する（マルチセッション構成対策）
+    const liveEdgePtsUs =
+      typeof this.encoder.getCurrentPts === 'function' ? Number(this.encoder.getCurrentPts()) : 0;
     for (const client of this.authenticatedClients) {
       if (client === sourceSocket) continue;
       const session = this.clientSessions.get(client);
@@ -289,7 +293,11 @@ export class WebSocketHandler {
       if (session.mode === 'CATCHUP') {
         this.abortCatchupAndSwitchToLive(session);
       }
-      this.sendControl(client, { type: 'PRIMARY_JUMP_TO_LIVE', timestamp: Date.now() });
+      this.sendControl(client, {
+        type: 'PRIMARY_JUMP_TO_LIVE',
+        timestamp: Date.now(),
+        ...(liveEdgePtsUs > 0 ? { dropAudioBeforePts: liveEdgePtsUs } : {}),
+      });
     }
   }
 
@@ -1174,7 +1182,7 @@ export class WebSocketHandler {
    * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
-    const target = session.targetBufferMs ?? 10_000;
+    const target = session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
     const rate = session.ackDrainRateEwma;
     if (rate === undefined || rate >= 0.9) {
       return target;
@@ -1735,7 +1743,7 @@ export class WebSocketHandler {
               typeof cmd.bufferedMs === 'number' && Number.isFinite(cmd.bufferedMs)
                 ? Math.max(0, cmd.bufferedMs)
                 : 0;
-            // Issue #106: 音声キュー滞留の報告（旧クライアントは未送信 → undefined のまま = 従来動作）
+            // Issue #106: 音声キュー滞留の報告（旧クライアントは未送信 → 0 として扱い窓計算へ寄与しない = 従来動作）
             session.audioBufferedMs =
               typeof cmd.audioBufferedMs === 'number' && Number.isFinite(cmd.audioBufferedMs)
                 ? Math.max(0, cmd.audioBufferedMs)

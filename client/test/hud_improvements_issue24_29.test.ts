@@ -537,6 +537,28 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
     expect(mockAudioPlayer.setLiveEdgeBarrier).toHaveBeenCalledWith(12345678);
   });
 
+  it('Issue #103: PRIMARY_JUMP_TO_LIVE（セカンダリセッション向け）の dropAudioBeforePts も権威バリアとして適用する', () => {
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
+    );
+    const controlHandler = eventListeners['control']?.[0];
+    expect(controlHandler).toBeDefined();
+
+    controlHandler({
+      type: 'PRIMARY_JUMP_TO_LIVE',
+      timestamp: Date.now(),
+      dropAudioBeforePts: 87654321,
+    });
+    expect(mockAudioPlayer.setLiveEdgeBarrier).toHaveBeenCalledWith(87654321);
+  });
+
   it('Issue #103: LIVE ジャンプ時、PONG のサーバー最新 PTS から暫定 straggler バリアを設定する', () => {
     vi.useFakeTimers();
     try {

@@ -1413,6 +1413,14 @@ export function renderStreamingView(
       updateHudLiveStatus();
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
       executeJumpToLive(true, false);
+      // Issue #103: セカンダリ側も、サーバーが送る権威値で暫定バリアを上書きできる
+      if (
+        typeof msg.dropAudioBeforePts === 'number' &&
+        Number.isFinite(msg.dropAudioBeforePts) &&
+        typeof audioPlayer.setLiveEdgeBarrier === 'function'
+      ) {
+        audioPlayer.setLiveEdgeBarrier(msg.dropAudioBeforePts);
+      }
     } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
       // Issue #11: プロファイル変更で HUD の FPS 選択肢もライブ更新 (D4 裁定)
       applyFpsOptionsFromServer(msg.stream?.fpsOptions);

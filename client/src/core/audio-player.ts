@@ -393,7 +393,9 @@ export class AudioPlayer {
   public setLiveEdgeBarrier(ptsUs: number, ttlMs: number = AudioPlayer.LIVE_BARRIER_TTL_MS): void {
     if (!Number.isFinite(ptsUs) || ptsUs <= 0) return;
     this.liveBarrierPtsUs = ptsUs;
-    this.liveBarrierUntilMs = Date.now() + Math.max(1000, ttlMs);
+    // Date.now() でなく performance.now()（モノトニッククロック）で TTL を管理し、
+    // NTP 等のシステム時刻補正の影響を受けさせない（streaming.ts と同じ方針）
+    this.liveBarrierUntilMs = performance.now() + Math.max(1000, ttlMs);
     // ジャンプ毎のエピソードとして初回ドロップログを必ず出力し、調査時の追跡性を確保する
     this.staleBarrierDropped = 0;
   }
@@ -410,7 +412,7 @@ export class AudioPlayer {
 
   private isStaleByLiveBarrier(ptsUs: number): boolean {
     if (this.liveBarrierPtsUs <= 0) return false;
-    if (Date.now() > this.liveBarrierUntilMs) {
+    if (performance.now() > this.liveBarrierUntilMs) {
       this.clearLiveEdgeBarrier();
       return false;
     }
