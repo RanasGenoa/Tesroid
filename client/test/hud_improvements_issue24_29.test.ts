@@ -52,9 +52,12 @@ vi.mock('../src/input/touch-mapper.js', () => {
   };
 });
 
+const captured = vi.hoisted(() => ({ metricsInstances: [] as any[] }));
+
 vi.mock('../src/core/metrics.js', () => {
   return {
     MetricsCollector: function (this: any) {
+      captured.metricsInstances.push(this); // Issue #105: インスタンス計装用に捕捉
       this.onReport = null;
       this.updateRtt = vi.fn();
       this.recordFrameRendered = vi.fn();
@@ -222,6 +225,11 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
       toggleMute: vi.fn(() => false),
       getStats: vi.fn(() => ({ packetsReceived: 0, state: 'running', isMuted: false })),
       handleAudioPacket: vi.fn(),
+      // Issues #103/#106: straggler バリアと音声滞留報告の検証用
+      setLiveEdgeBarrier: vi.fn(),
+      clearLiveEdgeBarrier: vi.fn(),
+      getLastKnownPtsUs: vi.fn(() => 0),
+      getBufferedAudioMs: vi.fn(() => 0),
     };
     mockAvSync = {
       reset: vi.fn(),
@@ -404,6 +412,111 @@ describe('Issue 24 & Issue 29 HUD Improvements Tests', () => {
       expect(connDot.className).toBe('status-dot status-online');
       // EWMA平滑化 (30 * 0.7 + 25 * 0.3 = 28.5 ≈ 29ms) により急峻なジッタが吸収されていること
       expect(connText.textContent).toBe('29ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ---- 2026-11-25 モバイル回線インシデント対応 (Issues #103/#105) ----
+
+  it('Issue #105: 映像到着が続いても PONG が届かなければ鮮切れの RTT を凍結表示せず「接続中」へ戻す', () => {
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
+      const controlHandler = eventListeners['control']?.[0];
+      expect(controlHandler).toBeDefined();
+      const connText = elementRegistry.get('hud-conn-text');
+
+      const now1 = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 1,
+        clientTime: now1 - 40,
+        serverTime: now1,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
+      expect(connText.textContent).toBe('40ms');
+
+      // CATCHUP バーストで映像・音声は届き続けるが PONG のみ滞留して 6 秒間不着の状況を再現
+      for (let i = 0; i < 12; i++) {
+        vi.advanceTimersByTime(500);
+        controlHandler({ type: 'LIVE_JUMPED', timestamp: Date.now() }); // 映像到着の代わり（RTT は更新しない）
+      }
+
+      // 鮮度閾値 (5s) 超過で凍結値 40ms は破棄され、実測なしは「接続中」表示
+      expect(connText.textContent).toBe('接続中');
+
+      // メトリクスへも凍結値を再報告しない（未計測 = updateRtt(0)）
+      const metrics = captured.metricsInstances[captured.metricsInstances.length - 1];
+      expect(metrics).toBeDefined();
+      expect(metrics.updateRtt).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Issue #103: LIVE_JUMPED の dropAudioBeforePts を音声 straggler バリアとして適用する', () => {
+    cleanups.push(
+      renderStreamingView(
+        mockContainer,
+        mockWsClient,
+        mockAudioPlayer,
+        mockAvSync,
+        onOpenSettings,
+        testToken,
+      ),
+    );
+    const controlHandler = eventListeners['control']?.[0];
+    expect(controlHandler).toBeDefined();
+
+    controlHandler({ type: 'LIVE_JUMPED', timestamp: Date.now(), dropAudioBeforePts: 12345678 });
+    expect(mockAudioPlayer.setLiveEdgeBarrier).toHaveBeenCalledWith(12345678);
+  });
+
+  it('Issue #103: LIVE ジャンプ時、PONG のサーバー最新 PTS から暫定 straggler バリアを設定する', () => {
+    vi.useFakeTimers();
+    try {
+      cleanups.push(
+        renderStreamingView(
+          mockContainer,
+          mockWsClient,
+          mockAudioPlayer,
+          mockAvSync,
+          onOpenSettings,
+          testToken,
+        ),
+      );
+      const controlHandler = eventListeners['control']?.[0];
+      expect(controlHandler).toBeDefined();
+
+      const now = performance.now();
+      controlHandler({
+        type: 'PONG',
+        id: 1,
+        clientTime: now - 30,
+        serverTime: now,
+        latestPts: 5_000_000,
+        serverMode: 'LIVE',
+        catchupQueueMs: 0,
+        serverBufferMs: 0,
+      });
+
+      controlHandler({ type: 'PRIMARY_JUMP_TO_LIVE' });
+
+      expect(mockAudioPlayer.setLiveEdgeBarrier).toHaveBeenCalled();
+      const barrier = mockAudioPlayer.setLiveEdgeBarrier.mock.calls[0][0];
+      expect(barrier).toBeGreaterThanOrEqual(5_000_000);
     } finally {
       vi.useRealTimers();
     }

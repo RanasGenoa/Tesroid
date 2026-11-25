@@ -30,9 +30,15 @@ export interface ClientSession {
   isBurstMode?: boolean;
   isFlowPaused?: boolean;
   bufferedMs?: number;
+  audioBufferedMs?: number;
   targetBufferMs?: number;
   isInteractive?: boolean;
   lastBufferFeedbackAt?: number;
+  // Issue #104: ACK 進行度から推定する実効排水レート（実時間倍数）とバックログ間引きの間隔制御
+  ackDrainRateEwma?: number;
+  lastAckProgressAtMs?: number;
+  lastAckProgressPts?: bigint;
+  lastBacklogPruneAtMs?: number;
 }
 
 export class WebSocketHandler {
@@ -1118,8 +1124,91 @@ export class WebSocketHandler {
 
     const clientReportedMs =
       typeof session.bufferedMs === 'number' && session.bufferedMs >= 0 ? session.bufferedMs : 0;
+    // Issue #106: 音声キュー滞留も実滞留時間の一部。映像経路の報告だけだと音声バックログ中に
+    // サーバー側の窓計算が過小評価されるため、報告された音声滞留も max() に含める。
+    const clientReportedAudioMs =
+      typeof session.audioBufferedMs === 'number' && session.audioBufferedMs >= 0
+        ? session.audioBufferedMs
+        : 0;
 
-    return Math.max(ptsInFlightMs, clientReportedMs);
+    return Math.max(ptsInFlightMs, clientReportedMs, clientReportedAudioMs);
+  }
+
+  /**
+   * Issue #104: ACK (および BUFFER_FEEDBACK の lastRenderedPts) の進行度から、クライアントの
+   * 実効排水レート（実時間に対する倍数）を EWMA で推定する。CATCHUP バーストがモバイル等の
+   * 低速リンクへ自己輻輳を招く前に、窓を排水速度に見合った大きさへ縮めるための入力信号。
+   */
+  private observeAckProgress(session: ClientSession, newPts: bigint): void {
+    const nowMs = Date.now();
+    if (
+      session.lastAckProgressPts !== undefined &&
+      session.lastAckProgressAtMs !== undefined &&
+      newPts > session.lastAckProgressPts
+    ) {
+      const mediaDeltaMs = Number(newPts - session.lastAckProgressPts) / 1000;
+      const wallDeltaMs = Math.max(50, nowMs - session.lastAckProgressAtMs);
+      const rate = mediaDeltaMs / wallDeltaMs;
+      if (Number.isFinite(rate) && rate >= 0 && rate <= 20) {
+        session.ackDrainRateEwma =
+          session.ackDrainRateEwma === undefined
+            ? rate
+            : session.ackDrainRateEwma * 0.7 + rate * 0.3;
+      }
+    }
+    if (session.lastAckProgressPts === undefined || newPts > session.lastAckProgressPts) {
+      session.lastAckProgressPts = newPts;
+      session.lastAckProgressAtMs = nowMs;
+    }
+  }
+
+  /**
+   * Issue #104: CATCHUP のスライディングウィンドウを実測排水レートへ適応させる。
+   * 健全なリンク（排水レート >= 0.9x）では従来どおり targetBufferMs をそのまま使用し、
+   * 排水が実時間未満のリンクでは in-flight を窓ではなく「約1秒分のメディア+下限2.5秒」へ
+   * 縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
+   */
+  private effectiveCatchupWindowMs(session: ClientSession): number {
+    const target = session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
+    const rate = session.ackDrainRateEwma;
+    if (rate === undefined || !Number.isFinite(rate) || rate >= 0.9) {
+      return target;
+    }
+    return Math.max(2500, Math.min(target, Math.round(target * rate)));
+  }
+
+  /**
+   * Issue #104: CATCHUP キューのバックログ上限。先行バッファ深度の2倍（最低15秒）を超える
+   * 古い GOP を安全に間引き、キャッチアップが無限に続かないことを保証する。
+   * （2026-11-25 の別窓では 872 フレーム分のバックログが約2分間排水されず未完に終わった）
+   */
+  private enforceCatchupBacklogCap(session: ClientSession): void {
+    if (session.playbackQueue.length === 0) return;
+    const nowMs = Date.now();
+    if (session.lastBacklogPruneAtMs !== undefined && nowMs - session.lastBacklogPruneAtMs < 2000) {
+      return;
+    }
+    let firstPts: bigint | null = null;
+    let lastPts: bigint | null = null;
+    for (const f of session.playbackQueue) {
+      if (f.type !== 'video') continue;
+      if (firstPts === null) firstPts = f.pts;
+      lastPts = f.pts;
+    }
+    if (firstPts === null || lastPts === null || lastPts <= firstPts) return;
+    const spanMs = Number(lastPts - firstPts) / 1000;
+    const capMs = Math.max(
+      2 * (session.targetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS),
+      15000,
+    );
+    if (spanMs > capMs) {
+      const before = session.playbackQueue.length;
+      this.pruneSessionQueue(session);
+      session.lastBacklogPruneAtMs = nowMs;
+      console.log(
+        `[WebSocketHandler] CATCHUP backlog ${Math.round(spanMs)}ms exceeds cap ${capMs}ms. Pruned oldest GOP (${before} -> ${session.playbackQueue.length} frames).`,
+      );
+    }
   }
 
   /**
@@ -1134,6 +1223,13 @@ export class WebSocketHandler {
     session.playbackQueue = muteAudio
       ? catchupData.frames.filter((f) => f.type !== 'audio')
       : [...catchupData.frames];
+
+    // Issue #107: 実効スライディングウィンドウとバーストモードを記録。これらの値はこれまで
+    // どのログにも出力されておらず、インシデント解析時に当日のフロー制御設定を復元できなかった。
+    const diagBurstEnv = process.env.BURST_CATCHUP_ENABLED;
+    console.log(
+      `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${diagBurstEnv !== undefined ? diagBurstEnv === 'true' || diagBurstEnv === '1' : true})`,
+    );
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
     // キュー先頭の映像PTS（フォールバックとして先頭フレームPTS）でアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue 26)
@@ -1177,6 +1273,11 @@ export class WebSocketHandler {
 
     const burstEnv = process.env.BURST_CATCHUP_ENABLED;
     session.isBurstMode = burstEnv !== undefined ? burstEnv === 'true' || burstEnv === '1' : true;
+
+    // Issue #107: 通信悪化による LIVE→CATCHUP 遷移も実効窓・バースト設定を記録する
+    console.log(
+      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${session.targetBufferMs ?? this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS}, burst=${session.isBurstMode}`,
+    );
 
     if (!session.pacingTimer) {
       session.pacingTimer = setTimeout(() => {
@@ -1233,7 +1334,7 @@ export class WebSocketHandler {
       return;
     }
 
-    const targetBufferMs = session.targetBufferMs ?? 10000;
+    const targetBufferMs = this.effectiveCatchupWindowMs(session);
     const inFlightMs = this.getClientInFlightBufferMs(session);
 
     if (inFlightMs < targetBufferMs) {
@@ -1263,6 +1364,9 @@ export class WebSocketHandler {
       return;
     }
 
+    // Issue #104: バックログが上限を超えた古い GOP を安全に間引き、無限キャッチアップを防ぐ
+    this.enforceCatchupBacklogCap(session);
+
     // ソケットの詰まり確認: 送信バッファに溜まっている間は送出を控える
     const socketBuffered = (session.socket as any).bufferedAmount || 0;
     if (socketBuffered > 128 * 1024) {
@@ -1278,7 +1382,7 @@ export class WebSocketHandler {
 
     // クライアント先行バッファ上限チェック（スライディングウィンドウ・フロー制御）
     // targetBufferMs（既定10秒）を超えて送信しないよう、満杯時は一時停止する
-    const targetBufferMs = session.targetBufferMs ?? 10000;
+    const targetBufferMs = this.effectiveCatchupWindowMs(session);
     const inFlightMs = this.getClientInFlightBufferMs(session);
 
     if (inFlightMs >= targetBufferMs) {
@@ -1603,6 +1707,7 @@ export class WebSocketHandler {
             const session = this.clientSessions.get(socket);
             if (session) {
               session.lastAckPts = ackPts;
+              this.observeAckProgress(session, ackPts); // Issue #104: 実効排水レートの推定入力
               if (session.isFlowPaused) {
                 this.checkAndResumeCatchup(session);
               }
@@ -1620,6 +1725,11 @@ export class WebSocketHandler {
             session.bufferedMs =
               typeof cmd.bufferedMs === 'number' && Number.isFinite(cmd.bufferedMs)
                 ? Math.max(0, cmd.bufferedMs)
+                : 0;
+            // Issue #106: 音声キュー滞留の報告（旧クライアントは未送信 → undefined のまま = 従来動作）
+            session.audioBufferedMs =
+              typeof cmd.audioBufferedMs === 'number' && Number.isFinite(cmd.audioBufferedMs)
+                ? Math.max(0, cmd.audioBufferedMs)
                 : 0;
             const rawTargetMs =
               typeof cmd.targetBufferMs === 'number' && Number.isFinite(cmd.targetBufferMs)
@@ -1639,6 +1749,7 @@ export class WebSocketHandler {
               const renderedPts = BigInt(Math.round(Number(cmd.lastRenderedPts)));
               if (renderedPts > 0n) {
                 session.lastAckPts = renderedPts;
+                this.observeAckProgress(session, renderedPts); // Issue #104: 実効排水レートの推定入力
                 if (this.isEffectivelyPrimary(session)) {
                   this.lastKnownAckPts = renderedPts;
                 }
@@ -1751,7 +1862,17 @@ export class WebSocketHandler {
             this.abortCatchupAndSwitchToLive(session);
             this.notifyOtherSessionsLiveJump(socket);
           }
-          this.sendControl(socket, { type: 'LIVE_JUMPED', timestamp: Date.now() });
+          // Issue #103: 破棄基準となるライブエッジ PTS を権威値としてクライアントへ返し、
+          // 経路上を漂流中の古い音声（straggler）を受信側で確実に破棄できるようにする
+          const liveEdgePtsUs =
+            typeof this.encoder.getCurrentPts === 'function'
+              ? Number(this.encoder.getCurrentPts())
+              : 0;
+          this.sendControl(socket, {
+            type: 'LIVE_JUMPED',
+            timestamp: Date.now(),
+            ...(liveEdgePtsUs > 0 ? { dropAudioBeforePts: liveEdgePtsUs } : {}),
+          });
           break;
         }
 

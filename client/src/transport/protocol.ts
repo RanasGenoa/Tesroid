@@ -97,6 +97,7 @@ export class ClientProtocol {
 
   public static packBufferFeedback(feedback: {
     bufferedMs: number;
+    audioBufferedMs?: number; // Issue #106: 音声キュー滞留（旧サーバーは未知フィールドを無視 = 後方互換）
     targetBufferMs: number;
     lastRenderedPts?: bigint | number;
     isInteractive?: boolean;
@@ -105,6 +106,10 @@ export class ClientProtocol {
     return this.packCommand({
       type: 'BUFFER_FEEDBACK',
       bufferedMs: feedback.bufferedMs,
+      audioBufferedMs:
+        feedback.audioBufferedMs !== undefined && Number.isFinite(feedback.audioBufferedMs)
+          ? Math.max(0, Math.round(feedback.audioBufferedMs))
+          : undefined,
       targetBufferMs: feedback.targetBufferMs,
       lastRenderedPts:
         feedback.lastRenderedPts !== undefined ? String(feedback.lastRenderedPts) : undefined,

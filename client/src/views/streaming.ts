@@ -254,6 +254,14 @@ export function renderStreamingView(
   let rttHistory: number[] = [];
   let lastPacketReceivedTime = performance.now();
   let pingId = 0;
+  // Issue #105: RTT サンプルの鮮度管理。CATCHUP バーストやリンク輻輳で PONG が長時間届かない場合、
+  // 最後の instantRtt をリアルタイム計測値として表示・報告し続ける（凍結）のを防ぐ
+  // （2026-11-25 実測: 531ms が 4 メトリクス窓にわたり凍結表示された）。
+  let lastPongAtMs = 0;
+  const RTT_STALE_MS = 5000;
+  // Issue #103: PONG ペイロードのサーバー最新 PTS（LIVE ジャンプ時の暫定音声バリア外挿用）
+  let lastKnownServerLatestPtsUs = 0;
+  let lastKnownServerLatestAtMs = 0;
   let targetFps = 30;
   let currentFps = 30;
   let currentBitrate = 1000000;
@@ -754,21 +762,27 @@ export function renderStreamingView(
     }
   };
 
-  const getTotalBufferedBehindMs = () => {
+  // Issue #106: 映像経路のバッファ集計の単一正典関数。HUD 表示 (getTotalBufferedBehindMs) と
+  // サーバーへの BUFFER_FEEDBACK 報告 (sendBufferFeedback / handleOpen) の二重定義を解消する。
+  const getVideoPathBufferedMs = (): number => {
+    const pendingBufferedMs =
+      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
     const pacerBufferedMs =
       typeof framePacer.getBufferedDurationMs === 'function'
         ? framePacer.getBufferedDurationMs()
         : 0;
-    const decoderBufferedMs =
-      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const audioBufferedMs =
-      typeof audioPlayer.getBufferedAudioMs === 'function' ? audioPlayer.getBufferedAudioMs() : 0;
+    return pendingBufferedMs + pacerBufferedMs;
+  };
+
+  const getAudioPathBufferedMs = (): number =>
+    typeof audioPlayer.getBufferedAudioMs === 'function' ? audioPlayer.getBufferedAudioMs() : 0;
+
+  const getTotalBufferedBehindMs = () => {
+    const videoBufferedMs = getVideoPathBufferedMs();
+    const audioBufferedMs = getAudioPathBufferedMs();
     // Notice: Do NOT use raw `(serverLatestPts - lastDecodedPts)` as "buffered behind" because on a static screen
     // FFmpeg does not emit new frames while server wall-clock advances, which previously caused false 2-3s catch-up display!
-    const clientBufferedMs = Math.max(
-      pacerBufferedMs + decoderBufferedMs,
-      Math.max(0, audioBufferedMs - 160),
-    );
+    const clientBufferedMs = Math.max(videoBufferedMs, Math.max(0, audioBufferedMs - 160));
     return clientBufferedMs + Math.max(serverCatchupQueueMs, serverBufferMs);
   };
 
@@ -799,6 +813,13 @@ export function renderStreamingView(
       targetText = '切断';
       targetTitle = '接続状態: 切断';
     } else {
+      // Issue #105: PONG が閾値を超えて届かない場合、最後の RTT 値は鮮度切れとして破棄する
+      // （CATCHUP バースト中のソケット滞留で汚染された値が凍結表示される問題の防止）。
+      // 遷移の瞬間に 1 回だけメトリクスへも未計測 (0) を報告し、凍結値の再報告を止める。
+      if (instantRtt > 0 && performance.now() - lastPongAtMs > RTT_STALE_MS) {
+        instantRtt = 0;
+        metricsCollector.updateRtt(0);
+      }
       const elapsed = performance.now() - lastPacketReceivedTime;
 
       if (elapsed > PACKET_LOSS_TIMEOUT_MS) {
@@ -928,6 +949,23 @@ export function renderStreamingView(
       audioPlayer.jumpToLive();
     } else if (typeof audioPlayer.resetJitterBuffer === 'function') {
       audioPlayer.resetJitterBuffer();
+    }
+    // Issue #103: ローカルキューを空にしても、ジャンプ前にサーバーが送信済みで経路上を漂流する
+    // 古い音声（straggler）が到着して ~2 秒分の固定 A/V オフセットを作る。ライブエッジ基準の
+    // 暫定バリアを設定し、LIVE_JUMPED の dropAudioBeforePts で権威値へ更新する。
+    if (typeof audioPlayer.setLiveEdgeBarrier === 'function') {
+      const nowMs = performance.now();
+      let barrierUs = 0;
+      if (lastKnownServerLatestPtsUs > 0 && nowMs - lastKnownServerLatestAtMs < 3000) {
+        // メディア PTS は実時間単調なので、PONG 時点の最新 PTS から経過時間分を外挿する
+        barrierUs =
+          lastKnownServerLatestPtsUs + Math.round((nowMs - lastKnownServerLatestAtMs) * 1000);
+      } else {
+        barrierUs = Math.max(lastDecodedPts, audioPlayer.getLastKnownPtsUs?.() ?? 0);
+      }
+      if (barrierUs > 0) {
+        audioPlayer.setLiveEdgeBarrier(barrierUs);
+      }
     }
     jitterController.reset();
     primaryAnchorPtsUs = 0;
@@ -1262,6 +1300,11 @@ export function renderStreamingView(
       framePacer.resetFirstFrame();
     }
     audioPlayer.resetJitterBuffer();
+    if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+      // Issue #103: ストリーム再構築では PTS が再基準化されるため、旧ストリーム基準のバリアは無効化する
+      audioPlayer.clearLiveEdgeBarrier();
+    }
+    lastKnownServerLatestPtsUs = 0;
     jitterController.reset();
     renderer.resetFirstFrame();
     avSync.reset();
@@ -1287,6 +1330,16 @@ export function renderStreamingView(
     lastPacketReceivedTime = performance.now();
     if (msg.type === 'PONG') {
       const now = performance.now();
+      lastPongAtMs = now; // Issue #105: 鮮度タイムスタンプ更新
+      if (
+        typeof msg.latestPts === 'number' &&
+        Number.isFinite(msg.latestPts) &&
+        msg.latestPts > 0
+      ) {
+        // Issue #103: サーバー最新 PTS を到着時刻付きで追跡（ジャンプ時の暫定バリア基準）
+        lastKnownServerLatestPtsUs = msg.latestPts;
+        lastKnownServerLatestAtMs = now;
+      }
       const rawRtt = Math.max(1, Math.round(now - msg.clientTime));
 
       if (typeof msg.catchupQueueMs === 'number') {
@@ -1377,6 +1430,14 @@ export function renderStreamingView(
       serverCatchupQueueMs = 0;
       serverBufferMs = 0;
       serverMode = 'LIVE';
+      // Issue #103: サーバーが知るライブエッジ PTS を権威的な音声 straggler バリアとして適用する
+      if (
+        typeof msg.dropAudioBeforePts === 'number' &&
+        Number.isFinite(msg.dropAudioBeforePts) &&
+        typeof audioPlayer.setLiveEdgeBarrier === 'function'
+      ) {
+        audioPlayer.setLiveEdgeBarrier(msg.dropAudioBeforePts);
+      }
       updateHudLiveStatus();
     } else if (msg.type === 'SESSION_ROLE_CHANGED') {
       if (!isSecondarySession) return;
@@ -1487,17 +1548,15 @@ export function renderStreamingView(
 
   let disconnectSurvivalTimer: any = null;
   let lastReportedBufferedMs = -1;
+  let lastReportedAudioBufferedMs = -1; // Issue #106
 
   const sendBufferFeedback = (force = false) => {
     if (!wsClient.isConnected()) return;
 
-    const pendingBufferedMs =
-      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs =
-      typeof framePacer.getBufferedDurationMs === 'function'
-        ? framePacer.getBufferedDurationMs()
-        : 0;
-    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: HUD と同一の正典集計関数を使用
+    // Issue #106: 音声キュー滞留を別フィールドで報告する。サーバー側のスライディングウィンドウ
+    // (getClientInFlightBufferMs) が映像経路だけを見て実滞留を過小評価する問題の解消。
+    const audioBufferedMs = getAudioPathBufferedMs();
     const isInteractive = latencyController.getMode() === 'ACTIVE_INTERACTION';
 
     const actualRenderedPts =
@@ -1507,12 +1566,14 @@ export function renderStreamingView(
 
     const ptsChanged = reportedPts !== undefined && reportedPts !== lastAckSentPts;
     const bufferDelta = Math.abs(totalBufferedMs - lastReportedBufferedMs);
+    const audioDelta = Math.abs(audioBufferedMs - lastReportedAudioBufferedMs);
 
-    if (!force && !ptsChanged && bufferDelta < 250) return;
+    if (!force && !ptsChanged && bufferDelta < 250 && audioDelta < 250) return;
 
     wsClient.send(
       ClientProtocol.packBufferFeedback({
         bufferedMs: totalBufferedMs,
+        audioBufferedMs,
         targetBufferMs: clampBufferDepthMs(targetBufferMs),
         lastRenderedPts: reportedPts,
         isInteractive,
@@ -1522,6 +1583,7 @@ export function renderStreamingView(
       lastAckSentPts = reportedPts;
     }
     lastReportedBufferedMs = totalBufferedMs;
+    lastReportedAudioBufferedMs = audioBufferedMs;
   };
 
   const handleOpen = () => {
@@ -1530,13 +1592,7 @@ export function renderStreamingView(
       disconnectSurvivalTimer = null;
     }
 
-    const pendingBufferedMs =
-      typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
-    const pacerBufferedMs =
-      typeof framePacer.getBufferedDurationMs === 'function'
-        ? framePacer.getBufferedDurationMs()
-        : 0;
-    const totalBufferedMs = pendingBufferedMs + pacerBufferedMs;
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 正典集計関数へ統一
 
     if (totalBufferedMs <= 0) {
       decoder.reset();

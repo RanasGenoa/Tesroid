@@ -32,6 +32,16 @@ export class AudioPlayer {
   private hasInitialPlaybackStarted: boolean = false;
   private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
+
+  // Issue #103 (2026-11-25 インシデント): JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
+  // ソケット/リンク経路上を漂流中の古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
+  // ライブ音声の後ろに ~2 秒分連結されると、音声マスタークロックが映像から永久に先行する。
+  // ジャンプ直後の短期間だけバリア PTS 未満の古い音声を受信破棄して固定オフセットの発生を防ぐ。
+  private liveBarrierPtsUs = 0;
+  private liveBarrierUntilMs = 0;
+  private staleBarrierDropped = 0;
+
+  public static readonly LIVE_BARRIER_TTL_MS = 5000;
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
@@ -279,6 +289,11 @@ export class AudioPlayer {
       return;
     }
 
+    // Issue #103: ジャンプ後の straggler 音声はデコード前に破棄する
+    if (this.isStaleByLiveBarrier(ptsUs)) {
+      return;
+    }
+
     this.lastChunkPtsUs = ptsUs;
 
     try {
@@ -372,6 +387,43 @@ export class AudioPlayer {
     let queuedSec = 0;
     for (const item of this.bufferQueue) queuedSec += item.buffer.duration;
     return Math.round((scheduledAheadSec + queuedSec + this.totalOverflowDurationSec) * 1000);
+  }
+
+  /** Issue #103: ジャンプ基準 PTS バリアの設定（0 以下は無効化）。TTL 自動失効付き。 */
+  public setLiveEdgeBarrier(ptsUs: number, ttlMs: number = AudioPlayer.LIVE_BARRIER_TTL_MS): void {
+    if (!Number.isFinite(ptsUs) || ptsUs <= 0) return;
+    this.liveBarrierPtsUs = ptsUs;
+    this.liveBarrierUntilMs = Date.now() + Math.max(1000, ttlMs);
+  }
+
+  public clearLiveEdgeBarrier(): void {
+    this.liveBarrierPtsUs = 0;
+    this.liveBarrierUntilMs = 0;
+  }
+
+  /** Issue #103: 最後に受信した音声 PTS（ストリーム単調性を前提にした straggler 判定基準）。 */
+  public getLastKnownPtsUs(): number {
+    return this.lastChunkPtsUs;
+  }
+
+  private isStaleByLiveBarrier(ptsUs: number): boolean {
+    if (this.liveBarrierPtsUs <= 0) return false;
+    if (Date.now() > this.liveBarrierUntilMs) {
+      this.clearLiveEdgeBarrier();
+      return false;
+    }
+    if (ptsUs >= this.liveBarrierPtsUs) {
+      // バリア以上のライブ音声が届いた時点でガードは役割を終える（外挿誤差による過剰破棄を防止）
+      this.clearLiveEdgeBarrier();
+      return false;
+    }
+    this.staleBarrierDropped++;
+    if (this.staleBarrierDropped === 1 || this.staleBarrierDropped % 50 === 0) {
+      console.warn(
+        `[AudioPlayer] Dropping post-jump straggler audio (pts=${Math.round(ptsUs)} < barrier=${Math.round(this.liveBarrierPtsUs)}, dropped=${this.staleBarrierDropped})`,
+      );
+    }
+    return true;
   }
 
   private hasSufficientResumeCushion(): boolean {
