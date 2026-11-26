@@ -412,30 +412,37 @@ export class FakeGpuHardwareProbe implements GpuHardwareProbePort {
 
 export class FakeSessionTransport implements SessionTransportPort {
   readonly id: SessionConnectionId;
+  readonly sentFrames: Uint8Array[] = [];
+  bufferedAmount = 0;
+  closedCode: WsCloseCode | null = null;
+  closedReason: string | undefined;
+  isClosed = false;
 
   // Spec: docs/architecture.md#4.2
   constructor(id: SessionConnectionId) {
-    throw new Error("NOT_IMPLEMENTED");
+    this.id = id;
   }
 
   // Spec: docs/architecture.md#4.2
   sendBinary(data: Uint8Array): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.sentFrames.push(new Uint8Array(data));
   }
 
   // Spec: docs/architecture.md#4.2
   getBufferedAmount(): number {
-    throw new Error("NOT_IMPLEMENTED");
+    return this.bufferedAmount;
   }
 
   // Spec: docs/architecture.md#4.2
   close(code: WsCloseCode, reason?: string): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.closedCode = code;
+    this.closedReason = reason;
+    this.isClosed = true;
   }
 
   // Spec: docs/architecture.md#4.2
   setBufferedAmount(bytes: number): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.bufferedAmount = bytes;
   }
 }
 

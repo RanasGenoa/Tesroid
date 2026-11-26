@@ -4,7 +4,9 @@ import type { AppContainer } from "../../app/index.js";
 import { AuthDomainError } from "../../domains/auth/errors.js";
 import { SettingsDomainError } from "../../domains/settings/errors.js";
 import type { ServerEnvConfig } from "../../infra/index.js";
+import { registerWebSocketGateway } from "../ws/ws-gateway.js";
 import { registerAuthAndSettingsRoutes } from "./routes-auth-settings.js";
+import { registerPowerAndStreamRoutes } from "./routes-power-stream.js";
 
 // Spec: docs/architecture.md#1.3
 export function createHttpServer(container: AppContainer): FastifyInstance {
@@ -40,11 +42,13 @@ export function createHttpServer(container: AppContainer): FastifyInstance {
   });
 
   registerAuthAndSettingsRoutes(app, container);
+  registerPowerAndStreamRoutes(app, container);
+  registerWebSocketGateway(app, container);
   return app;
 }
 
 // Spec: docs/architecture.md#1.3
-export function startServer(env?: ServerEnvConfig): Promise<{
+export function startServer(_env?: ServerEnvConfig): Promise<{
   readonly app: FastifyInstance;
   readonly container: AppContainer;
 }> {

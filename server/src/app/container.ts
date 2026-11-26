@@ -1,8 +1,13 @@
 import path from "node:path";
 import {
+  CHANNEL_ID,
   createInitialStreamingState,
   type EncoderBackend,
+  encodeMediaFrame,
+  encodeServerControlFrame,
+  type PowerState,
   STREAM_EPOCH_INITIAL,
+  transitionStreamingState,
 } from "@tesroid/shared";
 import {
   AuthService,
@@ -20,7 +25,9 @@ import type {
 import type { BrowserControlPort, CdpClientPort, X11InputPort } from "../domains/browser/ports.js";
 import type { EncoderControlPort, GpuHardwareProbePort } from "../domains/encoder/ports.js";
 import type { MetricsServicePort, TelemetryServicePort } from "../domains/observability/ports.js";
+import { PowerService, PowerTimers } from "../domains/power/index.js";
 import type { PowerControllerPort } from "../domains/power/ports.js";
+import { SessionRegistry, SessionService } from "../domains/session/index.js";
 import type { SessionServicePort } from "../domains/session/ports.js";
 import type { SettingsRepository } from "../domains/settings/ports.js";
 import { SettingsService } from "../domains/settings/settings-service.js";
@@ -81,30 +88,6 @@ function unimplemented(): never {
   throw new Error("NOT_IMPLEMENTED");
 }
 
-function createPhase2SessionPlaceholder(): SessionServicePort {
-  return {
-    hasActivePrimaryOrActing: () => false,
-    demoteAllStreamingToStandby: () => {},
-    promoteStandbyToStreaming: () => {},
-    authenticatePrimaryPin: () => unimplemented(),
-    authenticateSecondaryPin: () => unimplemented(),
-    authenticateToken: () => unimplemented(),
-    handleDisconnect: () => unimplemented(),
-    getSession: () => null,
-    getPrimaryAuthority: () => null,
-    getStreamingSecondaries: () => [],
-    getAllSessions: () => [],
-    recordPrimaryFeedback: () => {},
-    getPrimarySyncMetadata: () => ({
-      primaryRenderedPts: null,
-      primaryFeedbackAgeMs: null,
-      primaryTargetBufferMs: 0,
-      primaryMode: null,
-    }),
-    closeAllWithPolicyViolation: () => {},
-  };
-}
-
 function createPhase2BrowserPlaceholder(): BrowserControlPort {
   return {
     start: () => unimplemented(),
@@ -148,45 +131,105 @@ function createPhase2EncoderPlaceholder(env: ServerEnvConfig): EncoderControlPor
   };
 }
 
-function createPhase2StreamingPlaceholder(): StreamingControlPort {
-  const initialState = createInitialStreamingState();
-  return {
-    clearBufferAndQueues: () => {},
-    broadcastPowerState: () => {},
-    onPowerSleep: () => {},
-    onPowerHoldEntered: () => {},
-    onPowerHoldExited: () => {},
-    getState: () => initialState,
-    dispatchEvent: () => {},
-    ingestEncodedPacket: () => {},
-    handlePrimaryFeedback: () => {},
-    handleUserInteraction: () => {},
-    handleSessionActivated: () => {},
-    handleStreamReset: () => {},
-    handleSocketRemoved: () => {},
-    buildPongPayload: () => unimplemented(),
-    broadcastServerStats: () => {},
-    dispose: () => {},
-  };
-}
+function createPhase3StreamingAdapter(
+  clock: Clock,
+  session: SessionServicePort,
+): StreamingControlPort {
+  let state = createInitialStreamingState();
+  let latestMediaPtsUs = 0n;
 
-function createPhase2PowerPlaceholder(clock: Clock): PowerControllerPort {
   return {
-    getStatus: () => ({
-      state: "STOPPED",
-      streamEpoch: STREAM_EPOCH_INITIAL,
-      currentUrl: null,
-      currentTitle: null,
-      updatedAtMs: clock.nowMs(),
-    }),
-    ensureActive: () => unimplemented(),
-    sleep: () => unimplemented(),
-    resume: () => unimplemented(),
-    restartBrowser: () => unimplemented(),
-    enterBufferHold: () => unimplemented(),
-    exitBufferHold: () => unimplemented(),
-    onPrimaryConnected: () => unimplemented(),
-    onPrimaryDisconnected: () => {},
+    clearBufferAndQueues: () => {
+      latestMediaPtsUs = 0n;
+    },
+    broadcastPowerState: (powerState: PowerState, streamEpoch: number) => {
+      const frame = encodeServerControlFrame({
+        type: "BROWSER_STATUS",
+        powerState,
+        streamEpoch,
+      });
+      for (const client of session.getAllSessions()) {
+        client.transport.sendBinary(frame);
+      }
+    },
+    onPowerSleep: () => {
+      state = transitionStreamingState(state, { type: "POWER_SLEEP" }).nextState;
+    },
+    onPowerHoldEntered: (atMs: number, targetBufferMs: number) => {
+      state = transitionStreamingState(state, {
+        type: "HOLD_THRESHOLD_REACHED",
+        atMs,
+        targetBufferMs,
+      }).nextState;
+    },
+    onPowerHoldExited: (newStreamEpoch: number) => {
+      state = transitionStreamingState(state, {
+        type: "HOLD_DRAINED",
+        newStreamEpoch,
+      }).nextState;
+    },
+    getState: () => state,
+    dispatchEvent: (event) => {
+      state = transitionStreamingState(state, event).nextState;
+    },
+    ingestEncodedPacket: (packet) => {
+      if (packet.ptsUs > latestMediaPtsUs) {
+        latestMediaPtsUs = packet.ptsUs;
+      }
+      const frame = encodeMediaFrame({
+        channel: packet.mediaType === "video" ? CHANNEL_ID.VIDEO : CHANNEL_ID.AUDIO,
+        flags: packet.flags,
+        streamEpoch: packet.streamEpoch,
+        ptsUs: packet.ptsUs,
+        payload: packet.payload,
+      });
+      const primary = session.getPrimaryAuthority();
+      if (primary !== null) {
+        primary.transport.sendBinary(frame);
+      }
+      if (packet.mediaType === "video") {
+        for (const secondary of session.getStreamingSecondaries()) {
+          secondary.transport.sendBinary(frame);
+        }
+      }
+    },
+    handlePrimaryFeedback: () => {},
+    handleUserInteraction: (atMs: number) => {
+      state = transitionStreamingState(state, {
+        type: "USER_INTERACTION",
+        atMs,
+        newStreamEpoch: state.streamEpoch,
+      }).nextState;
+    },
+    handleSessionActivated: (_sessionId, streamEpoch) => {
+      state = transitionStreamingState(state, {
+        type: "SESSION_ACTIVATED",
+        streamEpoch,
+      }).nextState;
+    },
+    handleStreamReset: (newStreamEpoch: number) => {
+      state = transitionStreamingState(state, {
+        type: "STREAM_RESET",
+        newStreamEpoch,
+      }).nextState;
+    },
+    handleSocketRemoved: () => {},
+    buildPongPayload: (clientTimestampMs: number) => {
+      const sync = session.getPrimarySyncMetadata();
+      return encodeServerControlFrame({
+        type: "PONG",
+        clientTimestampMs,
+        serverTimestampMs: clock.nowMs(),
+        latestMediaPtsUs: Number(latestMediaPtsUs),
+        mode: sync.primaryMode,
+        serverRemainingBufferMs: 0,
+        primaryRenderedPts: sync.primaryRenderedPts,
+        primaryFeedbackAgeMs: sync.primaryFeedbackAgeMs,
+        primaryTargetBufferMs: sync.primaryTargetBufferMs,
+        primaryMode: sync.primaryMode,
+      });
+    },
+    broadcastServerStats: () => {},
     dispose: () => {},
   };
 }
@@ -235,17 +278,15 @@ export function createAppContainer(
     processExit,
   });
 
-  const session = overrides?.session ?? createPhase2SessionPlaceholder();
   const browser = overrides?.browser ?? createPhase2BrowserPlaceholder();
   const encoder = overrides?.encoder ?? createPhase2EncoderPlaceholder(env);
-  const streaming = overrides?.streaming ?? createPhase2StreamingPlaceholder();
-  const power = overrides?.power ?? createPhase2PowerPlaceholder(clock);
   const metrics = overrides?.metrics ?? createPhase2MetricsPlaceholder();
   const telemetry = overrides?.telemetry ?? createPhase2TelemetryPlaceholder();
 
+  let sessionRef: SessionServicePort | undefined;
   const shutdownHandler: LockoutShutdownHandler = overrides?.lockoutShutdownHandler ?? {
     onLockoutTriggered: async () => {
-      session.closeAllWithPolicyViolation("Security lockout triggered");
+      sessionRef?.closeAllWithPolicyViolation("Security lockout triggered");
     },
   };
 
@@ -256,6 +297,71 @@ export function createAppContainer(
     tokenStore,
     lockout,
     shutdownHandler,
+  });
+
+  let sessionRegistry: SessionRegistry | undefined;
+  let powerRef: PowerControllerPort | undefined;
+  let sessionServiceRef: SessionService | undefined;
+
+  const session: SessionServicePort =
+    overrides?.session ??
+    (() => {
+      const registry = new SessionRegistry({
+        clock,
+        onGraceExpired: () => {
+          sessionServiceRef?.handleReloadGraceExpired();
+        },
+      });
+      sessionRegistry = registry;
+      const service = new SessionService({
+        clock,
+        auth,
+        settings,
+        registry,
+        callbacks: {
+          getStreamEpoch: () => encoder.getCurrentEpoch(),
+          onReloadGraceExpiredWithoutSecondary: () => {
+            powerRef?.onPrimaryDisconnected();
+          },
+        },
+      });
+      sessionServiceRef = service;
+      return service;
+    })();
+  sessionRef = session;
+
+  const streaming = overrides?.streaming ?? createPhase3StreamingAdapter(clock, session);
+
+  let powerServiceRef: PowerService | undefined;
+  const power: PowerControllerPort =
+    overrides?.power ??
+    (() => {
+      const timers = new PowerTimers({
+        clock,
+        onAutoSleepExpired: () => {
+          void powerServiceRef?.handleAutoSleepExpired();
+        },
+        onHoldExpired: () => {
+          void powerServiceRef?.handleHoldExpired();
+        },
+      });
+      const service = new PowerService({
+        clock,
+        settings,
+        browser,
+        encoder,
+        streaming,
+        session,
+        timers,
+        holdExpireMinutes: env.bufferHoldExpireMinutes,
+      });
+      powerServiceRef = service;
+      return service;
+    })();
+  powerRef = power;
+
+  const unsubscribePackets = encoder.subscribePackets((packet) => {
+    streaming.ingestEncodedPacket(packet);
   });
 
   const coordinator = new ServerCoordinator({
@@ -285,6 +391,10 @@ export function createAppContainer(
     metrics,
     telemetry,
     coordinator,
-    dispose: () => coordinator.dispose(),
+    dispose: async () => {
+      unsubscribePackets();
+      sessionRegistry?.dispose();
+      await coordinator.dispose();
+    },
   };
 }
