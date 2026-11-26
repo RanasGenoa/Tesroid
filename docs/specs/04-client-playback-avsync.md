@@ -32,8 +32,10 @@
   - 同一 `streamEpoch` 内の再送 Opus 設定パケットは冪等に扱い無音ギャップを防ぐ。一方、新しい `streamEpoch` へ切り替わった際は音声デコーダおよびジッタバッファを完全に閉じて再生成し、旧世代の残留音声やブラウザ内部タイムスタンプヘルパーの旧エポックを構造的に遮断する（PTS 比較による後付けストラグラーバリアは不要とする）。
 
 ### 2.3 動作モード・適応ジッタ・統一マスタークロック同期
-- **操作モード切替**:
-  - タッチ操作中は即座に低遅延描画モード（`ACTIVE_INTERACTION` / `DIRECT LIVE`）へ遷移し、最終タッチから **4,000 ms** 経過すると通常視聴モード（`PASSIVE_STREAMING` / `LIVE`）へ自動復帰する。
+- **状態カプセル化・操作モード切替（単一遷移関数集約）**:
+  - クライアントの視聴状態（`STANDBY` / `INTERACTIVE` [旧 `ACTIVE_INTERACTION`・`DIRECT LIVE`] / `LIVE` [旧 `PASSIVE_STREAMING`] / `CATCHUP` / `BUFFER_HOLD`）は、サーバーと共通の排他判別ユニオンおよび **単一純粋遷移関数** にカプセル化する（[03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md) §2.2）。
+  - キュー選択（`LIVE` vs `CATCHUP`）、A/V 同期ポリシー、HUD 状態表示（`HOLD` / `DIRECT LIVE` / `WAIT` / `BUF` / `LIVE`）は、複数 boolean の組み合わせ分岐を散在させず、すべて単一状態からの純粋射影（セレクタ）として導出する。
+  - タッチ操作時は操作イベント投入により即座に `INTERACTIVE` へ遷移し、最終タッチから **4,000 ms** 経過イベントで `LIVE` へ自動復帰する。
 - **適応ジッタバッファ**:
   - 映像到着間隔（`850 ms` 超の瞬断除外）および有効 RTT のばらつき（95%値 − 中央値 `>= 90 ms`）に基づき、目標追加遅延を `60〜240 ms` の範囲で算出し、映像と音声双方へ対称に増減（立ち上がり最大 `20 ms/フレーム`、減衰 `20 ms/秒`）適用する。
 - **停滞バッファリング & 1x ペース維持**:

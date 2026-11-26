@@ -43,6 +43,7 @@ Tesroid/
 │       ├── protocol/                # チャンネルID, バイナリフレーム変換, streamEpoch, 制御JSON型, クローズコード
 │       ├── settings/                # 設定スキーマ, 単一既定値, 品質3択/プリセット展開, 検証ロジック
 │       ├── geometry/                # レイアウト/エンコード寸法アライメント, 水位ヒステリシス計算
+│       ├── state/                   # [Stub-First] ストリーミング状態機械 (判別ユニオン・単一遷移関数・純粋セレクタ)
 │       └── types/                   # ライフサイクル状態, セッションロール, メトリクス, テレメトリ型
 ├── server/                          # [Workspace] バックエンド (Modular Monolith)
 │   └── src/
@@ -53,7 +54,7 @@ Tesroid/
 │       │   ├── session/             # PRIMARY / ACTING_PRIMARY / SECONDARY 排他・猶予・基準PTS同期
 │       │   ├── browser/             # Xvfb/Openbox/Pulse/Chrome 起動・単一スクリプト注入・CDP/X11入力
 │       │   ├── encoder/             # GPU 検出/フォールバック・H.264 AVCC/OggOpus パーサ・媒体パイプライン
-│       │   ├── streaming/           # 60s/48MiB リングバッファ・ヒステリシス・リンク認識CATCHUP・Hold判定
+│       │   ├── streaming/           # streaming-controller(単一遷移関数シェル)・リングバッファ・ヒステリシス・CATCHUP・Hold判定
 │       │   ├── power/               # 単一ライフサイクル状態機械・排他タイマー・ドメイン間Port定義
 │       │   └── observability/       # 360件メトリクス集計・オプトインJSONLテレメトリ(10MiB/15世代)
 │       ├── app/                     # DI コンテナ配線 & ストリーム世代/イベント調停 (Coordinator)
@@ -61,7 +62,7 @@ Tesroid/
 └── client/                          # [Workspace] フロントエンド (ステートレス・タッチ専用)
     └── src/
         ├── transport/               # WS 自動再接続・バイナリ送受信・REST API クライアント
-        ├── media/                   # streamEpoch ゲート・LIVE/CATCHUP キュー分離・単一マスタークロック同期・Canvas/WebAudio
+        ├── media/                   # playback-controller(単一遷移関数シェル)・streamEpochゲート・キュー分離・マスタークロック
         ├── input/                   # 上端20pxガード・スロップ/デバウンス・余白除外座標変換
         ├── observability/           # 10秒差分メトリクス計測・オプトインJSONLバッチ送信
         ├── state/                   # 単方向データフロー AppStore (sessionStorage は token/role のみ)
@@ -145,6 +146,10 @@ flowchart LR
 6. **キュー分離 & 単一マスタークロック同期 (`client/media`)**:
    - リアルタイム描画用 `LIVE` キューと通信断追っかけ用 `CATCHUP` キュー（最大 `30s` / `48 MiB`）を明確に分離し、通常視聴時の不要な先読み滞留を発生させない。
    - 音ズレ同期は「プライマリ音声実再生時刻（セカンダリは鮮度 `5s` 未満のプライマリ基準 PTS）」を唯一マスタークロックとし、個別の閾値特例パッチを持たない統一評価ループで処理する。音声再生速度は常時 `1.0x` 固定とする。
+7. **ストリーミング状態のカプセル化と単一遷移関数集約（Stub-First & No Boolean Soup）**:
+   - `STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD` の配信・視聴状態を複数の独立 boolean フラグ（`isLive`, `isCatchup`, `isStandby`, `isInteractive`, `isHolding` 等）で表現することを禁止し、不正な組み合わせを型レベルで表現不能にする排他的判別ユニオン `StreamingState` へカプセル化する。
+   - すべての状態遷移は `shared/src/state/streaming-fsm.ts` の **単一純粋遷移関数 `transitionStreamingState(state, event)`** に集約し、呼び出し元（`streaming-controller` / `playback-controller`）はイベント投入と返却された宣言的 `effects` の実行のみを担う。
+   - 実装時は Phase 1 で状態・イベント・副作用・`assertNever` 網羅性チェック付きスタブを先行作成し、状態依存の振る舞い（キュー選択、入力許可、HUD 表示）は散在 `if` 分岐ではなく純粋セレクタ経由でのみ参照する。
 
 ### 2.3 ドメイン間 Port 契約一覧
 
@@ -224,6 +229,98 @@ stateDiagram-v2
   ACTING_PRIMARY --> [*]: 明示切断 (次セカンダリへ連鎖昇格しない)
 ```
 
+### 3.5 ストリーミング状態機械の設計契約（スタブ骨格・遷移表・状態図）
+
+旧実装で `LIVE ↔ CATCHUP ↔ STANDBY ↔ INTERACTIVE` の条件分岐が通信・バッファ・入力・UI へ散在した問題を根絶するため、Phase 1 で以下の純粋状態機械スタブを [`shared/src/state/streaming-fsm.ts`](../shared/src/state/streaming-fsm.ts) へ先行定義し、サーバー・クライアント双方の単一遷移正典とする。
+
+#### スタブ骨格（`shared/src/state/streaming-fsm.ts` 設計契約）
+
+```ts
+export type StreamingState =
+  | { kind: "STANDBY"; streamEpoch: number; reason: "UNAUTHENTICATED" | "REAR_STANDBY" | "SLEEP_PAUSED" }
+  | { kind: "INTERACTIVE"; streamEpoch: number; lastInteractionAtMs: number }
+  | { kind: "LIVE"; streamEpoch: number }
+  | { kind: "CATCHUP"; streamEpoch: number; targetBufferMs: number; resumePtsUs: number }
+  | { kind: "BUFFER_HOLD"; streamEpoch: number; holdSinceMs: number; targetBufferMs: number };
+
+export type StreamingEvent =
+  | { type: "SESSION_ACTIVATED"; streamEpoch: number; resumeCatchup?: { targetBufferMs: number; resumePtsUs: number } }
+  | { type: "ENTER_STANDBY"; reason: "REAR_STANDBY" | "SLEEP_PAUSED" | "UNAUTHENTICATED" }
+  | { type: "USER_INTERACTION"; atMs: number; newStreamEpoch: number }
+  | { type: "INTERACTION_TIMEOUT" } // 最終操作から 4,000 ms 経過
+  | { type: "CATCHUP_DRAINED" }
+  | { type: "SOCKET_CONGESTED" }
+  | { type: "HOLD_THRESHOLD_REACHED"; atMs: number; targetBufferMs: number }
+  | { type: "HOLD_DRAINED"; newStreamEpoch: number }
+  | { type: "STREAM_RESET"; newStreamEpoch: number }
+  | { type: "POWER_SLEEP" };
+
+export type StreamingEffect =
+  | { type: "FLUSH_CATCHUP_QUEUE" }
+  | { type: "ADVANCE_EPOCH_AND_RESET"; streamEpoch: number }
+  | { type: "ARM_INTERACTION_TIMER"; delayMs: 4000 }
+  | { type: "CANCEL_INTERACTION_TIMER" }
+  | { type: "REQUEST_POWER_HOLD" }
+  | { type: "REQUEST_POWER_RESUME" }
+  | { type: "ENTER_LIVE_HYSTERESIS" }
+  | { type: "BROADCAST_STATE" };
+
+export interface StreamingTransition {
+  nextState: StreamingState;
+  effects: readonly StreamingEffect[];
+}
+
+export function transitionStreamingState(state: StreamingState, event: StreamingEvent): StreamingTransition {
+  // switch (state.kind) + switch (event.type) + assertNever による完全網羅スタブ
+}
+
+// 純粋セレクタ群（周辺モジュールは boolean の組み合わせではなくこれのみを参照する）
+export const selectQueueKind = (state: StreamingState): "NONE" | "LIVE" | "CATCHUP" => ...;
+export const isInputAllowed = (state: StreamingState): boolean => state.kind !== "STANDBY";
+export const shouldSuppressMediaSend = (state: StreamingState): boolean =>
+  state.kind === "STANDBY" || state.kind === "BUFFER_HOLD";
+```
+
+#### 主要 State × Event 遷移マトリクス（不変条件）
+
+| 現在状態 (`state.kind`) | 主な入力イベント | 次状態 (`nextState.kind`) | 宣言的 `effects` / 構造的不変条件 |
+| :--- | :--- | :--- | :--- |
+| **`STANDBY`** | `SESSION_ACTIVATED` (通常 / 追っかけあり) | `LIVE` or `CATCHUP` | `BROADCAST_STATE`（`STANDBY` 中の操作・輻輳・Hold イベントはすべて無視） |
+| **`INTERACTIVE`** | `INTERACTION_TIMEOUT` (`4,000 ms`) | `LIVE` | 音声は止めず単一マスタークロック同期へ移行 |
+| **`INTERACTIVE`** | `USER_INTERACTION` | `INTERACTIVE` | `lastInteractionAtMs` 更新 + `ARM_INTERACTION_TIMER(4000)` |
+| **`LIVE`** | `SOCKET_CONGESTED` | **`LIVE`（不変）** | `ENTER_LIVE_HYSTERESIS` のみ。**絶対に `CATCHUP` へ遷移しない** |
+| **`LIVE`** | `USER_INTERACTION` | `INTERACTIVE` | `ARM_INTERACTION_TIMER(4000)` |
+| **`LIVE` / `CATCHUP`** | `HOLD_THRESHOLD_REACHED` | `BUFFER_HOLD` | `CANCEL_INTERACTION_TIMER` + `REQUEST_POWER_HOLD` + `BROADCAST_STATE` |
+| **`CATCHUP`** | `CATCHUP_DRAINED` | `LIVE` | `BROADCAST_STATE` |
+| **`CATCHUP`** | `USER_INTERACTION` | `INTERACTIVE` | `FLUSH_CATCHUP_QUEUE` + `ADVANCE_EPOCH_AND_RESET` + `ARM_INTERACTION_TIMER(4000)` |
+| **`BUFFER_HOLD`** | `HOLD_DRAINED` / `STREAM_RESET` | `LIVE` | `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `BROADCAST_STATE` |
+| **`BUFFER_HOLD`** | `USER_INTERACTION` | `INTERACTIVE` | `FLUSH_CATCHUP_QUEUE` + `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `ARM_INTERACTION_TIMER(4000)` |
+| **`BUFFER_HOLD`** | `POWER_SLEEP` / `ENTER_STANDBY` | `STANDBY` | 再開チャーンを経由せず直接 `STANDBY`（`FLUSH_CATCHUP_QUEUE`） |
+| **稼働中全状態** | `STREAM_RESET` | `LIVE` | `FLUSH_CATCHUP_QUEUE` + `ADVANCE_EPOCH_AND_RESET` + `CANCEL_INTERACTION_TIMER` |
+
+```mermaid
+stateDiagram-v2
+  [*] --> STANDBY
+  STANDBY --> LIVE: SESSION_ACTIVATED (live)
+  STANDBY --> CATCHUP: SESSION_ACTIVATED (catchup)
+
+  INTERACTIVE --> LIVE: INTERACTION_TIMEOUT (4000ms)
+  LIVE --> INTERACTIVE: USER_INTERACTION
+
+  CATCHUP --> LIVE: CATCHUP_DRAINED
+  CATCHUP --> INTERACTIVE: USER_INTERACTION (queue破棄 + 新epoch)
+
+  LIVE --> BUFFER_HOLD: HOLD_THRESHOLD_REACHED
+  CATCHUP --> BUFFER_HOLD: HOLD_THRESHOLD_REACHED
+  BUFFER_HOLD --> LIVE: HOLD_DRAINED / STREAM_RESET
+  BUFFER_HOLD --> INTERACTIVE: USER_INTERACTION
+
+  INTERACTIVE --> STANDBY: POWER_SLEEP / ENTER_STANDBY
+  LIVE --> STANDBY: POWER_SLEEP / ENTER_STANDBY
+  CATCHUP --> STANDBY: POWER_SLEEP / ENTER_STANDBY
+  BUFFER_HOLD --> STANDBY: POWER_SLEEP / ENTER_STANDBY (直行)
+```
+
 ---
 
 ## 4. テスト戦略（振る舞いベース・最小限・モック非依存）
@@ -236,7 +333,7 @@ stateDiagram-v2
 
 | 階層 | 対象範囲 | テストダブルの方針 | 主な検証対象（仕様 AC 準拠） |
 | :--- | :--- | :--- | :--- |
-| **1. 純粋ドメイン・プロトコル単体テスト** | `shared/*`, `server/domains/*` 純粋ロジック, `client/media/sync-clock` 等 | **モック不使用**（タイマー系のみ `Clock` 注入） | バイナリ往復対称性、`streamEpoch` 旧世代破棄、Annex-B→AVCC(1B分断/AUD欠落)、OggOpus、寸法アライメント、ビットレート連動ヒステリシス、リングバッファ GOP 破棄、リンク認識 CATCHUP、単一マスタークロック 4 秒以内 `\|音ズレ\|<=60ms` 収束・真の符号付きドリフト、電源状態機械・排他タイマー (`autoSleepMinutes=0` 含む)、10 秒差分メトリクス |
+| **1. 純粋ドメイン・プロトコル単体テスト** | `shared/*`, `server/domains/*` 純粋ロジック, `client/media/sync-clock` 等 | **モック不使用**（タイマー系のみ `Clock` 注入） | `transitionStreamingState` の状態×イベント全組み合わせテーブル駆動テスト、バイナリ往復対称性、`streamEpoch` 旧世代破棄、Annex-B→AVCC(1B分断/AUD欠落)、OggOpus、寸法アライメント、ビットレート連動ヒステリシス、リングバッファ GOP 破棄、リンク認識 CATCHUP、単一マスタークロック 4 秒以内 `\|音ズレ\|<=60ms` 収束・真の符号付きドリフト、電源状態機械・排他タイマー (`autoSleepMinutes=0` 含む)、10 秒差分メトリクス |
 | **2. 境界結合テスト** | Fastify HTTP + WS (`/ws`) + ファイル永続化 + Coordinator | **外部 OS 境界の Port のみ Fake**（FFmpeg / Xvfb / Chrome / CDP / `xdotool` のみ、他ドメイン間は実オブジェクト結合） | セットアップ `403`/`400`、品質 3 択展開、ロックアウト 10 回→`1008`→起動ガード、PIN 変更時トークン全失効、同一トークン `4000` vs 競合 `4009`、代理昇格/非連鎖/降格同時リセット、後席待機保護、`POST /api/stream/reset`、テレメトリ `512 KiB`/`10 MiB`/`15` 世代/ループバック認証境界 |
 | **3. 不変条件ガードレールテスト** | リポジトリ全体・ビルド後 `dist/`・`Dockerfile` | 静的解析・ビルド成果物検査 | ソース/ビルド後 HTML の `<video>` ゼロ・`<canvas>` 存在、`localStorage` 不使用、`window.prompt`/`confirm`/`Escape` 閉じ禁止、禁止 Chrome フラグ非含有、`/etc/libva.conf` 非ハードコード、`no-systemd` Pinning & `dbus-x11`、機密情報ゼロ |
 
@@ -255,11 +352,11 @@ stateDiagram-v2
 | Phase | 対象領域 | 主な成果物 | 依存 | 完了条件（検証対象仕様） |
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 0** | **リポジトリ土台 & 品質ゲート** | ルート/`shared`/`server`/`client` `package.json`, `tsconfig.json`, `biome.json`, `vitest.config.ts`, 不変条件ガードレール骨格, `.github/workflows/ci.yml` 整合 | なし | 空スケルトン上で lint / typecheck / test / build が緑で通る |
-| **Phase 1** | **`shared` 正典モジュール** | `protocol` (`streamEpoch`, バイナリエンコード/デコード, チャンネル/クローズコード), `settings` (スキーマ, 単一既定値, 品質 3 択/負荷プロファイル, 検証), `geometry` (寸法アライメント, 水位式) | Phase 0 | [仕様書 01](specs/01-auth-security.md), [03](specs/03-streaming-transport.md), [05](specs/05-encoder-gpu.md), [07](specs/07-ui-hud-settings.md) のプロトコル・設定・計算 AC がモックゼロ単体テストで PASS |
+| **Phase 1** | **`shared` 正典モジュール & 状態遷移スタブ** | `protocol` (`streamEpoch`, バイナリエンコード/デコード, チャンネル/クローズコード), `settings` (スキーマ, 単一既定値, 品質 3 択/負荷プロファイル, 検証), `geometry` (寸法アライメント, 水位式), **`state/streaming-fsm.ts`（排他 5 状態・イベント・副作用・単一遷移関数スタブ＆純粋セレクタ）** | Phase 0 | [仕様書 01](specs/01-auth-security.md), [03](specs/03-streaming-transport.md) (AC-06 含む), [05](specs/05-encoder-gpu.md), [07](specs/07-ui-hud-settings.md) のプロトコル・状態遷移・設定・計算 AC がモックゼロ単体テストで PASS |
 | **Phase 2** | **認証・設定永続化・セットアップ** | `infra/storage`, `domains/settings`, `domains/auth` (bcrypt, 24h トークン, `lockout.json` 起動ガード), REST `/api/status`, `/api/setup`, `/api/auth/verify`, `/api/settings` | Phase 1 | [仕様書 01](specs/01-auth-security.md) AC-01〜05（形式・ロックアウト・`403`/`400`・破損フォールバック）が実 HTTP 結合テストで PASS |
 | **Phase 3** | **セッション管理 & 単一電源状態機械** | `domains/session` (`PRIMARY`/`ACTING_PRIMARY`/`SECONDARY_*`, 3s 猶予, 非連鎖), `domains/power` (単一 FSM, 排他タイマー, Port 契約), WS 認証/ロール制御, `/api/power/*` | Phase 2 | [仕様書 02](specs/02-session-multidisplay.md) AC-01〜06 & [仕様書 10](specs/10-power-lifecycle.md) AC-01〜04 が Clock 注入 + Port Fake 結合テストで PASS |
 | **Phase 4** | **仮想ブラウザ & CDP/X11 入力** | `domains/browser` (PulseAudio/Xvfb/Openbox/Chrome 起動引数・環境構築, 単一 `page-scripts.ts`, `SIGSTOP`/`SIGCONT` ツリー, CDP タッチ優先 + `xdotool` フォールバック, URL 監視) | Phase 3 | [仕様書 06](specs/06-browser-input-cdp.md) AC-01〜05（禁止フラグ不在・WebAuthn/バブル抑止・ズーム `[50,250]`・YouTube フルスクリーン・プロセス順序）が PASS |
-| **Phase 5** | **マルチ GPU エンコーダ & 統合ストリーミング** | `domains/encoder` (NVENC→AMD→Intel→Software 検出・フォールバック, Annex-B→AVCC/OggOpus, マスタークロック + ウォッチドッグ), `domains/streaming` (60s/48MiB リングバッファ, ビットレート連動ヒステリシス, リンク認識 CATCHUP, Hold 連動), `POST /api/stream/reset` | Phase 4 | [仕様書 05](specs/05-encoder-gpu.md) AC-01〜04 & [仕様書 03](specs/03-streaming-transport.md) AC-01〜05 が PASS |
+| **Phase 5** | **マルチ GPU エンコーダ & 統合ストリーミング** | `domains/encoder` (NVENC→AMD→Intel→Software 検出・フォールバック, Annex-B→AVCC/OggOpus, マスタークロック + ウォッチドッグ), `domains/streaming` (`streaming-controller` による単一遷移関数駆動・副作用実行, 60s/48MiB リングバッファ, ビットレート連動ヒステリシス, リンク認識 CATCHUP, Hold 連動), `POST /api/stream/reset` | Phase 4 | [仕様書 05](specs/05-encoder-gpu.md) AC-01〜04 & [仕様書 03](specs/03-streaming-transport.md) AC-01〜06 が PASS |
 | **Phase 6** | **観測性基盤（メトリクス & テレメトリ）** | `domains/observability` (360 件集計, 10 秒差分, 遅延 JSONL 10 MiB / 15 世代, ループバック免除ミドルウェア), `/api/health`, `/api/metrics/*`, `/api/telemetry/*` | Phase 5 | [仕様書 08](specs/08-observability.md) AC-01〜04 が PASS |
-| **Phase 7** | **クライアント再生エンジン & タッチ前処理** | `client/transport`, `client/media` (`streamEpoch` ゲート, LIVE/CATCHUP キュー分離, 単一マスタークロック同期, `<canvas desynchronized>`, Web Audio `1.0x` + 40ms 保護), `client/input` (20px 上端ガード/スロップ/余白除外), `client/observability` | Phase 1, 6 | [仕様書 04](specs/04-client-playback-avsync.md) AC-01〜05（4 秒以内収束・GPU 解放 100%・真のドリフト）& [仕様書 06](specs/06-browser-input-cdp.md) AC-02 クライアント側が PASS |
+| **Phase 7** | **クライアント再生エンジン & タッチ前処理** | `client/transport`, `client/media` (`playback-controller` による単一遷移関数駆動, `streamEpoch` ゲート, LIVE/CATCHUP キュー分離, 単一マスタークロック同期, `<canvas desynchronized>`, Web Audio `1.0x` + 40ms 保護), `client/input` (20px 上端ガード/スロップ/余白除外), `client/observability` | Phase 1, 6 | [仕様書 04](specs/04-client-playback-avsync.md) AC-01〜05（4 秒以内収束・GPU 解放 100%・真のドリフト）& [仕様書 06](specs/06-browser-input-cdp.md) AC-02 クライアント側が PASS |
 | **Phase 8** | **車載 UI & コンテナ/CI 完成** | `client/state` & `client/ui` (2 段ウィザード, PIN/4000/4009/ロックアウト画面, 常設 HUD, 相互排他ドロワー, YouTube 限定検索バー, 3 タブ設定, アプリ内モーダル統一), `Dockerfile`, Compose 4 系統, `entrypoint.sh`, `install.sh`, `pc-proxy.mjs` | Phase 7 | [仕様書 07](specs/07-ui-hud-settings.md) AC-01〜05 & [仕様書 09](specs/09-deploy-infra.md) AC-01〜05 & ビルド後 DOM 検証が全 PASS |

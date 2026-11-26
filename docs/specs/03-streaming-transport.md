@@ -31,7 +31,20 @@
   - `[0x10][type=2: 1B][action: 1B][pointerId: 8B Int64BE][x: 4B Int32BE][y: 4B Int32BE][screenW: 2B][screenH: 2B][pressure: 2B][actionButton: 4B][buttons: 4B]`
   - action 定義: `DOWN=0, UP=1, MOVE=2, CANCEL=3, POINTER_DOWN=5, POINTER_UP=6`。
 
-### 2.2 LIVE 配信のバックプレッシャー制御（ビットレート連動ヒステリシス）
+### 2.2 ストリーミング状態のカプセル化と単一遷移関数（スタブ先行設計）
+- **排他的 5 状態の判別ユニオン定義（Illegal States Unrepresentable）**:
+  - セッションの配信・視聴状態は複数の独立した boolean フラグ（`isLive`, `isCatchup`, `isStandby`, `isInteractive`, `isHolding` 等）で分散保持してはならず、以下の排他的な単一状態（判別ユニオン）としてカプセル化する。
+    - **`STANDBY`**: 非配信・待機中（未接続・後席待機 `SECONDARY_STANDBY`・電源スリープ `SLEEP_PAUSED`）。メディア送出・入力注入・バッファ蓄積をすべて抑止する。
+    - **`INTERACTIVE`**: ユーザー操作直後の超低遅延モード（操作から `4,000 ms` 未満）。進行中の `CATCHUP` キューは即破棄し、ライブエッジ最小遅延配信を行う。
+    - **`LIVE`**: 通常リアルタイム視聴（`LIVE` 経路およびビットレート連動ヒステリシスのみを適用し、ソケット輻輳で `CATCHUP` へ遷移しない）。
+    - **`CATCHUP`**: 通信断またはアイドル復帰からの追っかけ視聴（リンク認識フロー制御で排水し、完了で `LIVE` へ遷移する）。
+    - **`BUFFER_HOLD`**: 未消費滞留閾値到達によりサーバー生成を `0.0x` に停止した状態（再開閾値排水・操作・リセット・新規プライマリ接続・手動スリープで遷移する）。
+- **単一遷移関数契約（Stub-First）**:
+  - 状態遷移の判定・更新は **1 つの純粋遷移関数** `transitionStreamingState(state, event) => { nextState, effects }` に完全集約する。
+  - 周辺モジュール（WS ハンドラ、タイマー、入力注入、電源連携、クライアント描画・HUD）は遷移条件を独自に評価してはならず、**イベント投入** と **返却された宣言的 `effects` の実行**、および **状態モジュールが提供する純粋セレクタ参照** のみを行う。
+  - 実装着手時は周辺コードより先に、状態型・イベント型・副作用型・網羅性チェック（`assertNever`）を備えた単一遷移関数のスタブおよび状態遷移表を先行定義する。
+
+### 2.3 LIVE 配信のバックプレッシャー制御（ビットレート連動ヒステリシス）
 - **水位算出（正典）**: 配信ビットレート設定（`bps`）に連動した二段階水位を唯一正典とする。
   - `高水位 = clamp(round((bps / 8) * 3.0), 512 KiB, 1536 KiB)`
   - `低水位 = max(96 KiB, round(高水位 * 0.2))`
@@ -41,7 +54,7 @@
   - 音声パケットは GOP ドロップの対象外とし、ソケット残量 `2 MiB` 以下で送信する。
 - **不変条件**: LIVE 配信中のソケット輻輳では絶対に追っかけ（`CATCHUP`）モードへ遷移させず、ヒステリシスによる GOP スキップのみへ一元化する。
 
-### 2.3 統合バッファ・追っかけ（CATCHUP）・生成一時停止（Buffer-Hold）制御
+### 2.4 統合バッファ・追っかけ（CATCHUP）・生成一時停止（Buffer-Hold）制御
 ユーザー体験（通信断や狭帯域でも途切れず、復帰後は滑らかに追いつき、過大な滞留時にはサーバー生成を一時停止して追従させる）として、リングバッファ・CATCHUP・リンク認識制御・生成一時停止を単一のシームレスなモデルとして統合する（電源・タイマー排他・スリープ遷移は [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) へ集約）。
 
 - **サーバー側リングバッファ（60 秒 / 48 MiB）**:
@@ -62,12 +75,12 @@
   - 再接続時の再開位置は `max(lastAckPts, 最新映像 PTS - holdTriggerMs)` へクランプし、古い帯域枯渇を防ぐ。
   - Hold 期限タイマー・自動スリープ排他・`autoSleepMinutes = 0` 時の期限再武装・手動停止変換はすべて [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) で一元管理する。
 
-### 2.4 ライブ同期・配信リセット（`POST` への完全一本化）
+### 2.5 ライブ同期・配信リセット（`POST` への完全一本化）
 - **単一リセット API（REST `POST` 統一）**:
   - 従来の複数の LIVE ジャンプ・エンコーダ再起動経路（WS コマンド群＋スキップ付き REST API）を廃止し、**単一の `POST` エンドポイント（`POST /api/stream/reset`、プライマリ認証必須）** へ統一する。
   - 「健全 LIVE 時の全体再起動スキップ」仕様は **完全に削除** する。`POST /api/stream/reset` が呼ばれた場合、サーバーは状態にかかわらず **常に映像・音声双方のエンコーダおよびクライアント側の映像・音声デコーダを完全にリセット** し、リングバッファ・送信キューを破棄して新しい `streamEpoch` を発行した上でクリーンなライブ配信を開始する。
 
-### 2.5 RTT 鮮度管理 & 統一バッファ計測
+### 2.6 RTT 鮮度管理 & 統一バッファ計測
 - **PING / PONG**: クライアントは `1,000 ms` ごとに `PING` を送信し、サーバーが `PONG`（最新メディア PTS、モード、バッファ残量、プライマリ基準 PTS 等）を返す。
   - サーバー残量算出はクライアントの映像・音声双方の滞留を考慮した `max(0, serverLagMs - max(clientVideoBufferedMs, clientAudioBufferedMs))`（`serverLagMs` は最新メディア PTS 基準）を用いる。
 - **RTT 鮮度**: クライアントの瞬間 RTT（EWMA `0.7 * prev + 0.3 * raw`、最小値履歴窓 8）は LIVE かつキュー滞留ゼロ時のサンプルのみで更新し、有効計測から **5 秒超過** した場合は鮮度切れとして破棄（`0` / `接続中`）する。
@@ -115,6 +128,10 @@
   - **Given** 接続中のクライアント
   - **When** 5 秒間有効 PONG が途絶える／音声滞留が映像滞留を上回る
   - **Then** RTT は 5 秒超過で鮮度切れ破棄（`接続中`）となり、PONG 残量およびフロー制御に音声滞留を含めた実効値が反映される。
+- **AC-06 (ストリーミング状態カプセル化 & 単一遷移関数不変条件)**:
+  - **Given** `STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD` を表現する単一純粋遷移関数
+  - **When** `LIVE` 中のソケット輻輳、`CATCHUP` 中のユーザー操作、`STANDBY` 中のメディア・操作イベント、`INTERACTIVE` の `4,000 ms` 経過、`BUFFER_HOLD` 中の手動停止・リセットを順次投入する
+  - **Then** すべての遷移が単一遷移関数のみで決定論的に解決され、`LIVE` 輻輳では `CATCHUP` へ遷移せず、`CATCHUP` 中の操作は即 `INTERACTIVE`（`CATCHUP` キュー破棄＋新 `streamEpoch`）へ遷移し、`STANDBY` では全メディア・操作が抑止され、`INTERACTIVE` は `4,000 ms` 経過で `LIVE` へ自動復帰する。
 
 ---
 

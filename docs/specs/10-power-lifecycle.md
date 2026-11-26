@@ -35,7 +35,7 @@
 
 - **対 仮想ブラウザドメイン ([06-browser-input-cdp.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/06-browser-input-cdp.md))**: プロセスツリー凍結（`SIGSTOP`）、復帰（`SIGCONT`）、再起動、ページ監視の一時停止/再開を指示する。
 - **対 エンコーダドメイン ([05-encoder-gpu.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/05-encoder-gpu.md))**: 映像・音声エンコーダの停止、双方の稼働保証付き起動（片肺防止：`video && audio` 両稼働を必須条件とする）、タイムライン補償の記録/リセットおよび新 `streamEpoch` の発行を指示する。
-- **対 ストリーミング転送ドメイン ([03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md))**: リングバッファのクリア、追っかけキュー破棄、`BUFFER_HOLD` の発動条件・自動再開条件の通知を受け、状態遷移を実行してクライアントへ `BUFFER_HOLD` / `BROWSER_STATUS` を通知する。
+- **対 ストリーミング転送ドメイン ([03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md))**: 電源 FSM とストリーミング状態機械は互いの boolean フラグを直接読み書きせず、電源ドメインがストリーミング側の単一遷移関数へ明示イベント（`ENTER_BUFFER_HOLD`, `EXIT_BUFFER_HOLD`, `POWER_SLEEP`, `SESSION_ACTIVATED` 等）を投入して状態同期し、ストリーミング側からの宣言的 Hold/再開要求を受けて電源状態遷移およびクライアントへの `BUFFER_HOLD` / `BROWSER_STATUS` 通知を実行する。
 - **対 セッション管理ドメイン ([02-session-multidisplay.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/02-session-multidisplay.md))**: プライマリ接続・代理昇格・全プライマリ離脱・再接続のイベントを受信し、スリープ解除またはタイマー武装を実行する。また `SLEEP_PAUSED` 遷移時に視聴中セカンダリを待機状態（`SECONDARY_STANDBY`）へ移行させる。
 
 ### 2.4 タイマー排他と自動スリープ／Buffer-Hold 期限仕様

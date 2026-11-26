@@ -22,6 +22,8 @@
   - 切断要求・接続監視（PING/PONG 等）を除く操作・ナビゲーション・電源制御要求はすべてサーバー側で無視され、画面上には切断ボタンのみを備えた待機オーバーレイを表示する。
 - **代理プライマリ (`ACTING_PRIMARY`)**:
   - プライマリの離脱後、視聴中のセカンダリから最大 **1 セッション** だけ昇格し、一時的にプライマリ権限（音声受信・設定変更後のヘッダ受信・リサイズ・電源復帰操作・配信基準主導権）を代行する状態。
+- **ストリーミング状態機械との境界分離**:
+  - セッションロール遷移（`SECONDARY_STANDBY` ↔ `SECONDARY_STREAMING` / `PRIMARY` / `ACTING_PRIMARY`）は、ストリーミング転送・入力・UI 各所へ `if (isStandby)` 等の条件分岐を散在させるのではなく、カプセル化されたストリーミング状態機械の単一遷移関数へ明示イベント（`SESSION_ACTIVATED` / `ENTER_STANDBY` 等）を投入して駆動する（[03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md) §2.2）。
 
 ### 2.2 認証ログイン・排他・引き継ぎの状態遷移
 - **新規プライマリ PIN ログイン（生 PIN 送信）**:
