@@ -499,29 +499,46 @@ export class FakeCdpClient implements CdpClientPort {
 }
 
 export class FakeGpuHardwareProbe implements GpuHardwareProbePort {
+  nvidiaDevice = false;
+  nvencAvailable = false;
+  driRenderNodes: readonly { readonly path: string; readonly vendorId: string }[] = [];
+  wslDxgDevice = false;
+  nvencProbeCalls = 0;
+  readonly probedVaapiCalls: { readonly devicePath: string; readonly driverName: string }[] = [];
+  vaapiProbeHandler:
+    | ((devicePath: string, driverName: string) => boolean | Promise<boolean>)
+    | null = null;
+
   // Spec: docs/architecture.md#4.2
-  hasNvidiaDevice(): Promise<boolean> {
-    throw new Error("NOT_IMPLEMENTED");
+  async hasNvidiaDevice(): Promise<boolean> {
+    return this.nvidiaDevice;
   }
 
   // Spec: docs/architecture.md#4.2
-  probeNvenc(): Promise<boolean> {
-    throw new Error("NOT_IMPLEMENTED");
+  async probeNvenc(): Promise<boolean> {
+    this.nvencProbeCalls += 1;
+    return this.nvencAvailable;
   }
 
   // Spec: docs/architecture.md#4.2
-  findDriRenderNodes(): Promise<readonly { readonly path: string; readonly vendorId: string }[]> {
-    throw new Error("NOT_IMPLEMENTED");
+  async findDriRenderNodes(): Promise<
+    readonly { readonly path: string; readonly vendorId: string }[]
+  > {
+    return [...this.driRenderNodes];
   }
 
   // Spec: docs/architecture.md#4.2
-  probeVaapiEncode(devicePath: string, driverName: string): Promise<boolean> {
-    throw new Error("NOT_IMPLEMENTED");
+  async probeVaapiEncode(devicePath: string, driverName: string): Promise<boolean> {
+    this.probedVaapiCalls.push({ devicePath, driverName });
+    if (this.vaapiProbeHandler !== null) {
+      return this.vaapiProbeHandler(devicePath, driverName);
+    }
+    return false;
   }
 
   // Spec: docs/architecture.md#4.2
-  hasWslDxgDevice(): Promise<boolean> {
-    throw new Error("NOT_IMPLEMENTED");
+  async hasWslDxgDevice(): Promise<boolean> {
+    return this.wslDxgDevice;
   }
 }
 
