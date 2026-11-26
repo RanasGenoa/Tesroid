@@ -66,9 +66,9 @@ export class FramePacer {
     const targetRenderTime = nowMs + (videoPtsUs - playingAudioPtsUs) / 1000;
     const syncErrorMs = targetRenderTime - currentScheduleMs;
 
-    const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+    const minCatchupIntervalMs = Math.max(FramePacer.MIN_RENDER_SPACING_MS, dMs * 0.5);
     const earliestAllowedTime = Math.max(
-      nowMs + 8,
+      nowMs + FramePacer.MIN_RENDER_SPACING_MS,
       this.lastScheduledTimeMs + minCatchupIntervalMs,
     );
     const maxNegativeShiftAllowed = Math.min(0, earliestAllowedTime - currentScheduleMs);
@@ -117,6 +117,8 @@ export class FramePacer {
   // 1 フレーム分手前になるため、体感ズレは tolerance + 1フレーム以内 (30fps で約 53ms) に収まる。
   // 可視ジャンプ抑止のため 1 tick あたり上限 4 フレーム。正常な 1x 到着 (先頭が再生中音声より
   // 新しい) は破棄条件自体が成立せず一切干渉しない。
+  // 連続描画フレーム間の最小間隔 (ms)。タイマー遅延時のバースト描画防止と、前倒しシフトの下限クランプに共通使用
+  private static readonly MIN_RENDER_SPACING_MS = 8;
   private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 20_000;
   private static readonly AV_SYNC_MAX_STALE_DROPS_PER_TICK = 4;
   private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
@@ -390,7 +392,7 @@ export class FramePacer {
         this.additionalDelayMs > 0
           ? Math.max(now + this.additionalDelayMs, earliestNextSlot)
           : earliestNextSlot;
-      const minIntervalMs = Math.max(8, deltaMs * 0.5);
+      const minIntervalMs = Math.max(FramePacer.MIN_RENDER_SPACING_MS, deltaMs * 0.5);
       const minAfterLastRender = this.hasRenderedAny
         ? this.lastRenderedTimeMs + minIntervalMs
         : now;
@@ -568,7 +570,10 @@ export class FramePacer {
     const now = performance.now();
     const nextItem = this.frameQueue[0];
     const minTargetTime = this.hasRenderedAny
-      ? Math.max(nextItem.scheduledRenderTime, this.lastRenderedTimeMs + 8)
+      ? Math.max(
+          nextItem.scheduledRenderTime,
+          this.lastRenderedTimeMs + FramePacer.MIN_RENDER_SPACING_MS,
+        )
       : nextItem.scheduledRenderTime;
     const remainingMs = minTargetTime - now;
     const delay = remainingMs > 0 ? Math.max(1, Math.round(remainingMs)) : 0;
@@ -615,7 +620,8 @@ export class FramePacer {
     }
 
     const nextItem = this.frameQueue[0];
-    const respectsMinSpacing = !this.hasRenderedAny || now - this.lastRenderedTimeMs >= 8;
+    const respectsMinSpacing =
+      !this.hasRenderedAny || now - this.lastRenderedTimeMs >= FramePacer.MIN_RENDER_SPACING_MS;
 
     if (nextItem.scheduledRenderTime <= now + 2 && respectsMinSpacing) {
       this.frameQueue.shift();
@@ -627,7 +633,7 @@ export class FramePacer {
       if (this.frameQueue.length > 0) {
         let totalShift = 0;
         const dMs = this.computeDeltaPtsMs(this.frameQueue[0].ptsUs, nextItem.ptsUs);
-        const minCatchupIntervalMs = Math.max(8, dMs * 0.5);
+        const minCatchupIntervalMs = Math.max(FramePacer.MIN_RENDER_SPACING_MS, dMs * 0.5);
         const minNextTime = now + minCatchupIntervalMs;
         if (this.frameQueue[0].scheduledRenderTime < minNextTime) {
           if (dMs >= minCatchupIntervalMs) {
@@ -643,7 +649,7 @@ export class FramePacer {
                 this.frameQueue[i].ptsUs,
                 this.frameQueue[i - 1].ptsUs,
               );
-              const pairMinGapMs = Math.max(8, pairDeltaMs * 0.5);
+              const pairMinGapMs = Math.max(FramePacer.MIN_RENDER_SPACING_MS, pairDeltaMs * 0.5);
               const minPairTime = this.frameQueue[i - 1].scheduledRenderTime + pairMinGapMs;
               if (this.frameQueue[i].scheduledRenderTime < minPairTime) {
                 this.frameQueue[i].scheduledRenderTime = minPairTime;
@@ -692,7 +698,10 @@ export class FramePacer {
             // 音声へ追従させる (>2000ms 大遅延経路の head 即時化と同じ目的の 1x 保存版)。
             if (staleDropped > 0 && this.frameQueue.length > 0) {
               const headSchedule = this.frameQueue[0].scheduledRenderTime + totalShift;
-              const maxBackwardMs = Math.max(0, headSchedule - (now + 8));
+              const maxBackwardMs = Math.max(
+                0,
+                headSchedule - (now + FramePacer.MIN_RENDER_SPACING_MS),
+              );
               const dropShiftMs = Math.min(staleDropped * this.getFrameIntervalMs(), maxBackwardMs);
               if (dropShiftMs > 0) {
                 totalShift -= dropShiftMs;

@@ -12,7 +12,7 @@ import { FramePacer } from '../src/core/frame-pacer';
  */
 
 const FRAME_INTERVAL_MS = 33;
-// 受け入れ基準: デッドバンド 45ms + 余裕 15ms。実装の破棄停止目標 (許容 40ms) より緩い
+// 受け入れ基準: デッドバンド 45ms + 余裕 15ms。実装の破棄停止目標 (next-head 基準 20ms + 1フレーム込みで ~53ms@30fps) より緩い
 const MAX_ACCEPTABLE_LEAD_MS = 60;
 
 function createDummyFrame(timestampUs: number) {
@@ -136,7 +136,7 @@ describe('audio-lead absorption on video side (Issue #113)', () => {
 
   it('never drops video during normal 1x arrival with audio behind (no interference)', () => {
     const AUDIO_DEPTH_US = 300_000; // 音声は到着より 300ms 遅れて再生中 (正常な遅延側)
-    const { pacer, advance, leadMs, avSyncEvents, renderedPts } = setup(AUDIO_DEPTH_US);
+    const { pacer, advance, avSyncEvents, renderedPts } = setup(AUDIO_DEPTH_US);
 
     advance(6000, (w) => pacer.queueFrame(createDummyFrame(w)));
 
