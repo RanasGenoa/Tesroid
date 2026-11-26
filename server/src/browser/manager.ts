@@ -72,6 +72,10 @@ export class BrowserManager {
   private pageMonitorMsgId = 1;
   private pendingPageInfoEvalIds = new Set<number>();
   private isPageMonitorStopped = true;
+  // Issue #111 Buffer-Hold Pause: true の間 Chrome プロセスツリーは SIGSTOP 中だが、
+  // 省電力スリープ ('paused') とは異なり配信再開待ちの状態であるため BROWSER_STATUS は
+  // 'running' のまま維持し、凍結 renderer への背景 CDP 呼び出しのみ抑制する。
+  private holdPaused = false;
   private isConnectingPageMonitor = false;
 
   private isStartingChrome = false;
@@ -297,6 +301,14 @@ export class BrowserManager {
     if (this.state !== 'running' || !this.chromeProcess || !this.chromeProcess.pid) {
       return;
     }
+    if (this.holdPaused) {
+      // Issue #111: BUFFER_HOLD_PAUSED から SLEEP_PAUSED への遷移。Chrome ツリーは既に
+      // SIGSTOP 済みのためシグナル再送は不要で、状態記録のみスリープへ切り替える。
+      this.holdPaused = false;
+      this.state = 'paused';
+      console.log('[BrowserManager] Buffer-hold converted to sleep pause (no extra SIGSTOP).');
+      return;
+    }
     console.log('[BrowserManager] Pausing Chrome process tree (SIGSTOP)...');
     try {
       const pids = getProcessTree(this.chromeProcess.pid);
@@ -322,9 +334,14 @@ export class BrowserManager {
    * Resume Chrome processes
    */
   public resume(): void {
-    if (this.state !== 'paused' || !this.chromeProcess || !this.chromeProcess.pid) {
+    if (
+      (!this.holdPaused && this.state !== 'paused') ||
+      !this.chromeProcess ||
+      !this.chromeProcess.pid
+    ) {
       return;
     }
+    this.holdPaused = false;
     console.log('[BrowserManager] Resuming Chrome process tree (SIGCONT)...');
     try {
       const pids = getProcessTree(this.chromeProcess.pid);
@@ -346,6 +363,49 @@ export class BrowserManager {
     } catch (err) {
       console.warn('[BrowserManager] Error resuming Chrome:', err);
     }
+  }
+
+  /**
+   * Issue #111 Buffer-Hold Pause: BROWSER_STATUS を 'running' のまま Chrome プロセスツリーを
+   * SIGSTOP する（省電力スリープ pause()/state='paused' とは独立の、配信再開待ち状態）。
+   */
+  public pauseForBufferHold(): void {
+    if (
+      this.state !== 'running' ||
+      this.holdPaused ||
+      !this.chromeProcess ||
+      !this.chromeProcess.pid
+    ) {
+      return;
+    }
+    console.log(
+      '[BrowserManager] Buffer-Hold Pause: SIGSTOP Chrome process tree (awaiting stream resume, not sleep)...',
+    );
+    try {
+      const pids = getProcessTree(this.chromeProcess.pid);
+      for (let i = pids.length - 1; i >= 0; i--) {
+        try {
+          process.kill(pids[i], 'SIGSTOP');
+        } catch (err: any) {
+          if (err?.code !== 'ESRCH') {
+            console.warn(`[BrowserManager] Warning sending SIGSTOP to pid ${pids[i]}:`, err);
+          }
+        }
+      }
+      this.holdPaused = true;
+      console.log('[BrowserManager] Chrome buffer-hold paused.');
+    } catch (err) {
+      console.warn('[BrowserManager] Error applying buffer-hold pause:', err);
+    }
+  }
+
+  public resumeFromBufferHold(): void {
+    if (!this.holdPaused) return;
+    this.resume();
+  }
+
+  public isBufferHoldPaused(): boolean {
+    return this.holdPaused;
   }
 
   /**
@@ -1304,7 +1364,12 @@ export class BrowserManager {
   }
 
   private async connectPageInfoMonitor(): Promise<void> {
-    if (this.isPageMonitorStopped || this.isConnectingPageMonitor || !this.isChromeAlive()) {
+    if (
+      this.isPageMonitorStopped ||
+      this.isConnectingPageMonitor ||
+      this.holdPaused ||
+      !this.isChromeAlive()
+    ) {
       return;
     }
     if (this.state === 'paused') {
@@ -1502,7 +1567,13 @@ export class BrowserManager {
   }
 
   private async pollPageInfoFromJsonList(): Promise<void> {
-    if (this.isPageMonitorStopped || this.state === 'paused' || !this.isChromeAlive()) {
+    // Issue #111: Hold 停止中は凍結 renderer への背景 CDP 呼び出しを抑制する
+    if (
+      this.isPageMonitorStopped ||
+      this.state === 'paused' ||
+      this.holdPaused ||
+      !this.isChromeAlive()
+    ) {
       return;
     }
     try {

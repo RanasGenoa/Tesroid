@@ -94,6 +94,18 @@ export class VaapiEncoder extends EventEmitter {
   // Stream timing baseline
   private streamStartTimeUs: bigint = 0n;
 
+  // Issue #111 Buffer-Hold Pause: 停止区間の PTS 補償。
+  // Hold 中は FFmpeg が停止するため、壁時計の経過をそのまま PTS に含めると再生タイムラインに
+  // 停止時間分の空白ギャップが発生する。totalHoldPausedUs に停止時間の合計を蓄積し、
+  // 全 PTS 算出点 (映像 AU / 音声パケット / getCurrentPts) から差し引いて単調連続を保つ。
+  private holdPausedSinceUs: bigint | null = null;
+  private totalHoldPausedUs: bigint = 0n;
+
+  // Issue #111 再開時 A/V 境界ゲート: Hold 復帰後、最初の Video IDR 送出まで先行音声パケットを破棄し、
+  // 映像より先に届いた古い音声 (straggler) がクライアントの音声キューへ混入するのを防ぐ。
+  private resumeGateActive = false;
+  private resumeGateDeadlineMs = 0;
+
   // Video state
   private videoPts: bigint = 0n;
   private videoFrameDurationUs: bigint;
@@ -399,11 +411,46 @@ export class VaapiEncoder extends EventEmitter {
     return this.cachedOpusHead;
   }
 
-  public getCurrentPts(): bigint {
+  /**
+   * Issue #111: 壁時計基準 PTS の単一算出点。Hold 停止時間 (totalHoldPausedUs) を補償し、
+   * ベースライン未設定時は null を返す。
+   */
+  private computeWallClockPtsUs(): bigint | null {
     const nowUs = BigInt(Math.round(performance.now() * 1000));
-    return this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-      ? nowUs - this.streamStartTimeUs
-      : this.videoPts;
+    if (this.streamStartTimeUs === 0n || nowUs < this.streamStartTimeUs) return null;
+    const pts = nowUs - this.streamStartTimeUs - this.totalHoldPausedUs;
+    return pts >= 0n ? pts : 0n;
+  }
+
+  /** Hold 停止開始の記録 (FFmpeg 停止前に呼ぶ)。停止中は getCurrentPts() がアンカーで凍結する */
+  public noteHoldPause(): void {
+    if (this.holdPausedSinceUs !== null) return;
+    this.holdPausedSinceUs = BigInt(Math.round(performance.now() * 1000));
+  }
+
+  /** Hold 停止解除。停止時間を補償合計へ加算してから再開する (FFmpeg 起動前に呼ぶ) */
+  public noteHoldResume(): void {
+    if (this.holdPausedSinceUs === null) return;
+    const nowUs = BigInt(Math.round(performance.now() * 1000));
+    this.totalHoldPausedUs += nowUs - this.holdPausedSinceUs;
+    this.holdPausedSinceUs = null;
+  }
+
+  public isHoldPaused(): boolean {
+    return this.holdPausedSinceUs !== null;
+  }
+
+  /** 再開時 A/V 境界ゲート武装: 最初の Video KEYFRAME 送出まで到着する音声パケットを破棄する */
+  public armResumeGate(timeoutMs = 1500): void {
+    this.resumeGateActive = true;
+    this.resumeGateDeadlineMs = performance.now() + Math.max(0, timeoutMs);
+  }
+
+  public getCurrentPts(): bigint {
+    // Issue #111: Hold 停止中は生成タイムラインをアンカー (最終映像 PTS) で凍結する
+    if (this.holdPausedSinceUs !== null) return this.videoPts;
+    const wallPts = this.computeWallClockPtsUs();
+    return wallPts !== null ? wallPts : this.videoPts;
   }
 
   public isKeyframeStale(thresholdUs: bigint = 2000000n): boolean {
@@ -872,6 +919,9 @@ export class VaapiEncoder extends EventEmitter {
     this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
     this.videoPts = 0n;
     this.audioPts = 0n;
+    // Issue #111: 完全リスタートは新しい PTS エポックのため Hold 補償も初期化
+    this.totalHoldPausedUs = 0n;
+    this.holdPausedSinceUs = null;
 
     await this.restart(width, height, fps, bitrate);
     this.startAudio();
@@ -1112,11 +1162,8 @@ export class VaapiEncoder extends EventEmitter {
       return;
     }
 
-    const nowUs = BigInt(Math.round(performance.now() * 1000));
-    const candidatePts =
-      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-        ? nowUs - this.streamStartTimeUs
-        : this.videoPts + this.videoFrameDurationUs;
+    const wallPts = this.computeWallClockPtsUs();
+    const candidatePts = wallPts !== null ? wallPts : this.videoPts + this.videoFrameDurationUs;
     // Keep PTS strictly monotonic when multiple AUs are parsed within the same microsecond
     this.videoPts =
       this.framesInCurrentProcess > 0 && candidatePts <= this.videoPts
@@ -1169,6 +1216,8 @@ export class VaapiEncoder extends EventEmitter {
       if (this.currentAuHasKeyframe) {
         flags |= VIDEO_FLAGS.KEYFRAME;
         this.cachedKeyframe = { data: frameData, pts: this.videoPts };
+        // Issue #111: 再開後最初の IDR 到達で A/V 境界ゲートを解除する
+        this.resumeGateActive = false;
       }
 
       this.lastVideoEmitTime = performance.now();
@@ -1265,11 +1314,16 @@ export class VaapiEncoder extends EventEmitter {
       return;
     }
 
-    const nowUs = BigInt(Math.round(performance.now() * 1000));
-    this.audioPts =
-      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-        ? nowUs - this.streamStartTimeUs
-        : this.audioPts + this.audioFrameDurationUs;
+    // Issue #111 再開時 A/V 境界ゲート: Hold 復帰後、最初の Video IDR より先に到着した音声は破棄
+    if (this.resumeGateActive) {
+      if (performance.now() <= this.resumeGateDeadlineMs) {
+        return;
+      }
+      this.resumeGateActive = false;
+    }
+
+    const wallPts = this.computeWallClockPtsUs();
+    this.audioPts = wallPts !== null ? wallPts : this.audioPts + this.audioFrameDurationUs;
     this.emit('audio', {
       flags: AUDIO_FLAGS.KEYFRAME,
       pts: this.audioPts,

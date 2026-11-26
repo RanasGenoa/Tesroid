@@ -67,6 +67,18 @@ export class WebSocketHandler {
   private static readonly CATCHUP_DEFAULT_SOCKET_GUARD_BYTES = 128 * 1024;
   private static readonly CATCHUP_MIN_BACKLOG_CAP_MS = 30000;
 
+  // Issue #111 Buffer-Hold Pause: 動的閾値の境界。holdTriggerMs は targetBufferMs に連動し
+  // 10〜30秒へクランプ (target=0 は Hold 無効)。再開側は VAAPI の IDR/GOP ヘッドルーム 2s、
+  // ソフトウェアエンコード 3s を基準とし、holdTrigger − resume ≥ 7.2s のヒステリシス幅を確保する。
+  private static readonly HOLD_TRIGGER_MIN_MS = 10000;
+  private static readonly HOLD_TRIGGER_MAX_MS = 30000;
+  private static readonly HOLD_HEADROOM_VAAPI_MS = 2000;
+  private static readonly HOLD_HEADROOM_SOFTWARE_MS = 3000;
+  private static readonly HOLD_MIN_HYSTERESIS_MS = 7200;
+  private static readonly RESUME_GATE_MS = 1500;
+  // targetBufferMs=0 (オフ) でも CATCHUP 送出ゲートが永久閉鎖しないための実効窓下限
+  private static readonly MIN_CATCHUP_WINDOW_MS = 400;
+
   // Playback ring buffer & CATCHUP state machine
   private playbackBuffer: PlaybackBuffer;
   private lastInputAt: number = Date.now();
@@ -75,6 +87,13 @@ export class WebSocketHandler {
   private clientSessions: Map<WebSocket, ClientSession> = new Map();
 
   private autoSleepTimer: NodeJS.Timeout | null = null;
+  // Issue #111 Buffer-Hold Pause 状態。SLEEP_PAUSED は browserManager の 'paused' 状態と
+  // enterSleepPaused() が単一管理するため、このフィールドは ACTIVE / BUFFER_HOLD_PAUSED のみ。
+  private pipelineHoldState: 'ACTIVE' | 'BUFFER_HOLD_PAUSED' = 'ACTIVE';
+  private holdExpireTimer: NodeJS.Timeout | null = null;
+  private holdResumePollTimer: NodeJS.Timeout | null = null;
+  private lastHoldEvalAtMs = 0;
+  private holdStartedAtMs = 0;
   private actingPrimaryGraceTimer: NodeJS.Timeout | null = null;
   private pendingIntentionalPrimaryToken: string | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
@@ -518,6 +537,11 @@ export class WebSocketHandler {
    */
   private recordInputActivity(socket?: WebSocket): void {
     this.lastInputAt = Date.now();
+    // Issue #111: Hold 中のユーザー操作は即解除 (キュー破棄と LIVE_JUMPED は下の既存経路が担う)。
+    // 凍結 Chrome への入力注入を発生させないため、SIGCONT + FFmpeg 再開を先に行う。
+    if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+      this.exitBufferHold('user_input');
+    }
     if (socket) {
       const session = this.clientSessions.get(socket);
       let switchedAnyCatchup = false;
@@ -960,24 +984,37 @@ export class WebSocketHandler {
       }
     }
 
-    // If browser was paused, resume it immediately
-    if (this.browserManager.getState() === 'paused') {
-      this.browserManager.resume();
-    } else if (this.browserManager.getState() === 'stopped') {
-      this.browserManager.start().catch((err) => console.error('Start error:', err));
-    } else if (!this.browserManager.isChromeAlive()) {
-      console.warn(
-        '[WebSocketHandler] Browser is marked running but Chrome is not alive. Restarting Chrome...',
-      );
-      this.browserManager
-        .restartChrome()
-        .catch((err) => console.error('Restart Chrome error:', err));
+    // Issue #111 ケースA: Hold 停止中 (BUFFER_HOLD_PAUSED) の再接続は、生成を凍結したまま
+    // CATCHUP で再生位置へ追いつかせ、resumeTriggerServerMs 到達後に自動再開する。
+    // autoSleep→holdExpire の排他不変条件により holdExpireTimer のみ解除する。
+    const holdingForReconnect = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
+    if (holdingForReconnect) {
+      if (this.holdExpireTimer) {
+        clearTimeout(this.holdExpireTimer);
+        this.holdExpireTimer = null;
+      }
     }
 
-    // Ensure FFmpeg encoder is running if it was stopped during idle sleep
-    if (!this.encoder.isRunning()) {
-      console.log('[WebSocketHandler] Resuming FFmpeg encoder on client authentication...');
-      this.encoder.start();
+    // If browser was paused, resume it immediately
+    if (!holdingForReconnect) {
+      if (this.browserManager.getState() === 'paused') {
+        this.browserManager.resume();
+      } else if (this.browserManager.getState() === 'stopped') {
+        this.browserManager.start().catch((err) => console.error('Start error:', err));
+      } else if (!this.browserManager.isChromeAlive()) {
+        console.warn(
+          '[WebSocketHandler] Browser is marked running but Chrome is not alive. Restarting Chrome...',
+        );
+        this.browserManager
+          .restartChrome()
+          .catch((err) => console.error('Restart Chrome error:', err));
+      }
+
+      // Ensure FFmpeg encoder is running if it was stopped during idle sleep
+      if (!this.encoder.isRunning()) {
+        console.log('[WebSocketHandler] Resuming FFmpeg encoder on client authentication...');
+        this.encoder.start();
+      }
     }
 
     if (session?.role === 'secondary') {
@@ -1011,7 +1048,26 @@ export class WebSocketHandler {
         this.startLive(socket);
       }
     } else {
-      const lastAckPts = session?.lastAckPts ?? this.lastKnownAckPts;
+      let lastAckPts = session?.lastAckPts ?? this.lastKnownAckPts;
+
+      // Issue #111 ack 遅延補正 (review 追加項): 切断前の高RTT in-flight で lastAckPts が陳腐化すると、
+      // backlog が holdTrigger を大幅に超えて再生開始 (または保持範囲外 → LIVE 強制 = 大幅スキップ)
+      // していた。再開位置を resumeFromPts = max(lastAckPts, latestBuffered − holdTriggerMs)
+      // (getFramesToCatchup により直前 KEYFRAME へスナップ) へクランプし、 backlog を常に
+      // holdTrigger 以下に収めてから CATCHUP を開始する。
+      const holdCfgForReconnect = this.computeHoldConfig();
+      if (holdCfgForReconnect && lastAckPts !== null && lastAckPts > 0n) {
+        const latestBuf = this.playbackBuffer.getLatestVideoPts();
+        if (latestBuf !== null) {
+          const floorPts = latestBuf - BigInt(holdCfgForReconnect.holdTriggerMs) * 1000n;
+          if (lastAckPts < floorPts) {
+            console.log(
+              `[WebSocketHandler] Reconnect ack is stale (${Math.round(Number(latestBuf - lastAckPts) / 1000)}ms behind live edge). Clamping CATCHUP resume from lastAckPts=${lastAckPts} to resumeFromPts=${floorPts} (max(lastAckPts, latestBuffered - holdTriggerMs)).`,
+            );
+            lastAckPts = floorPts;
+          }
+        }
+      }
 
       // 要件4: now - lastInputAt > IDLE_TO_BUFFER_SECONDS（既定5秒、環境変数）なら CATCHUP 許可状態
       const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
@@ -1230,7 +1286,12 @@ export class WebSocketHandler {
    * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
-    const target = this.getBaseTargetBufferMs(session);
+    // Issue #111: targetBufferMs=0 (オフ) でも送出ゲート (inFlight >= window) が永久閉鎖せぬよう
+    // 実効窓に 400ms の下限保護を置く。Hold 無効化 (computeHoldConfig null) とは独立の防御。
+    const target = Math.max(
+      WebSocketHandler.MIN_CATCHUP_WINDOW_MS,
+      this.getBaseTargetBufferMs(session),
+    );
     const rate = session.ackDrainRateEwma;
     if (rate === undefined || rate >= WebSocketHandler.DRAIN_RATE_CONGESTION_THRESHOLD) {
       return target;
@@ -1911,6 +1972,8 @@ export class WebSocketHandler {
               catchupQueueMs,
               serverBufferMs,
               serverLagMs,
+              // Issue #111: HUD の HOLD バッジ表示用 (旧クライアントは未読で無害)
+              holdPaused: this.pipelineHoldState === 'BUFFER_HOLD_PAUSED',
               ...(session?.role === 'secondary' && !session.isActingPrimary
                 ? primarySession
                   ? {
@@ -1934,6 +1997,8 @@ export class WebSocketHandler {
           if (this.clientSessions.get(socket)?.isStandby) {
             break;
           }
+          // Issue #111: Hold 中の LIVE ジャンプも即時解除・再生成から。
+          this.exitBufferHold('jump_to_live');
           // Issue #103: recordInputActivity(socket) を呼ぶと CATCHUP 中に abortCatchupAndSwitchToLive と
           // notifyOtherSessionsLiveJump が二重実行されるため、入力時刻のみ更新して下の単一経路に集約する
           this.lastInputAt = Date.now();
@@ -2104,6 +2169,9 @@ export class WebSocketHandler {
           if (this.clientSessions.get(socket)?.isStandby) {
             break;
           }
+          // Issue #111: 手動停止は Hold をスリープへ排他変換する。recordInputActivity より先に
+          // 変換しておき、Hold 解除→再生成 (SIGCONT + FFmpeg start) の無駄なチャーンを挟まない。
+          this.convertHoldToSleep('manual_pause');
           this.recordInputActivity(socket);
           this.encoder.stop();
           this.browserManager.pause();
@@ -2168,6 +2236,11 @@ export class WebSocketHandler {
       ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
         // 要件2: 'video' イベント時にバッファへ追記
         this.playbackBuffer.addVideo(flags, pts, data);
+
+        // Issue #111: 生成が続く限りケースA (切断中の蓄積) / ケースB (CATCHUP 滞留) を評価。
+        // Hold 発動後は FFmpeg が停止するためこのフック自体も停止し、再開判定は
+        // holdResumePollTimer (消費=ack 進捗) が担う。
+        this.evaluateBufferHold();
 
         if (this.authenticatedClients.size === 0) return;
 
@@ -2265,6 +2338,189 @@ export class WebSocketHandler {
     );
   }
 
+  /**
+   * Issue #111: Buffer-Hold Pause の動的閾値算出。
+   * holdTriggerMs = clamp(targetBufferMs, 10s, 30s)、target=0 は Hold 無効 (null)。
+   * resumeTriggerServerMs = target >= HEADROOM ? 500ms : max(1000, HEADROOM − target) で、
+   * 設計不変条件 holdTrigger − resume ≥ 7.2s を機械的に保証する。
+   */
+  private computeHoldConfig(): { holdTriggerMs: number; resumeTriggerServerMs: number } | null {
+    const target = this.lastKnownTargetBufferMs ?? WebSocketHandler.DEFAULT_TARGET_BUFFER_MS;
+    if (!(target > 0)) return null;
+    const holdTriggerMs = Math.min(
+      WebSocketHandler.HOLD_TRIGGER_MAX_MS,
+      Math.max(WebSocketHandler.HOLD_TRIGGER_MIN_MS, target),
+    );
+    const headroom =
+      typeof this.encoder.getActiveBackend === 'function' &&
+      this.encoder.getActiveBackend() === 'software'
+        ? WebSocketHandler.HOLD_HEADROOM_SOFTWARE_MS
+        : WebSocketHandler.HOLD_HEADROOM_VAAPI_MS;
+    const resumeRaw = target >= headroom ? 500 : Math.max(1000, headroom - target);
+    const resumeTriggerServerMs = Math.max(
+      500,
+      Math.min(resumeRaw, holdTriggerMs - WebSocketHandler.HOLD_MIN_HYSTERESIS_MS),
+    );
+    return { holdTriggerMs, resumeTriggerServerMs };
+  }
+
+  /**
+   * Issue #111: サーバーがクライアント再生位置より先に保持している時間 (ms)。
+   * 生成アンカー (PlaybackBuffer 最新映像 PTS) − 実効プライマリ ack。後席セッションは
+   * lastKnownAckPts に寄与しないため、Hold 判定は常に実効プライマリのみで行われる。
+   */
+  private serverHeldMs(): number {
+    const latest = this.playbackBuffer.getLatestVideoPts();
+    const ack = this.lastKnownAckPts;
+    if (latest === null || ack === null || latest <= ack) return 0;
+    return Number(latest - ack) / 1000;
+  }
+
+  /** 生成イベント起点の評価フック (最大1秒に1回)。ケースA=切断中の蓄積 / ケースB=CATCHUP 滞留 */
+  private evaluateBufferHold(): void {
+    if (this.pipelineHoldState !== 'ACTIVE') return;
+    const nowMs = Date.now();
+    if (nowMs - this.lastHoldEvalAtMs < 1000) return;
+    this.lastHoldEvalAtMs = nowMs;
+    const cfg = this.computeHoldConfig();
+    if (!cfg) return;
+    const heldMs = this.serverHeldMs();
+    const memoryGuard =
+      this.playbackBuffer.getCurrentBytes() >= this.playbackBuffer.getMaxBytes() * 0.85;
+    if (heldMs >= cfg.holdTriggerMs || memoryGuard) {
+      this.enterBufferHold(
+        memoryGuard && heldMs < cfg.holdTriggerMs ? 'memory_pressure' : 'backlog',
+      );
+    }
+  }
+
+  /**
+   * Issue #111: Buffer-Hold Pause 発動。生成を 0.0x (Chrome SIGSTOP + FFmpeg 停止) に止めて
+   * 消費 1.0x との速度差を作り、サーバー残余を自然に収束させる。autoSleepTimer は破棄して
+   * holdExpireTimer へ排他引き継ぎする (両タイマー同時稼働ゼロ不変条件)。
+   */
+  private enterBufferHold(reason: string): void {
+    if (this.pipelineHoldState !== 'ACTIVE') return;
+    const cfg = this.computeHoldConfig();
+    if (!cfg) return;
+    const heldMs = Math.round(this.serverHeldMs());
+
+    if (this.autoSleepTimer) {
+      clearTimeout(this.autoSleepTimer);
+      this.autoSleepTimer = null;
+    }
+
+    this.pipelineHoldState = 'BUFFER_HOLD_PAUSED';
+    this.holdStartedAtMs = Date.now();
+    console.log(
+      `[WebSocketHandler] Buffer-Hold Pause engaged (${reason}): serverHeldMs=${heldMs} >= holdTriggerMs=${cfg.holdTriggerMs}. SIGSTOP browser + stop FFmpeg (generation 0.0x < consumption 1.0x). Resume at <=${cfg.resumeTriggerServerMs}ms.`,
+    );
+
+    this.encoder.noteHoldPause();
+    this.encoder.stop();
+    this.browserManager.pauseForBufferHold();
+
+    const expireMin = Math.max(1, Number(process.env.BUFFER_HOLD_EXPIRE_MINUTES) || 10);
+    this.holdExpireTimer = setTimeout(() => {
+      this.holdExpireTimer = null;
+      if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+        console.log(
+          '[WebSocketHandler] Buffer-Hold expired without reconnect or resume. Merging into auto-sleep common flow (SLEEP_PAUSED).',
+        );
+        this.enterSleepPaused('hold_expired');
+      }
+    }, expireMin * 60_000);
+    this.holdExpireTimer.unref();
+
+    this.holdResumePollTimer = setInterval(() => {
+      this.checkHoldResume();
+    }, 500);
+    this.holdResumePollTimer.unref();
+
+    this.broadcastControl({
+      type: 'BUFFER_HOLD',
+      paused: true,
+      serverHeldMs: heldMs,
+      holdTriggerMs: cfg.holdTriggerMs,
+    });
+  }
+
+  /** Hold 中の再開判定。消費者 (実効プライマリ) が 1.0x で消費した ack 進捗のみが条件を進める */
+  private checkHoldResume(): void {
+    if (this.pipelineHoldState !== 'BUFFER_HOLD_PAUSED') return;
+    const cfg = this.computeHoldConfig();
+    if (!cfg) {
+      this.exitBufferHold('config_disabled');
+      return;
+    }
+    // クライアント不在: 消費者がおらず heldMs は縮まらない。再接続または holdExpire→スリープまで待機
+    if (!this.hasPrimaryClients() && !this.hasActingPrimaryClients()) {
+      return;
+    }
+    if (this.serverHeldMs() <= cfg.resumeTriggerServerMs) {
+      this.exitBufferHold('backlog_drained');
+    }
+  }
+
+  /** Hold 解除。PTS はアンカーから単調連続 (noteHoldResume + 停止時間補償)、音声は境界ゲートで保護 */
+  private exitBufferHold(reason: string): void {
+    if (this.pipelineHoldState !== 'BUFFER_HOLD_PAUSED') return;
+    const heldMs = Math.round(this.serverHeldMs());
+    const heldForSec = Math.round((Date.now() - this.holdStartedAtMs) / 1000);
+    this.clearHoldTimers();
+    this.pipelineHoldState = 'ACTIVE';
+    console.log(
+      `[WebSocketHandler] Buffer-Hold Pause released (${reason}) after ${heldForSec}s, remaining held=${heldMs}ms. SIGCONT browser + restart FFmpeg (PTS continues from anchor).`,
+    );
+    this.browserManager.resumeFromBufferHold();
+    this.encoder.noteHoldResume();
+    this.encoder.armResumeGate(WebSocketHandler.RESUME_GATE_MS);
+    if (!this.encoder.isRunning()) {
+      this.encoder.start();
+    }
+    this.lastHoldEvalAtMs = 0;
+    this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
+    if (!this.hasPrimaryClients() && !this.hasActingPrimaryClients()) {
+      this.scheduleAutoSleep();
+    }
+  }
+
+  /** 手動停止など、Hold からスリープへ直接遷移させる排他処理 */
+  private convertHoldToSleep(reason: string): void {
+    if (this.pipelineHoldState !== 'BUFFER_HOLD_PAUSED') return;
+    console.log(`[WebSocketHandler] Converting buffer-hold to sleep pause (${reason}).`);
+    this.clearHoldTimers();
+    this.pipelineHoldState = 'ACTIVE';
+  }
+
+  private clearHoldTimers(): void {
+    if (this.holdExpireTimer) {
+      clearTimeout(this.holdExpireTimer);
+      this.holdExpireTimer = null;
+    }
+    if (this.holdResumePollTimer) {
+      clearInterval(this.holdResumePollTimer);
+      this.holdResumePollTimer = null;
+    }
+  }
+
+  /**
+   * Issue #111: SLEEP_PAUSED への共通フロー (autoSleep 満了と holdExpire 満了の単一経路)。
+   */
+  private enterSleepPaused(reason: string): void {
+    this.clearHoldTimers();
+    const wasHolding = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
+    this.pipelineHoldState = 'ACTIVE';
+    console.log(
+      `[WebSocketHandler] Entering sleep pause (${reason}${wasHolding ? ', from buffer-hold' : ''}): stopping FFmpeg, pausing browser (True CPU 0%), clearing playback buffer.`,
+    );
+    this.encoder.stop();
+    this.browserManager.pause();
+    this.playbackBuffer.clear();
+    this.lastKnownAckPts = null;
+    this.enterSecondaryStandby();
+  }
+
   private scheduleAutoSleep(): void {
     if (this.autoSleepTimer) clearTimeout(this.autoSleepTimer);
     const config = this.configStore.getConfig();
@@ -2273,7 +2529,13 @@ export class WebSocketHandler {
       console.log('[WebSocketHandler] Auto-sleep disabled (autoSleepMinutes=0).');
       return;
     }
-    const delayMs = Math.max(15000, autoSleepMins * 60 * 1000);
+    let delayMs = Math.max(15000, autoSleepMins * 60 * 1000);
+    // Issue #111: Hold が有効な設定で autoSleepMinutes が極短の場合、Hold の排水機会を
+    // 潰さないよう holdTrigger+5s へ繰延べる (排他統合: 両タイマーの同時稼働は発生しない)
+    const holdCfg = this.computeHoldConfig();
+    if (holdCfg) {
+      delayMs = Math.max(delayMs, holdCfg.holdTriggerMs + 5000);
+    }
     console.log(
       `[WebSocketHandler] No clients connected. Scheduling auto-sleep in ${delayMs / 1000}s...`,
     );
@@ -2281,14 +2543,8 @@ export class WebSocketHandler {
     this.autoSleepTimer = setTimeout(() => {
       this.autoSleepTimer = null;
       if (!this.hasPrimaryClients() && !this.hasActingPrimaryClients()) {
-        console.log(
-          '[WebSocketHandler] Auto-sleep triggered: stopping FFmpeg encoder, pausing browser (True CPU 0%), and clearing playback buffer.',
-        );
-        this.encoder.stop();
-        this.browserManager.pause();
-        this.playbackBuffer.clear();
-        this.lastKnownAckPts = null;
-        this.enterSecondaryStandby();
+        // Issue #111: holdExpire 満了と同一の共通スリープフローへ合流
+        this.enterSleepPaused('auto_sleep');
       }
     }, delayMs);
   }
@@ -2341,6 +2597,7 @@ export class WebSocketHandler {
       this.unsubscribePageInfo = null;
     }
     if (this.autoSleepTimer) clearTimeout(this.autoSleepTimer);
+    this.clearHoldTimers();
     this.clearActingPrimaryGraceTimer();
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.resizeTimer) clearTimeout(this.resizeTimer);

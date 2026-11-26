@@ -718,6 +718,8 @@ export function renderStreamingView(
   let serverCatchupQueueMs = 0;
   let serverBufferMs = 0;
   let serverMode: 'LIVE' | 'CATCHUP' = 'LIVE';
+  // Issue #111 Buffer-Hold Pause: サーバーが自動一時停止中の状態 (PONG/BUFFER_HOLD で同期)
+  let serverHoldPaused = false;
 
   const decoder = new VideoStreamDecoder(
     (frame: VideoFrame) => {
@@ -872,7 +874,7 @@ export function renderStreamingView(
     setTitleIfChanged(hudConn, targetTitle);
   };
 
-  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'live' | '' = '';
+  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'hold' | 'live' | '' = '';
 
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
@@ -888,21 +890,24 @@ export function renderStreamingView(
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
 
-    const currentState = isInteractive
-      ? 'interactive'
-      : isBuffering
-        ? 'buffering'
-        : localMs >= 800 || serverMs >= 600
-          ? 'catchup'
-          : 'live';
+    // Issue #111: サーバーが Buffer-Hold Pause 中は最優先で HOLD を表示（タップで即 LIVE 同期）
+    const currentState = serverHoldPaused
+      ? 'hold'
+      : isInteractive
+        ? 'interactive'
+        : isBuffering
+          ? 'buffering'
+          : localMs >= 800 || serverMs >= 600
+            ? 'catchup'
+            : 'live';
 
     if (currentState !== lastHudLiveState) {
       lastHudLiveState = currentState;
-      hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+      hudLiveBtn.classList.remove('is-catchup', 'is-buffering', 'is-hold');
       if (currentState === 'buffering') {
         hudLiveBtn.classList.add('is-buffering');
-      } else if (currentState === 'catchup') {
-        hudLiveBtn.classList.add('is-catchup');
+      } else if (currentState === 'catchup' || currentState === 'hold') {
+        hudLiveBtn.classList.add(currentState === 'hold' ? 'is-hold' : 'is-catchup');
       }
 
       const targetDotClass =
@@ -913,7 +918,11 @@ export function renderStreamingView(
     let targetText = 'LIVE';
     let targetTitle = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
 
-    if (currentState === 'interactive') {
+    if (currentState === 'hold') {
+      // Issue #111: サーバー自動一時停止中。生成は止まり音声再生の追い上げを待っている状態
+      targetText = `HOLD L:${localSec}s S:${serverSec}s`;
+      targetTitle = `サーバーが回線途絶・輻輳で生成を一時停止中 (ローカル: ${localSec}秒, サーバー残余: ${serverSec}秒) — 再生の追い上げで自動再開、タップで最新LIVE同期`;
+    } else if (currentState === 'interactive') {
       targetText = 'DIRECT LIVE';
       targetTitle =
         '操作優先: バッファゼロ・超低遅延モードで動作中 (タップで最新LIVE同期・再エンコード)';
@@ -992,6 +1001,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    serverHoldPaused = false;
     lastHudLiveState = '';
     if (notifyServer && wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
@@ -1337,6 +1347,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    serverHoldPaused = false;
     updateHudLiveStatus();
     if (isSecondarySession && !isPrimarySessionActive) {
       showRearStandbyScreen();
@@ -1376,6 +1387,10 @@ export function renderStreamingView(
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
         serverMode = msg.serverMode;
+      }
+      // Issue #111: Buffer-Hold Pause 中フラグを PONG 毎に同期（旧サーバーでは未定義=false）
+      if (typeof msg.holdPaused === 'boolean') {
+        serverHoldPaused = msg.holdPaused;
       }
 
       // 瞬間ネットワーク往復時間（Instantaneous RTT）の測定と表示 (Issue 24):
@@ -1470,6 +1485,8 @@ export function renderStreamingView(
       serverCatchupQueueMs = 0;
       serverBufferMs = 0;
       serverMode = 'LIVE';
+      // Issue #111: LIVE ジャンプでサーバー Hold も解除されるためバッジを即時戻す
+      serverHoldPaused = false;
       // Issue #103: サーバーが知るライブエッジ PTS を権威的な音声 straggler バリアとして適用する
       if (
         typeof msg.dropAudioBeforePts === 'number' &&
@@ -1554,6 +1571,10 @@ export function renderStreamingView(
         '配信プロセスを再起動中...',
         'エンコーダとバッファをクリーンに再初期化しています...',
       );
+    } else if (msg.type === 'BUFFER_HOLD') {
+      // Issue #111: Hold 発動/解除の即時通知（PONG 同期の主経路に加え UX 応答を速める）
+      serverHoldPaused = msg.paused === true;
+      updateHudLiveStatus();
     } else if (msg.type === 'BROWSER_STATUS') {
       if (isSecondarySession && !isPrimarySessionActive) {
         if (msg.state === 'running') {

@@ -83,11 +83,24 @@ export class PlaybackBuffer {
   }
 
   /**
+   * バッファ内の最新映像 PTS (Issue #111: Buffer-Hold Pause の保持量評価・
+   * 再接続 resumeFromPts クランプ用)。映像フレームが1つもない場合は null。
+   */
+  public getLatestVideoPts(): bigint | null {
+    if (this.videoFrames.length === 0) return null;
+    return this.videoFrames[this.videoFrames.length - 1].pts;
+  }
+
+  /**
    * 映像 Access Unit (AU) をバッファへ追加
    */
   public addVideo(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & VIDEO_FLAGS.CONFIG) !== 0) {
+      // Issue #111 (F-1b 根因): CONFIG パケット (pts: 0n) をフレーム配列へ混入させると
+      // getBufferedDurationMs() と GOP prune が pts エポック混入で破壊される
+      // (実測: backlog 2,353,603ms 表記 vs 実フレーム数 ~1,570)。メタキャッシュのみ更新する。
       this.cachedSpsPps = data;
+      return;
     }
 
     const frame: BufferedFrame = {
@@ -108,7 +121,10 @@ export class PlaybackBuffer {
    */
   public addAudio(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & AUDIO_FLAGS.CONFIG) !== 0) {
+      // Issue #111 (F-1b 根因): CONFIG (OpusHead, pts: 0n) はメタキャッシュのみ更新し、
+      // 音声フレーム配列へは混入させない (prune の PTS 比較を汚染しない)。
       this.cachedOpusHead = data;
+      return;
     }
 
     const frame: BufferedFrame = {
