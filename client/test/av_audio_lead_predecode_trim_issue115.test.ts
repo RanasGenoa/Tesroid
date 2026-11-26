@@ -52,9 +52,10 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
       render: vi.fn((f: any) => f.close?.()),
     };
     const pacer = new FramePacer(mockRenderer, 30, avSync);
+    const avSyncEvents: { kind: string; data: any }[] = [];
     const telemetry: any = {
       isEnabled: () => true,
-      recordAvSync: vi.fn(),
+      recordAvSync: vi.fn((kind: string, data: any) => avSyncEvents.push({ kind, data })),
       recordPacer: vi.fn(),
       recordBuffering: vi.fn(),
     };
@@ -87,6 +88,45 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
       expect(Number.isFinite(pts)).toBe(true);
       expect(pts).toBeGreaterThan(0);
     }
+    // テレメトリに predecode_trim_request が要求回数分残っていること
+    const trimEvents = avSyncEvents.filter((e) => e.kind === 'predecode_trim_request');
+    expect(trimEvents.length).toBe(trimRequests.length);
+  });
+
+  it('does not request an upstream trim while audio lead stays below the 800ms threshold', () => {
+    const avSync = new AvSyncController();
+    avSync.setAudioContextTimeProvider(() => nowMs() / 1000);
+    // 音声 0.5s 先再生、映像は実時間から 1.2s 後方 -> lead≈700ms (< 800ms 閾値)
+    const reAnchor = () => {
+      const t = nowMs();
+      avSync.updateAudioPts(t * 1000 - 500_000, t / 1000);
+    };
+    reAnchor();
+    const mockRenderer: any = { render: vi.fn((f: any) => f.close?.()) };
+    const pacer = new FramePacer(mockRenderer, 30, avSync);
+    const telemetry: any = {
+      isEnabled: () => true,
+      recordAvSync: vi.fn(),
+      recordPacer: vi.fn(),
+      recordBuffering: vi.fn(),
+    };
+    pacer.setTelemetryCollector(telemetry);
+    const trimRequests: number[] = [];
+    pacer.onSustainedAudioLead = (ptsUs: number) => {
+      trimRequests.push(ptsUs);
+    };
+
+    const base = nowMs() * 1000 - 1_200_000;
+    for (let i = 0; i < 10; i++) {
+      pacer.queueFrame(createDummyFrame(base + i * FRAME_INTERVAL_MS * 1000));
+    }
+    for (let tick = 0; tick < 150; tick++) {
+      vi.advanceTimersByTime(FRAME_INTERVAL_MS);
+      reAnchor();
+      pacer.queueFrame(createDummyFrame(base + (10 + tick) * FRAME_INTERVAL_MS * 1000));
+    }
+    // 閾値未満の音声先行では上流トリムを要求しない (Issue #113 の有界破棄領域のまま)
+    expect(trimRequests.length).toBe(0);
   });
 
   it('decoder trims pre-decode packets up to the last keyframe before the target PTS', async () => {
@@ -127,9 +167,17 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
     expect(queued).toBeGreaterThan(100);
 
     // 目標 = 音声再生 PTS − 250ms クッション相当。KF@2.0s が保持され、それ以前が破棄されること
+    // KF@1.98s (i=60) が目標 3.5s 直前のキーフレーム -> その前 60 パケットが完全な破棄対象
+    const trimEvents: { event: string; data: any }[] = [];
+    decoder.setTelemetryCollector({
+      isEnabled: () => true,
+      recordDecoder: (event: string, data: any) => trimEvents.push({ event, data }),
+    } as any);
     const dropped = decoder.trimPendingBeforePts(3_500_000);
-    expect(typeof dropped).toBe('number');
-    expect(dropped).toBeGreaterThanOrEqual(Math.floor(2000 / FRAME_INTERVAL_MS));
+    expect(dropped).toBe(60);
+    expect(trimEvents.length).toBe(1);
+    expect(trimEvents[0].event).toBe('av_trim_gop');
+    expect(trimEvents[0].data.droppedCount).toBe(60);
     const remaining = decoder.getPendingPacketsCount();
     expect(remaining).toBe(queued - dropped);
 

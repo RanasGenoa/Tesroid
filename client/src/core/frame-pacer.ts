@@ -126,8 +126,9 @@ export class FramePacer {
   private static readonly AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS = 60;
   private static readonly AV_SYNC_MAX_STALE_DROP_LEAD_MS = 60_000;
   // Issue #115: 滞留の生き残りがデコーダ手前 (pre-decode キュー) にある場合、ペーサーの
-  // 4/tick 破棄は供給速率に勝てず平衡が残る。大きい先行が継続した時だけ 1s 間隔で
-  // 上流 GOP トリムを要求する (streaming.ts が decoder.trimPendingBeforePts へ配線)。
+  // 4/tick 破棄は供給速率に勝てず平衡が残る。lead がこの値に達した tick で即座に上流 GOP
+  // トリムを要求し、以降 1s のレート制限で重複発火を抑える (streaming.ts が
+  // decoder.trimPendingBeforePts へ配線)。単発スパイクでもトリム対象が無ければ no-op 安全弁。
   private static readonly SUSTAINED_AUDIO_LEAD_TRIM_MS = 800;
   private static readonly TRIM_REQUEST_MIN_INTERVAL_MS = 1000;
 

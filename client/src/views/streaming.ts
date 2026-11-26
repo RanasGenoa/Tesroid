@@ -691,7 +691,7 @@ export function renderStreamingView(
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
 
   const MAX_BUFFER_DEPTH_MS = 30000;
-  // Issue #115: pre-decode ゴープトリムの目標から音声エッジへ残すクッション (µs)。
+  // Issue #115: pre-decode GOP トリムの目標から音声エッジへ残すクッション (µs)。
   // 250ms = 実測平衡 (lead≈2s) に対して GOP 2.0s + 余裕で一度に巻き戻しすぎない緩い下限
   const PREDECODE_TRIM_AUDIO_CUSHION_US = 250_000;
   const clampBufferDepthMs = (ms: number): number =>
