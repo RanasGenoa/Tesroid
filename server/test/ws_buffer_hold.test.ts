@@ -36,18 +36,30 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
       isChromeAlive: () => true,
     };
 
-    let running = true;
+    let videoRunning = true;
+    let audioRunning = true;
     mockEncoder = {
-      isRunning: vi.fn(() => running),
+      isRunning: vi.fn(() => videoRunning || audioRunning),
+      isFullyRunning: vi.fn(() => videoRunning && audioRunning),
       start: vi.fn(() => {
-        running = true;
+        videoRunning = true;
+        audioRunning = true;
       }),
       stop: vi.fn(() => {
-        running = false;
+        videoRunning = false;
+        audioRunning = false;
       }),
-      restart: vi.fn().mockResolvedValue(undefined),
+      restart: vi.fn().mockImplementation(async () => {
+        // Video のみ再起動する実挙動を再現 (Audio は起動しない)
+        videoRunning = true;
+      }),
+      restartAll: vi.fn().mockImplementation(async () => {
+        videoRunning = true;
+        audioRunning = true;
+      }),
       noteHoldPause: vi.fn(),
       noteHoldResume: vi.fn(),
+      resetHoldCompensation: vi.fn(),
       isHoldPaused: vi.fn(() => false),
       armResumeGate: vi.fn(),
       // Issue #111 F-4: JUMP 系の LIVE 境界で音声破棄境界を権威 PTS に設定する配線を検証する
@@ -335,8 +347,88 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
     // 手動停止 = Hold→スリープの排他変換。SIGCONT + encoder.start の無駄なチャーンを挟まない
     expect(mockBrowser.resumeFromBufferHold).not.toHaveBeenCalled();
     expect(mockEncoder.noteHoldResume).not.toHaveBeenCalled();
+    expect(mockEncoder.resetHoldCompensation).toHaveBeenCalledTimes(1);
     expect(mockEncoder.start.mock.calls.length).toBe(startBefore);
     expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+
+    handler.close();
+  });
+
+  it('should release hold and start both video & audio when a new session connects during buffer-hold (prevent silent reconnect)', async () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 0n, Buffer.from('v0'));
+
+    const { handler, emitVideo } = buildHandler(buffer);
+    const { socket, msgListener } = await connectAuthenticated(handler);
+
+    // 切断→10秒以上経過で Buffer-Hold Pause 発動 (Video/Audio 両停止 + Chrome SIGSTOP)
+    await sendAck(msgListener, 0);
+    const closeListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+    closeListener();
+    emitVideo({ flags: 0, pts: 15_000_000n, data: Buffer.from('v') });
+    expect(mockEncoder.stop).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.isRunning()).toBe(false);
+    expect(mockEncoder.isFullyRunning()).toBe(false);
+
+    // 新セッション (別トークン) で再接続 → Hold 解除 & Video/Audio 両方起動されること (片肺無音にならない)
+    mockAuth.verifyPin.mockResolvedValue({ success: true, token: 'new-session-token' });
+    mockEncoder.start.mockClear();
+    mockEncoder.restart.mockClear();
+    await connectAuthenticated(handler);
+
+    expect(mockBrowser.resumeFromBufferHold).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.resetHoldCompensation).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.start).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.isFullyRunning()).toBe(true);
+    expect(mockEncoder.restart).not.toHaveBeenCalled(); // Video の二重起動なし
+
+    handler.close();
+  });
+
+  it('should exit hold and start both video & audio when primary reconnect falls back to startLive (not idle)', async () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 0n, Buffer.from('v0'));
+
+    const { handler, emitVideo } = buildHandler(buffer);
+    const { socket, msgListener } = await connectAuthenticated(handler);
+
+    await sendAck(msgListener, 0);
+    const closeListener = socket.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+    closeListener();
+    emitVideo({ flags: 0, pts: 15_000_000n, data: Buffer.from('v') });
+    expect(mockEncoder.isFullyRunning()).toBe(false);
+
+    // 操作直後 (isIdle=false) に同一トークンで再接続 → CATCHUP ではなく startLive 経路へ落ちる
+    handler.setLastInputAt(Date.now());
+    mockEncoder.start.mockClear();
+    mockEncoder.restart.mockClear();
+    await connectAuthenticated(handler);
+
+    expect(mockBrowser.resumeFromBufferHold).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.noteHoldResume).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.start).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.isFullyRunning()).toBe(true);
+    expect(mockEncoder.restart).not.toHaveBeenCalled();
+
+    handler.close();
+  });
+
+  it('should release hold state and resume browser on explicit restartStream()', async () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 0n, Buffer.from('v0'));
+
+    const { handler, emitVideo } = buildHandler(buffer);
+    const { msgListener } = await connectAuthenticated(handler);
+
+    await sendAck(msgListener, 0);
+    emitVideo({ flags: 0, pts: 15_000_000n, data: Buffer.from('v') });
+    expect((handler as any).pipelineHoldState).toBe('BUFFER_HOLD_PAUSED');
+
+    await handler.restartStream();
+    expect((handler as any).pipelineHoldState).toBe('ACTIVE');
+    expect(mockBrowser.resumeFromBufferHold).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.resetHoldCompensation).toHaveBeenCalledTimes(1);
+    expect(mockEncoder.restartAll).toHaveBeenCalledTimes(1);
 
     handler.close();
   });

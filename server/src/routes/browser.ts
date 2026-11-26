@@ -50,7 +50,12 @@ export function registerBrowserRoutes(
   // Resume browser
   app.post('/api/browser/resume', { preHandler: requireAuth }, async (req, reply) => {
     browserManager.resume();
-    if (encoder && !encoder.isRunning()) {
+    const isEncoderFullyRunning =
+      encoder &&
+      (typeof encoder.isFullyRunning === 'function'
+        ? encoder.isFullyRunning()
+        : encoder.isRunning());
+    if (encoder && !isEncoderFullyRunning) {
       encoder.start();
     }
     return { success: true, state: browserManager.getState() };
@@ -92,7 +97,8 @@ export function registerBrowserRoutes(
     // 滞留が無い場合に FFmpeg Video/Audio 全体を再起動すると ~1s の生成断→復帰バーストで
     // FPS が落ちる (スロットル無しでも再現)。健康な LIVE tap ではスキップし、明示的な
     // ?force=1 / 明示コマンド (RESTART_ENCODER / CLEAN_RESTART_STREAM) は常に再起動する。
-    if (wsHandler && !req.url.includes('force=1') && wsHandler.canSkipFullRestart()) {
+    const forceRestart = (req.query as { force?: string } | undefined)?.force === '1';
+    if (wsHandler && !forceRestart && wsHandler.canSkipFullRestart()) {
       console.log(
         '[EncoderRoutes] Live-tap full restart skipped: pipeline already LIVE with no backlog.',
       );

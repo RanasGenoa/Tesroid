@@ -441,6 +441,17 @@ export class VaapiEncoder extends EventEmitter {
     this.holdPausedSinceUs = null;
   }
 
+  /**
+   * Hold → スリープ遷移や新セッション切替時に、残留した holdPausedSinceUs / 停止時間補償 /
+   * 音声破棄境界をクリアし、次回復帰時の PTS 巻き戻りや誤破棄を防止する。
+   */
+  public resetHoldCompensation(): void {
+    this.holdPausedSinceUs = null;
+    this.totalHoldPausedUs = 0n;
+    this.resumeGateActive = false;
+    this.resumeBoundaryPtsUs = null;
+  }
+
   public isHoldPaused(): boolean {
     return this.holdPausedSinceUs !== null;
   }
@@ -477,6 +488,11 @@ export class VaapiEncoder extends EventEmitter {
 
   public isRunning(): boolean {
     return this.isVideoRunning || this.isAudioRunning;
+  }
+
+  /** Video / Audio 両方の FFmpeg プロセスが稼働しているか（片肺 Audio 停止の検知用） */
+  public isFullyRunning(): boolean {
+    return this.isVideoRunning && this.isAudioRunning;
   }
 
   public start(): void {
@@ -1235,9 +1251,13 @@ export class VaapiEncoder extends EventEmitter {
       if (this.currentAuHasKeyframe) {
         flags |= VIDEO_FLAGS.KEYFRAME;
         this.cachedKeyframe = { data: frameData, pts: this.videoPts };
-        // Issue #111: 再開後最初の IDR 到達で A/V 境界ゲートを解除し、その PTS を音声側の破棄境界として記録する (F-4)
-        this.resumeGateActive = false;
-        this.resumeBoundaryPtsUs = this.videoPts;
+        // Issue #111: 復帰ゲート武装中の最初の IDR 到達時のみゲートを解除し、
+        // その PTS を音声側の破棄境界として記録する (F-4)。
+        // 定常キーフレーム毎の上書きは正常音声の欠落・境界後退を招くため行わない。
+        if (this.resumeGateActive) {
+          this.resumeGateActive = false;
+          this.resumeBoundaryPtsUs = this.videoPts;
+        }
       }
 
       this.lastVideoEmitTime = performance.now();

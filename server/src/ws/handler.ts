@@ -78,8 +78,9 @@ export class WebSocketHandler {
   // Issue #111 F-4: 復帰ゲートの時間項は安全弁 (再起動後に IDR が一度も来ない異常対策)。
   // 本来の境界は PTS 比較 (ffmpeg.ts resumeBoundaryPtsUs) で決まるため、期限は長く取る。
   private static readonly RESUME_GATE_MS = 8000;
-  // Issue #112 F-6: 健康な LIVE 状態の LIVE tap で全体再起動をスキップする滞留上限 (ms)
-  private static readonly LIVE_TAP_SKIP_MAX_HELD_MS = 500;
+  // Issue #112 F-6: 健康な LIVE 状態の LIVE tap で全体再起動をスキップする滞留上限 (ms)。
+  // 250ms の BUFFER_FEEDBACK 周期・クライアント側ペーサークッション・RTT を考慮し 1000ms を許容する。
+  private static readonly LIVE_TAP_SKIP_MAX_HELD_MS = 1000;
   // targetBufferMs=0 (オフ) でも CATCHUP 送出ゲートが永久閉鎖しないための実効窓下限
   private static readonly MIN_CATCHUP_WINDOW_MS = 400;
 
@@ -581,25 +582,41 @@ export class WebSocketHandler {
   }
 
   /**
+   * Video / Audio の両エンコーダが稼働していることを保証する。
+   * startLive() 等の Video-only restart 後に Audio FFmpeg が未起動のまま残留する
+   * 「片肺無音」状態を防ぐため、isFullyRunning() を優先参照して不足側を起動する。
+   */
+  private ensureEncoderRunning(): void {
+    const fullyRunning =
+      typeof this.encoder.isFullyRunning === 'function'
+        ? this.encoder.isFullyRunning()
+        : this.encoder.isRunning();
+    if (!fullyRunning) {
+      this.encoder.start();
+    }
+  }
+
+  /**
    * Issue #112 F-6: LIVE tap 由来の全体再起動を安全にスキップできるかを判定する。
-   * パイプラインが既に健康な LIVE 状態 (Hold 非発動・CATCHUP セッション無し・エンコーダ稼働・
-   * サーバー保持量が小さい) の場合のみ true。明示再起動 (?force=1 / RESTART_ENCODER 等) は
-   * この判定を通さず常に restartStream() を実行する。
+   * パイプラインが既に健康な LIVE 状態 (Hold 非発動・Video/Audio 両エンコーダ稼働・
+   * CATCHUP / GOPドロップ中セッション無し・サーバー保持量 serverHeldMs が小さい) の場合のみ true。
+   * PlaybackBuffer は過去 60 秒の再接続用履歴を常時保持するリングバッファのため、
+   * getBufferedDurationMs() は滞留指標に使わない。
+   * 明示再起動 (?force=1 / RESTART_ENCODER 等) はこの判定を通さず常に restartStream() を実行する。
    */
   public canSkipFullRestart(): boolean {
     if (this.pipelineHoldState !== 'ACTIVE') return false;
-    if (!this.encoder.isRunning()) return false;
+    const encoderHealthy =
+      typeof this.encoder.isFullyRunning === 'function'
+        ? this.encoder.isFullyRunning()
+        : this.encoder.isRunning();
+    if (!encoderHealthy) return false;
     for (const session of this.clientSessions.values()) {
       if (session.mode === 'CATCHUP') return false;
+      if ((session.socket as any)?._droppingGop) return false;
     }
     // クライアント再生位置よりサーバーが先に保持している時間 (Hold 判定と同じ実効プライマリ基準)
     if (this.serverHeldMs() > WebSocketHandler.LIVE_TAP_SKIP_MAX_HELD_MS) return false;
-    // リングバッファ自体の滞留も小さいこと (直近GOP断なく再生継続できる状態)
-    if (
-      this.playbackBuffer.getBufferedDurationMs() >
-      WebSocketHandler.LIVE_TAP_SKIP_MAX_HELD_MS * 4
-    )
-      return false;
     return true;
   }
 
@@ -610,6 +627,13 @@ export class WebSocketHandler {
     console.log(
       '[WebSocketHandler] Clean restarting entire streaming pipeline (FFmpeg Video/Audio + Buffers + Client Sessions)...',
     );
+    if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+      this.clearHoldTimers();
+      this.pipelineHoldState = 'ACTIVE';
+      this.browserManager.resumeFromBufferHold();
+      this.encoder.resetHoldCompensation?.();
+      this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
+    }
     this.playbackBuffer.clear();
     this.lastKnownAckPts = null;
 
@@ -639,7 +663,10 @@ export class WebSocketHandler {
   /**
    * CATCHUP ペーシングを中断し、バッファ未再生分を破棄して最新の LIVE ストリームへ即時ジャンプ
    */
-  private abortCatchupAndSwitchToLive(session: ClientSession): void {
+  private abortCatchupAndSwitchToLive(
+    session: ClientSession,
+    options?: { skipEncoderRestart?: boolean },
+  ): void {
     if (session.pacingTimer) {
       clearTimeout(session.pacingTimer);
       session.pacingTimer = null;
@@ -649,10 +676,15 @@ export class WebSocketHandler {
     session.isFlowPaused = false;
     session.lastSentVideoPts = null;
     session.catchupCongestionStreak = 0;
+    (session.socket as any)._droppingGop = false;
     // Issue #104: LIVE ジャンプによる PTS 不連続跳躍を排水レート推定に混ぜない。
     // 学習済みの EWMA は保持し、基準点のみ再初期化する（ジャンプ直後の擬似高レート防止）
     session.lastAckProgressPts = undefined;
     session.lastAckProgressAtMs = undefined;
+
+    if (options?.skipEncoderRestart) {
+      return;
+    }
 
     // ライブ最新 IDR（必要なら encoder.restart()）へ即ジャンプ (目標切替遅延: 1秒以内)
     const cachedKeyframe = this.encoder.getCachedKeyframe();
@@ -894,6 +926,15 @@ export class WebSocketHandler {
       console.log(
         '[WebSocketHandler] New client session started; resetting playback buffer and restarting encoders...',
       );
+      // Buffer-Hold Pause 中に新セッションへ切り替わった場合、バッファを消去するため Hold も解除する。
+      // Hold のまま startLive() へ落ちると Video のみ restart され Audio FFmpeg が未起動のまま残る。
+      if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+        this.clearHoldTimers();
+        this.pipelineHoldState = 'ACTIVE';
+        this.browserManager.resumeFromBufferHold();
+        this.encoder.resetHoldCompensation?.();
+        this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
+      }
       this.playbackBuffer.clear();
       this.lastKnownAckPts = null;
       if (this.encoder.isRunning()) {
@@ -1016,10 +1057,11 @@ export class WebSocketHandler {
       }
     }
 
-    // Issue #111 ケースA: Hold 停止中 (BUFFER_HOLD_PAUSED) の再接続は、生成を凍結したまま
+    // Issue #111 ケースA: Hold 停止中 (BUFFER_HOLD_PAUSED) のプライマリ再接続は、生成を凍結したまま
     // CATCHUP で再生位置へ追いつかせ、resumeTriggerServerMs 到達後に自動再開する。
-    // autoSleep→holdExpire の排他不変条件により holdExpireTimer のみ解除する。
-    const holdingForReconnect = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
+    // セカンダリ接続では消費者が不在のまま holdExpireTimer が消えないよう解除しない。
+    const holdingForReconnect =
+      this.pipelineHoldState === 'BUFFER_HOLD_PAUSED' && session?.role !== 'secondary';
     if (holdingForReconnect) {
       if (this.holdExpireTimer) {
         clearTimeout(this.holdExpireTimer);
@@ -1028,6 +1070,7 @@ export class WebSocketHandler {
     }
 
     // If browser was paused, resume it immediately
+    let encoderJustStartedOnAuth = false;
     if (!holdingForReconnect) {
       if (this.browserManager.getState() === 'paused') {
         this.browserManager.resume();
@@ -1042,10 +1085,18 @@ export class WebSocketHandler {
           .catch((err) => console.error('Restart Chrome error:', err));
       }
 
-      // Ensure FFmpeg encoder is running if it was stopped during idle sleep
-      if (!this.encoder.isRunning()) {
+      // Ensure both Video and Audio FFmpeg encoders are running if stopped during idle sleep or hold
+      const wasRunning = this.encoder.isRunning();
+      const wasFullyRunning =
+        typeof this.encoder.isFullyRunning === 'function'
+          ? this.encoder.isFullyRunning()
+          : wasRunning;
+      if (!wasFullyRunning) {
         console.log('[WebSocketHandler] Resuming FFmpeg encoder on client authentication...');
         this.encoder.start();
+        if (!wasRunning) {
+          encoderJustStartedOnAuth = true;
+        }
       }
     }
 
@@ -1121,7 +1172,16 @@ export class WebSocketHandler {
         if (session) {
           session.mode = 'LIVE';
         }
-        this.startLive(socket);
+        let exitedHoldForLive = false;
+        if (holdingForReconnect) {
+          // CATCHUP に入らず LIVE 開始する場合は、ここで Hold を解除して Chrome と
+          // Video/Audio 両エンコーダを再開しないと、映像永久停止または片肺無音になる。
+          this.exitBufferHold('reconnect_live');
+          exitedHoldForLive = true;
+        }
+        this.startLive(socket, {
+          skipVideoRestart: exitedHoldForLive || encoderJustStartedOnAuth,
+        });
       }
 
       // Notify only previously-standby secondary clients that primary is now active and deliver fresh keyframe if cached
@@ -1177,7 +1237,7 @@ export class WebSocketHandler {
   /**
    * LIVE 再接続処理 (現挙動を完全維持: stale判定 -> restart -> ライブ)
    */
-  private startLive(socket: WebSocket): void {
+  private startLive(socket: WebSocket, options?: { skipVideoRestart?: boolean }): void {
     const cachedKeyframe = this.encoder.getCachedKeyframe();
     let isStale = false;
     if (cachedKeyframe) {
@@ -1192,15 +1252,17 @@ export class WebSocketHandler {
     }
 
     if (isStale) {
-      console.log(
-        '[WebSocketHandler] Cached keyframe is stale (>= 2s). Restarting video encoder for fresh IDR keyframe...',
-      );
-      this.encoder.restart().catch((err) => {
-        console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
-      });
+      if (!options?.skipVideoRestart) {
+        console.log(
+          '[WebSocketHandler] Cached keyframe is stale (>= 2s). Restarting video encoder for fresh IDR keyframe...',
+        );
+        this.encoder.restart().catch((err) => {
+          console.error('[WebSocketHandler] Failed to restart encoder on stale keyframe:', err);
+        });
+      }
     } else if (socket.readyState === 1) {
       const sent = this.sendCachedKeyframeAndConfig(socket);
-      if (!sent) {
+      if (!sent && !options?.skipVideoRestart) {
         console.log(
           '[WebSocketHandler] Incomplete video cache (missing keyframe or SPS/PPS). Restarting video encoder...',
         );
@@ -2029,6 +2091,7 @@ export class WebSocketHandler {
           if (this.clientSessions.get(socket)?.isStandby) {
             break;
           }
+          const wasHolding = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
           // Issue #111: Hold 中の LIVE ジャンプも即時解除・再生成から。
           this.exitBufferHold('jump_to_live');
           // Issue #103: recordInputActivity(socket) を呼ぶと CATCHUP 中に abortCatchupAndSwitchToLive と
@@ -2040,10 +2103,27 @@ export class WebSocketHandler {
             // 排水レート推定の基準点だけ再初期化する（LIVE 滞在時のジャンプも対象）
             session.lastAckProgressPts = undefined;
             session.lastAckProgressAtMs = undefined;
+            const needsStreamResync =
+              session.mode === 'CATCHUP' || Boolean((socket as any)._droppingGop);
             console.log(
               '[WebSocketHandler] Explicit JUMP_TO_LIVE requested by client. Switching immediately to LIVE.',
             );
-            this.abortCatchupAndSwitchToLive(session);
+            if (needsStreamResync) {
+              // Hold 解除直後は exitBufferHold() が直前に encoder.start() を呼んでいるため、
+              // 起動直後の Video FFmpeg を stale 判定で即殺して二重起動するのを防ぐ。
+              this.abortCatchupAndSwitchToLive(session, { skipEncoderRestart: wasHolding });
+            } else {
+              // 既に健康な LIVE セッションで JUMP_TO_LIVE が来た場合、過去キーフレーム再送や
+              // Video FFmpeg の強制再起動を行うと画面の瞬間巻き戻り・FPS 急落の原因になる (F-6)。
+              // エンコーダ稼働のみ保証し、ストリームを途切れさせずに LIVE 同期を完了する。
+              if (session.pacingTimer) {
+                clearTimeout(session.pacingTimer);
+                session.pacingTimer = null;
+              }
+              session.playbackQueue = [];
+              session.isFlowPaused = false;
+              this.ensureEncoderRunning();
+            }
             this.notifyOtherSessionsLiveJump(socket);
           }
           // Issue #103: 破棄基準となるライブエッジ PTS を権威値としてクライアントへ返し、
@@ -2229,9 +2309,7 @@ export class WebSocketHandler {
           }
           this.recordInputActivity(socket);
           this.browserManager.resume();
-          if (!this.encoder.isRunning()) {
-            this.encoder.start();
-          }
+          this.ensureEncoderRunning();
           this.broadcastControl({ type: 'BROWSER_STATUS', state: 'running' });
           break;
 
@@ -2247,9 +2325,7 @@ export class WebSocketHandler {
             }
           }
           await this.browserManager.restartChrome();
-          if (!this.encoder.isRunning()) {
-            this.encoder.start();
-          }
+          this.ensureEncoderRunning();
           this.broadcastControl({ type: 'BROWSER_STATUS', state: 'running' });
           break;
 
@@ -2507,9 +2583,7 @@ export class WebSocketHandler {
     this.browserManager.resumeFromBufferHold();
     this.encoder.noteHoldResume();
     this.encoder.armResumeGate(WebSocketHandler.RESUME_GATE_MS);
-    if (!this.encoder.isRunning()) {
-      this.encoder.start();
-    }
+    this.ensureEncoderRunning();
     this.lastHoldEvalAtMs = 0;
     this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
     if (!this.hasPrimaryClients() && !this.hasActingPrimaryClients()) {
@@ -2523,6 +2597,8 @@ export class WebSocketHandler {
     console.log(`[WebSocketHandler] Converting buffer-hold to sleep pause (${reason}).`);
     this.clearHoldTimers();
     this.pipelineHoldState = 'ACTIVE';
+    this.encoder.resetHoldCompensation?.();
+    this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
   }
 
   private clearHoldTimers(): void {
@@ -2543,6 +2619,10 @@ export class WebSocketHandler {
     this.clearHoldTimers();
     const wasHolding = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
     this.pipelineHoldState = 'ACTIVE';
+    if (wasHolding) {
+      this.encoder.resetHoldCompensation?.();
+      this.broadcastControl({ type: 'BUFFER_HOLD', paused: false });
+    }
     console.log(
       `[WebSocketHandler] Entering sleep pause (${reason}${wasHolding ? ', from buffer-hold' : ''}): stopping FFmpeg, pausing browser (True CPU 0%), clearing playback buffer.`,
     );

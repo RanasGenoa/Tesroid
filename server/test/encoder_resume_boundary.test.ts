@@ -127,4 +127,33 @@ describe('VaapiEncoder resume A/V boundary (Issue #111 F-4)', () => {
     (encoder as any).handleAudioChunk(opusPage());
     expect(audio).toHaveLength(1); // 新 IDR PTS で再設定された境界を通過
   });
+
+  it('steady-state keyframes without armResumeGate do not overwrite resumeBoundaryPtsUs or drop audio', () => {
+    const encoder = new VaapiEncoder();
+    setWallBaseline(encoder, 10_000_000n);
+
+    const audio: Array<{ pts: bigint }> = [];
+    encoder.on('audio', (pkt) => audio.push(pkt));
+
+    // 通常 LIVE 配信中の定常キーフレーム受信 (armResumeGate 未呼出)
+    (encoder as any).handleVideoChunk(IDR_AU);
+    expect((encoder as any).resumeBoundaryPtsUs).toBeNull();
+
+    // videoPts が単調増加補正等で僅かに先行していても、定常音声は一切破棄されない
+    setWallBaseline(encoder, 9_999_000n);
+    (encoder as any).handleAudioChunk(opusPage());
+    expect(audio).toHaveLength(1);
+  });
+
+  it('resetHoldCompensation clears holdPausedSinceUs so sleep transition does not rewind PTS on later resume', () => {
+    const encoder = new VaapiEncoder();
+    setWallBaseline(encoder, 5_000_000n);
+    encoder.noteHoldPause();
+    expect(encoder.isHoldPaused()).toBe(true);
+
+    encoder.resetHoldCompensation();
+    expect(encoder.isHoldPaused()).toBe(false);
+    expect((encoder as any).totalHoldPausedUs).toBe(0n);
+    expect((encoder as any).resumeBoundaryPtsUs).toBeNull();
+  });
 });

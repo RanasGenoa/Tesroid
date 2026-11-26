@@ -29,16 +29,22 @@ const buildHandler = (running: boolean, playbackBuffer: PlaybackBuffer): WebSock
   };
   const mockEncoder: any = {
     isRunning: vi.fn(() => running),
+    isFullyRunning: vi.fn(() => running),
     stop: vi.fn(),
     start: vi.fn(),
     noteHoldPause: vi.fn(),
     noteHoldResume: vi.fn(),
+    resetHoldCompensation: vi.fn(),
     isHoldPaused: vi.fn(() => false),
     armResumeGate: vi.fn(),
     getCurrentPts: vi.fn(() => 0n),
     setResumeBoundary: vi.fn(),
     getActiveBackend: vi.fn(() => 'vaapi'),
+    getCachedKeyframe: vi.fn(() => null),
+    getCachedSpsPps: vi.fn(() => null),
+    getCachedOpusHead: vi.fn(() => null),
     on: vi.fn(),
+    restart: vi.fn().mockResolvedValue(undefined),
     restartAll: vi.fn(),
   };
   const mockInput: any = {
@@ -80,7 +86,30 @@ describe('WebSocketHandler.canSkipFullRestart (Issue #112 F-6)', () => {
 
   it('refuses skip while buffer hold is engaged (not ACTIVE)', () => {
     const handler = buildHandler(true, new PlaybackBuffer({ bufferSeconds: 60 })) as any;
-    handler.pipelineHoldState = 'HOLD';
+    handler.pipelineHoldState = 'BUFFER_HOLD_PAUSED';
+    expect(handler.canSkipFullRestart()).toBe(false);
+  });
+
+  it('allows skip even when PlaybackBuffer holds 30s+ of ring history during healthy LIVE streaming', () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    const handler = buildHandler(true, buffer) as any;
+
+    // 通常配信 30 秒分がリングバッファに履歴保持されている状態
+    buffer.addVideo(1, 0n, Buffer.from('kf0'));
+    buffer.addVideo(0, 30_000_000n, Buffer.from('f30'));
+    handler.lastKnownAckPts = 29_800_000n; // serverHeldMs = 200ms <= 1000ms
+    expect(buffer.getBufferedDurationMs()).toBe(30000);
+    expect(handler.canSkipFullRestart()).toBe(true);
+  });
+
+  it('refuses skip when encoder is only half-running (video alive, audio stopped) or socket is dropping GOP', () => {
+    const handler = buildHandler(true, new PlaybackBuffer({ bufferSeconds: 60 })) as any;
+    handler.encoder.isFullyRunning.mockReturnValue(false);
+    expect(handler.canSkipFullRestart()).toBe(false);
+
+    handler.encoder.isFullyRunning.mockReturnValue(true);
+    const sock: any = { _droppingGop: true };
+    handler.clientSessions.set(sock, { socket: sock, mode: 'LIVE' });
     expect(handler.canSkipFullRestart()).toBe(false);
   });
 
@@ -88,14 +117,36 @@ describe('WebSocketHandler.canSkipFullRestart (Issue #112 F-6)', () => {
     const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
     const handler = buildHandler(true, buffer) as any;
 
-    // 生成アンカー 20.033s、ack 19.000s → held ≈ 1033ms > 500ms → スキップ不可 (真の追いつき処理)
+    // 生成アンカー 20.033s、ack 19.000s → held ≈ 1033ms > 1000ms → スキップ不可 (真の追いつき処理)
     buffer.addVideo(0, 19_000_000n, Buffer.from('a'));
     buffer.addVideo(0, 20_033_000n, Buffer.from('b'));
     handler.lastKnownAckPts = 19_000_000n;
     expect(handler.canSkipFullRestart()).toBe(false);
 
-    // ack 19.700s → held ≈ 333ms ≤ 500ms → 健康な LIVE。スキップ可
+    // ack 19.700s → held ≈ 333ms ≤ 1000ms → 健康な LIVE。スキップ可
     handler.lastKnownAckPts = 19_700_000n;
     expect(handler.canSkipFullRestart()).toBe(true);
+  });
+
+  it('does not restart video encoder or resend stale keyframe on JUMP_TO_LIVE when session is already healthy LIVE', async () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    const handler = buildHandler(true, buffer) as any;
+    const sock: any = { readyState: 1, send: vi.fn(), on: vi.fn() };
+    handler.handleConnection(sock);
+    const msgListener = sock.on.mock.calls.find((c: any[]) => c[0] === 'message')?.[1];
+    await msgListener(Buffer.concat([Buffer.from([0x04]), Buffer.from('1234')]));
+    handler.encoder.restart.mockClear();
+    sock.send.mockClear();
+
+    await msgListener(
+      Buffer.concat([Buffer.from([0x06]), Buffer.from(JSON.stringify({ type: 'JUMP_TO_LIVE' }))]),
+    );
+
+    expect(handler.encoder.restart).not.toHaveBeenCalled();
+    const sentVideo = sock.send.mock.calls.filter(
+      (c: any[]) => Buffer.isBuffer(c[0]) && c[0][0] === 0x01,
+    );
+    expect(sentVideo).toHaveLength(0);
+    handler.close();
   });
 });
