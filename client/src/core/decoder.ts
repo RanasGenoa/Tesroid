@@ -359,6 +359,39 @@ export class VideoStreamDecoder {
     }
   }
 
+  /**
+   * Issue #115: 目標 PTS (µs) 直前のキーフレーム境界まで pre-decode キューを破棄する。
+   * ペーサーが検知した持続的な音声先行 (≥800ms) の供給元がデコーダ手前滞留である場合、
+   * 復号前にGOP単位で巻き戻すことで平衡を解消する (JUMP_TO_LIVE の自動版)。
+   * 戻り値: 破棄したパケット数 (境界が無いため破棄なしは 0)。
+   */
+  public trimPendingBeforePts(targetPtsUs: number): number {
+    if (!Number.isFinite(targetPtsUs) || this.pendingPackets.length === 0) return 0;
+    let boundaryIdx = -1;
+    for (let i = 0; i < this.pendingPackets.length; i++) {
+      if ((this.pendingPackets[i].flags & VIDEO_FLAGS.KEYFRAME) !== 0) {
+        if (Number(this.pendingPackets[i].pts) <= targetPtsUs) {
+          boundaryIdx = i;
+        } else {
+          break;
+        }
+      }
+    }
+    if (boundaryIdx <= 0) return 0;
+    for (let i = 0; i < boundaryIdx; i++) {
+      this.pendingBytes = Math.max(0, this.pendingBytes - this.pendingPackets[i].data.length);
+    }
+    const dropped = this.pendingPackets.splice(0, boundaryIdx);
+    if (this.telemetry?.isEnabled()) {
+      this.telemetry.recordDecoder('av_trim_gop', {
+        droppedCount: dropped.length,
+        remainingCount: this.pendingPackets.length,
+        targetPtsUs: Math.round(targetPtsUs),
+      });
+    }
+    return dropped.length;
+  }
+
   public reset(): void {
     this.isConfigured = false;
     this.configPromise = null;

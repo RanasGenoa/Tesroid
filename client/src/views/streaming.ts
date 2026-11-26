@@ -739,6 +739,13 @@ export function renderStreamingView(
   }
   applyTargetFps(targetFps);
 
+  // Issue #115: ペーサーが音声先行 ≥800ms の継続を検知した時、デコーダ手前キューを
+  // 音声エッジ直前の GOP 境界まで破棄する。ペーサーの 4/tick 破棄は供給速率 (60fps) に
+  // 勝てないため、滞留の供給元 (pre-decode) を上流で断つのが本修正の本体。
+  framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
+    decoder.trimPendingBeforePts(playingAudioPtsUs - 250_000);
+  };
+
   const syncTelemetryAttachment = (enabled: boolean) => {
     const activeCollector = enabled ? telemetryCollector : undefined;
     if (typeof (framePacer as any).setTelemetryCollector === 'function') {

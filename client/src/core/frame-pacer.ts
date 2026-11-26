@@ -55,6 +55,7 @@ export class FramePacer {
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
   private lastStaleDropLogTimeMs: number = -Infinity;
+  private lastSustainedTrimRequestMs: number = -Infinity;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
   private computePllShift(
     currentScheduleMs: number,
@@ -124,12 +125,20 @@ export class FramePacer {
   private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
   private static readonly AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS = 60;
   private static readonly AV_SYNC_MAX_STALE_DROP_LEAD_MS = 60_000;
+  // Issue #115: 滞留の生き残りがデコーダ手前 (pre-decode キュー) にある場合、ペーサーの
+  // 4/tick 破棄は供給速率に勝てず平衡が残る。大きい先行が継続した時だけ 1s 間隔で
+  // 上流 GOP トリムを要求する (streaming.ts が decoder.trimPendingBeforePts へ配線)。
+  private static readonly SUSTAINED_AUDIO_LEAD_TRIM_MS = 800;
+  private static readonly TRIM_REQUEST_MIN_INTERVAL_MS = 1000;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
   // Issue #11: 1フレームの canvas 描画所要時間 (ms)。クライアント側の描画負荷計測に使用
   public onFrameRenderTimed?: (durationMs: number) => void;
   public onBufferingChange?: (isBuffering: boolean) => void;
+  // Issue #115: 音声先行 ≥800ms 継続時に、上流 (デコーダ手前キュー) の GOP 境界トリムを
+  // 要求する。引数は要求時点の再生中音声 PTS (µs)。
+  public onSustainedAudioLead?: (playingAudioPtsUs: number) => void;
 
   constructor(
     renderer: CanvasRenderer,
@@ -682,6 +691,21 @@ export class FramePacer {
               backlogLagMs > FramePacer.AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS &&
               backlogLagMs < FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS
             ) {
+              // Issue #115: 先行が大きい (≥800ms) 場合は自キューの破棄では追いつけないため、
+              // デコーダ手前へ GOP 境界トリムを要求する (最大 1 回/秒)。
+              if (
+                backlogLagMs >= FramePacer.SUSTAINED_AUDIO_LEAD_TRIM_MS &&
+                now - this.lastSustainedTrimRequestMs >= FramePacer.TRIM_REQUEST_MIN_INTERVAL_MS
+              ) {
+                this.lastSustainedTrimRequestMs = now;
+                if (this.telemetry?.isEnabled()) {
+                  this.telemetry.recordAvSync('predecode_trim_request', {
+                    leadMs: Math.round(backlogLagMs),
+                    queueLength: this.frameQueue.length,
+                  });
+                }
+                this.onSustainedAudioLead?.(playingAudioPts);
+              }
               while (
                 this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
                 staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK
