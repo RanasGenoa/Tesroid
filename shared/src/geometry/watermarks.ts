@@ -1,3 +1,5 @@
+import { STREAM_BOUNDS } from "../settings/constants.js";
+
 export const LIVE_HYSTERESIS_BOUNDS = {
   windowSeconds: 3.0,
   minHighWaterBytes: 512 * 1024,
@@ -59,9 +61,30 @@ export interface CatchupFlowProfile {
   readonly burstIntervalMs: number;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function nonNegativeFinite(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 // Spec: docs/specs/03-streaming-transport.md#2.3
 export function calculateLiveWatermarks(videoBitrateBps: number): LiveWatermarks {
-  throw new Error("NOT_IMPLEMENTED");
+  const rawHighBytes =
+    Number.isFinite(videoBitrateBps) && videoBitrateBps > 0
+      ? Math.round((videoBitrateBps / 8) * LIVE_HYSTERESIS_BOUNDS.windowSeconds)
+      : 0;
+  const highWaterBytes = clamp(
+    rawHighBytes,
+    LIVE_HYSTERESIS_BOUNDS.minHighWaterBytes,
+    LIVE_HYSTERESIS_BOUNDS.maxHighWaterBytes,
+  );
+  const lowWaterBytes = Math.max(
+    LIVE_HYSTERESIS_BOUNDS.minLowWaterBytes,
+    Math.round(highWaterBytes * LIVE_HYSTERESIS_BOUNDS.lowWaterRatio),
+  );
+  return { highWaterBytes, lowWaterBytes };
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.4
@@ -69,7 +92,34 @@ export function calculateBufferHoldThresholds(
   targetBufferMs: number,
   isHardwareEncoder: boolean,
 ): BufferHoldThresholds {
-  throw new Error("NOT_IMPLEMENTED");
+  if (!Number.isFinite(targetBufferMs) || targetBufferMs <= 0) {
+    return {
+      enabled: false,
+      triggerMs: 0,
+      resumeMs: 0,
+      bufferUsageTriggerRatio: BUFFER_HOLD_CONSTANTS.bufferUsageTriggerRatio,
+    };
+  }
+
+  const triggerMs = clamp(
+    Math.round(targetBufferMs),
+    BUFFER_HOLD_CONSTANTS.minTriggerMs,
+    BUFFER_HOLD_CONSTANTS.maxTriggerMs,
+  );
+  const headroomMs = isHardwareEncoder
+    ? BUFFER_HOLD_CONSTANTS.hwResumeHeadroomMs
+    : BUFFER_HOLD_CONSTANTS.swResumeHeadroomMs;
+  const resumeMs = Math.max(
+    0,
+    Math.min(headroomMs, triggerMs - BUFFER_HOLD_CONSTANTS.minHysteresisSpanMs),
+  );
+
+  return {
+    enabled: true,
+    triggerMs,
+    resumeMs,
+    bufferUsageTriggerRatio: BUFFER_HOLD_CONSTANTS.bufferUsageTriggerRatio,
+  };
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.4
@@ -78,7 +128,56 @@ export function calculateCatchupFlowProfile(
   drainRate: number,
   consecutiveStalls: number,
 ): CatchupFlowProfile {
-  throw new Error("NOT_IMPLEMENTED");
+  const baseTarget = Math.max(
+    CATCHUP_FLOW_CONSTANTS.minWindowMs,
+    Math.round(nonNegativeFinite(targetBufferMs)),
+  );
+  const clampedRate = Number.isFinite(drainRate)
+    ? clamp(drainRate, 0, CATCHUP_FLOW_CONSTANTS.maxDrainRate)
+    : 1;
+  const stalls = Number.isFinite(consecutiveStalls)
+    ? Math.max(0, Math.floor(consecutiveStalls))
+    : 0;
+
+  const congested =
+    clampedRate < CATCHUP_FLOW_CONSTANTS.drainRateCongestionThreshold ||
+    stalls >= CATCHUP_FLOW_CONSTANTS.consecutiveStallThreshold;
+
+  if (!congested) {
+    return {
+      congested: false,
+      effectiveWindowMs: baseTarget,
+      socketGuardBytes: CATCHUP_FLOW_CONSTANTS.healthySocketGuardBytes,
+      burstIntervalMs: CATCHUP_FLOW_CONSTANTS.healthyBurstIntervalMs,
+    };
+  }
+
+  const effectiveWindowMs = Math.min(
+    baseTarget,
+    Math.max(CATCHUP_FLOW_CONSTANTS.minCongestedWindowMs, Math.round(baseTarget * clampedRate)),
+  );
+
+  const minGuard = CATCHUP_FLOW_CONSTANTS.congestedSocketGuardMinBytes;
+  const maxGuard = CATCHUP_FLOW_CONSTANTS.congestedSocketGuardMaxBytes;
+  const socketGuardBytes =
+    stalls >= CATCHUP_FLOW_CONSTANTS.consecutiveStallThreshold
+      ? minGuard
+      : clamp(
+          Math.round(
+            minGuard +
+              (maxGuard - minGuard) *
+                clamp(clampedRate / CATCHUP_FLOW_CONSTANTS.drainRateCongestionThreshold, 0, 1),
+          ),
+          minGuard,
+          maxGuard,
+        );
+
+  return {
+    congested: true,
+    effectiveWindowMs,
+    socketGuardBytes,
+    burstIntervalMs: CATCHUP_FLOW_CONSTANTS.congestedBurstIntervalMs,
+  };
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.6
@@ -87,7 +186,10 @@ export function calculateServerRemainingBufferMs(
   clientVideoBufferedMs: number,
   clientAudioBufferedMs: number,
 ): number {
-  throw new Error("NOT_IMPLEMENTED");
+  const lag = nonNegativeFinite(serverLagMs);
+  const videoBuf = nonNegativeFinite(clientVideoBufferedMs);
+  const audioBuf = nonNegativeFinite(clientAudioBufferedMs);
+  return Math.max(0, lag - Math.max(videoBuf, audioBuf));
 }
 
 // Spec: docs/specs/10-power-lifecycle.md#2.4
@@ -95,5 +197,21 @@ export function calculateAutoSleepDelayMs(
   autoSleepMinutes: number,
   holdTriggerMs: number | null,
 ): number | null {
-  throw new Error("NOT_IMPLEMENTED");
+  if (!Number.isFinite(autoSleepMinutes) || autoSleepMinutes <= 0) {
+    return null;
+  }
+
+  const baseDelayMs = Math.max(
+    STREAM_BOUNDS.autoSleepMinutes.minDelayMs,
+    Math.round(autoSleepMinutes * 60_000),
+  );
+
+  if (holdTriggerMs !== null && Number.isFinite(holdTriggerMs) && holdTriggerMs > 0) {
+    return Math.max(
+      baseDelayMs,
+      Math.round(holdTriggerMs) + BUFFER_HOLD_CONSTANTS.autoSleepHoldMarginMs,
+    );
+  }
+
+  return baseDelayMs;
 }

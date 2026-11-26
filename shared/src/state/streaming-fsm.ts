@@ -1,3 +1,5 @@
+import { STREAM_EPOCH_INITIAL } from "../protocol/constants.js";
+
 export const INTERACTION_TIMEOUT_MS = 4_000 as const;
 
 export type StandbyReason = "UNAUTHENTICATED" | "REAR_STANDBY" | "SLEEP_PAUSED";
@@ -101,17 +103,363 @@ export interface HudProjectionInput {
   readonly isWaitingForKeyframe: boolean;
 }
 
+const HUD_LOCAL_BUF_THRESHOLD_MS = 800;
+const HUD_SERVER_BUF_THRESHOLD_MS = 600;
+
+function activateSessionState(
+  streamEpoch: number,
+  resumeCatchup?: { readonly targetBufferMs: number; readonly resumePtsUs: number },
+): StreamingState {
+  if (resumeCatchup !== undefined) {
+    return {
+      kind: "CATCHUP",
+      streamEpoch,
+      targetBufferMs: resumeCatchup.targetBufferMs,
+      resumePtsUs: resumeCatchup.resumePtsUs,
+    };
+  }
+  return { kind: "LIVE", streamEpoch };
+}
+
+function transitionFromStandby(
+  state: Extract<StreamingState, { readonly kind: "STANDBY" }>,
+  event: StreamingEvent,
+): StreamingTransition {
+  switch (event.type) {
+    case "SESSION_ACTIVATED":
+      return {
+        nextState: activateSessionState(event.streamEpoch, event.resumeCatchup),
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "ENTER_STANDBY":
+      if (state.reason === event.reason) {
+        return { nextState: state, effects: [] };
+      }
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: event.reason },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "POWER_SLEEP":
+      if (state.reason === "SLEEP_PAUSED") {
+        return { nextState: state, effects: [] };
+      }
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: "SLEEP_PAUSED" },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "USER_INTERACTION":
+    case "INTERACTION_TIMEOUT":
+    case "CATCHUP_DRAINED":
+    case "SOCKET_CONGESTED":
+    case "HOLD_THRESHOLD_REACHED":
+    case "HOLD_DRAINED":
+    case "STREAM_RESET":
+      return { nextState: state, effects: [] };
+    default:
+      return assertNever(event);
+  }
+}
+
+function transitionFromInteractive(
+  state: Extract<StreamingState, { readonly kind: "INTERACTIVE" }>,
+  event: StreamingEvent,
+): StreamingTransition {
+  switch (event.type) {
+    case "SESSION_ACTIVATED":
+      return {
+        nextState: activateSessionState(event.streamEpoch, event.resumeCatchup),
+        effects: [{ type: "CANCEL_INTERACTION_TIMER" }, { type: "BROADCAST_STATE" }],
+      };
+    case "ENTER_STANDBY":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: event.reason },
+        effects: [{ type: "CANCEL_INTERACTION_TIMER" }, { type: "BROADCAST_STATE" }],
+      };
+    case "POWER_SLEEP":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: "SLEEP_PAUSED" },
+        effects: [{ type: "CANCEL_INTERACTION_TIMER" }, { type: "BROADCAST_STATE" }],
+      };
+    case "USER_INTERACTION":
+      return {
+        nextState: {
+          kind: "INTERACTIVE",
+          streamEpoch: state.streamEpoch,
+          lastInteractionAtMs: event.atMs,
+        },
+        effects: [{ type: "ARM_INTERACTION_TIMER", delayMs: INTERACTION_TIMEOUT_MS }],
+      };
+    case "INTERACTION_TIMEOUT":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: state.streamEpoch },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "SOCKET_CONGESTED":
+      return {
+        nextState: state,
+        effects: [{ type: "ENTER_LIVE_HYSTERESIS" }],
+      };
+    case "STREAM_RESET":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.newStreamEpoch },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "CATCHUP_DRAINED":
+    case "HOLD_THRESHOLD_REACHED":
+    case "HOLD_DRAINED":
+      return { nextState: state, effects: [] };
+    default:
+      return assertNever(event);
+  }
+}
+
+function transitionFromLive(
+  state: Extract<StreamingState, { readonly kind: "LIVE" }>,
+  event: StreamingEvent,
+): StreamingTransition {
+  switch (event.type) {
+    case "SESSION_ACTIVATED": {
+      const nextState = activateSessionState(event.streamEpoch, event.resumeCatchup);
+      const changed = nextState.kind !== state.kind || nextState.streamEpoch !== state.streamEpoch;
+      return {
+        nextState,
+        effects: changed ? [{ type: "BROADCAST_STATE" }] : [],
+      };
+    }
+    case "ENTER_STANDBY":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: event.reason },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "POWER_SLEEP":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: "SLEEP_PAUSED" },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "USER_INTERACTION":
+      return {
+        nextState: {
+          kind: "INTERACTIVE",
+          streamEpoch: state.streamEpoch,
+          lastInteractionAtMs: event.atMs,
+        },
+        effects: [
+          { type: "ARM_INTERACTION_TIMER", delayMs: INTERACTION_TIMEOUT_MS },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "SOCKET_CONGESTED":
+      return {
+        nextState: state,
+        effects: [{ type: "ENTER_LIVE_HYSTERESIS" }],
+      };
+    case "HOLD_THRESHOLD_REACHED":
+      return {
+        nextState: {
+          kind: "BUFFER_HOLD",
+          streamEpoch: state.streamEpoch,
+          holdSinceMs: event.atMs,
+          targetBufferMs: event.targetBufferMs,
+        },
+        effects: [
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "REQUEST_POWER_HOLD" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "STREAM_RESET":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.newStreamEpoch },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "INTERACTION_TIMEOUT":
+    case "CATCHUP_DRAINED":
+    case "HOLD_DRAINED":
+      return { nextState: state, effects: [] };
+    default:
+      return assertNever(event);
+  }
+}
+
+function transitionFromCatchup(
+  state: Extract<StreamingState, { readonly kind: "CATCHUP" }>,
+  event: StreamingEvent,
+): StreamingTransition {
+  switch (event.type) {
+    case "SESSION_ACTIVATED":
+      if (event.resumeCatchup !== undefined) {
+        return {
+          nextState: activateSessionState(event.streamEpoch, event.resumeCatchup),
+          effects: [{ type: "BROADCAST_STATE" }],
+        };
+      }
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.streamEpoch },
+        effects: [{ type: "FLUSH_CATCHUP_QUEUE" }, { type: "BROADCAST_STATE" }],
+      };
+    case "ENTER_STANDBY":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: event.reason },
+        effects: [{ type: "FLUSH_CATCHUP_QUEUE" }, { type: "BROADCAST_STATE" }],
+      };
+    case "POWER_SLEEP":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: "SLEEP_PAUSED" },
+        effects: [{ type: "FLUSH_CATCHUP_QUEUE" }, { type: "BROADCAST_STATE" }],
+      };
+    case "USER_INTERACTION":
+      return {
+        nextState: {
+          kind: "INTERACTIVE",
+          streamEpoch: event.newStreamEpoch,
+          lastInteractionAtMs: event.atMs,
+        },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "ARM_INTERACTION_TIMER", delayMs: INTERACTION_TIMEOUT_MS },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "CATCHUP_DRAINED":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: state.streamEpoch },
+        effects: [{ type: "BROADCAST_STATE" }],
+      };
+    case "HOLD_THRESHOLD_REACHED":
+      return {
+        nextState: {
+          kind: "BUFFER_HOLD",
+          streamEpoch: state.streamEpoch,
+          holdSinceMs: event.atMs,
+          targetBufferMs: event.targetBufferMs,
+        },
+        effects: [
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "REQUEST_POWER_HOLD" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "STREAM_RESET":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.newStreamEpoch },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "INTERACTION_TIMEOUT":
+    case "SOCKET_CONGESTED":
+    case "HOLD_DRAINED":
+      return { nextState: state, effects: [] };
+    default:
+      return assertNever(event);
+  }
+}
+
+function transitionFromBufferHold(
+  state: Extract<StreamingState, { readonly kind: "BUFFER_HOLD" }>,
+  event: StreamingEvent,
+): StreamingTransition {
+  switch (event.type) {
+    case "SESSION_ACTIVATED":
+      if (event.resumeCatchup !== undefined) {
+        return {
+          nextState: activateSessionState(event.streamEpoch, event.resumeCatchup),
+          effects: [{ type: "REQUEST_POWER_RESUME" }, { type: "BROADCAST_STATE" }],
+        };
+      }
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.streamEpoch },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "REQUEST_POWER_RESUME" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.streamEpoch },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "ENTER_STANDBY":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: event.reason },
+        effects: [{ type: "FLUSH_CATCHUP_QUEUE" }, { type: "BROADCAST_STATE" }],
+      };
+    case "POWER_SLEEP":
+      return {
+        nextState: { kind: "STANDBY", streamEpoch: state.streamEpoch, reason: "SLEEP_PAUSED" },
+        effects: [{ type: "FLUSH_CATCHUP_QUEUE" }, { type: "BROADCAST_STATE" }],
+      };
+    case "USER_INTERACTION":
+      return {
+        nextState: {
+          kind: "INTERACTIVE",
+          streamEpoch: event.newStreamEpoch,
+          lastInteractionAtMs: event.atMs,
+        },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "REQUEST_POWER_RESUME" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "ARM_INTERACTION_TIMER", delayMs: INTERACTION_TIMEOUT_MS },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "HOLD_DRAINED":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.newStreamEpoch },
+        effects: [
+          { type: "REQUEST_POWER_RESUME" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "STREAM_RESET":
+      return {
+        nextState: { kind: "LIVE", streamEpoch: event.newStreamEpoch },
+        effects: [
+          { type: "FLUSH_CATCHUP_QUEUE" },
+          { type: "REQUEST_POWER_RESUME" },
+          { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: event.newStreamEpoch },
+          { type: "CANCEL_INTERACTION_TIMER" },
+          { type: "BROADCAST_STATE" },
+        ],
+      };
+    case "INTERACTION_TIMEOUT":
+    case "CATCHUP_DRAINED":
+    case "SOCKET_CONGESTED":
+    case "HOLD_THRESHOLD_REACHED":
+      return { nextState: state, effects: [] };
+    default:
+      return assertNever(event);
+  }
+}
+
 // Spec: docs/architecture.md#3.5
-export function assertNever(_value: never): never {
-  throw new Error("NOT_IMPLEMENTED");
+export function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${JSON.stringify(value)}`);
 }
 
 // Spec: docs/architecture.md#3.5
 export function createInitialStreamingState(
-  streamEpoch?: number,
-  reason?: StandbyReason,
+  streamEpoch = STREAM_EPOCH_INITIAL,
+  reason: StandbyReason = "UNAUTHENTICATED",
 ): StreamingState {
-  throw new Error("NOT_IMPLEMENTED");
+  return {
+    kind: "STANDBY",
+    streamEpoch,
+    reason,
+  };
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.2
@@ -121,26 +469,15 @@ export function transitionStreamingState(
 ): StreamingTransition {
   switch (state.kind) {
     case "STANDBY":
+      return transitionFromStandby(state, event);
     case "INTERACTIVE":
+      return transitionFromInteractive(state, event);
     case "LIVE":
+      return transitionFromLive(state, event);
     case "CATCHUP":
-    case "BUFFER_HOLD": {
-      switch (event.type) {
-        case "SESSION_ACTIVATED":
-        case "ENTER_STANDBY":
-        case "USER_INTERACTION":
-        case "INTERACTION_TIMEOUT":
-        case "CATCHUP_DRAINED":
-        case "SOCKET_CONGESTED":
-        case "HOLD_THRESHOLD_REACHED":
-        case "HOLD_DRAINED":
-        case "STREAM_RESET":
-        case "POWER_SLEEP":
-          throw new Error("NOT_IMPLEMENTED");
-        default:
-          return assertNever(event);
-      }
-    }
+      return transitionFromCatchup(state, event);
+    case "BUFFER_HOLD":
+      return transitionFromBufferHold(state, event);
     default:
       return assertNever(state);
   }
@@ -148,20 +485,72 @@ export function transitionStreamingState(
 
 // Spec: docs/specs/04-client-playback-avsync.md#2.3
 export function selectQueueKind(state: StreamingState): QueueKind {
-  throw new Error("NOT_IMPLEMENTED");
+  switch (state.kind) {
+    case "STANDBY":
+      return "NONE";
+    case "INTERACTIVE":
+    case "LIVE":
+      return "LIVE";
+    case "CATCHUP":
+    case "BUFFER_HOLD":
+      return "CATCHUP";
+    default:
+      return assertNever(state);
+  }
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.2
 export function isInputAllowed(state: StreamingState): boolean {
-  throw new Error("NOT_IMPLEMENTED");
+  switch (state.kind) {
+    case "STANDBY":
+      return false;
+    case "INTERACTIVE":
+    case "LIVE":
+    case "CATCHUP":
+    case "BUFFER_HOLD":
+      return true;
+    default:
+      return assertNever(state);
+  }
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.2
 export function shouldSuppressMediaSend(state: StreamingState): boolean {
-  throw new Error("NOT_IMPLEMENTED");
+  switch (state.kind) {
+    case "STANDBY":
+    case "BUFFER_HOLD":
+      return true;
+    case "INTERACTIVE":
+    case "LIVE":
+    case "CATCHUP":
+      return false;
+    default:
+      return assertNever(state);
+  }
 }
 
 // Spec: docs/specs/07-ui-hud-settings.md#2.1
 export function selectHudModeBadge(state: StreamingState, input: HudProjectionInput): HudModeBadge {
-  throw new Error("NOT_IMPLEMENTED");
+  switch (state.kind) {
+    case "STANDBY":
+      return "STANDBY";
+    case "BUFFER_HOLD":
+      return "HOLD";
+    case "INTERACTIVE":
+      return "DIRECT_LIVE";
+    case "LIVE":
+    case "CATCHUP":
+      if (input.isWaitingForKeyframe) {
+        return "WAIT";
+      }
+      if (
+        input.localBufferedMs >= HUD_LOCAL_BUF_THRESHOLD_MS ||
+        input.serverBufferedMs >= HUD_SERVER_BUF_THRESHOLD_MS
+      ) {
+        return "BUF";
+      }
+      return "LIVE";
+    default:
+      return assertNever(state);
+  }
 }
