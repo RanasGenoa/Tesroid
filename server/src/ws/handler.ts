@@ -2147,7 +2147,9 @@ export class WebSocketHandler {
           }
           if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
             // Hold 解除自体が FFmpeg 両系統の新規起動 (= ライブエッジ IDR + 音声境界ゲート)
-            // を伴うため、重ねて再起動はしない。
+            // を伴うため、重ねて再起動はしない。ただし直後の二重再起動を防ぐため
+            // クールダウン基準は更新する。
+            this.lastForcedVideoIdrAtMs = Date.now();
             this.exitBufferHold('force_video_idr');
             break;
           }

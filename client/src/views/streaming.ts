@@ -749,20 +749,32 @@ export function renderStreamingView(
   // 収束するため、同じ検知点からサーバーへ映像のみクローズド再起動 (ライブエッジ新規 IDR、
   // resize と同一の実証済み経路 / 音声完全不変) を要求する。セッション再接続でしか消えなかった
   // 滞留の自動化。クライアント 5s + サーバー 5s の二重レート制限。
+  const FORCED_IDR_COOLDOWN_MS = 5_000;
   let lastForcedIdrRequestAtMs = -Infinity;
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
-    const nowMs = performance.now();
-    if (nowMs - lastForcedIdrRequestAtMs >= 5_000 && wsClient.isConnected()) {
-      lastForcedIdrRequestAtMs = nowMs;
-      // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
-      // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
-      // ライブエッジの新 IDR まで旧コンテンツのデコードを再開しない。全破棄が先行するため
-      // この経路では局所 trim を行わない (クールダウン間の検知のみ GOP 境界トリム)。
-      decoder.clearPendingPackets();
-      wsClient.send(ClientProtocol.packCommand({ type: 'FORCE_VIDEO_IDR' }));
+    // 局所 GOP 境界トリムを常に先に試行し、実際に破棄が発生 (>0) したなら局所機構が
+    // 機能している証拠なのでエンコーダは再起動しない (一過性スパイク耐性)。
+    const dropped = decoder.trimPendingBeforePts(
+      playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US,
+    );
+    if (dropped > 0) {
       return;
     }
-    decoder.trimPendingBeforePts(playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US);
+    // trim が no-op = GOP 格子にロックされた証拠。そこで初めて映像限定のライブエッジ
+    // 再起動へエスカレートする (5s に 1回まで)。
+    const nowMs = performance.now();
+    if (nowMs - lastForcedIdrRequestAtMs < FORCED_IDR_COOLDOWN_MS || !wsClient.isConnected()) {
+      return;
+    }
+    lastForcedIdrRequestAtMs = nowMs;
+    if (telemetryCollector.isEnabled()) {
+      telemetryCollector.recordAvSync('force_video_idr_request', { playingAudioPtsUs });
+    }
+    // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
+    // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
+    // ライブエッジの新 IDR まで旧コンテンツのデコードを再開しない。
+    decoder.clearPendingPackets();
+    wsClient.send(ClientProtocol.packCommand({ type: 'FORCE_VIDEO_IDR' }));
   };
 
   const syncTelemetryAttachment = (enabled: boolean) => {
