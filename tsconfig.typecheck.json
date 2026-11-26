@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@tesroid/shared": ["./shared/src/index.ts"],
+      "@tesroid/shared/*": ["./shared/src/*"]
+    }
+  },
+  "include": [
+    "vitest.config.ts",
+    "client/vite.config.ts",
+    "shared/src/**/*.ts",
+    "shared/test/**/*.ts",
+    "server/src/**/*.ts",
+    "server/test/**/*.ts",
+    "client/src/**/*.ts",
+    "client/test/**/*.ts",
+    "test/**/*.ts"
+  ]
+}

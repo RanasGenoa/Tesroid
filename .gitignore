@@ -5,6 +5,7 @@ node_modules/
 # Production build outputs
 dist/
 **/dist/
+*.tsbuildinfo
 
 # Environment files & credentials
 .env

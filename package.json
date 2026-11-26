@@ -1,0 +1,30 @@
+{
+  "name": "tesroid",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "lint": "biome check .",
+    "lint:ci": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc -p shared/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tsconfig.typecheck.json --noEmit",
+    "check": "npm run lint && npm run typecheck",
+    "test": "vitest run",
+    "build": "tsc -b && npm run build -w client"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.9",
+    "@types/node": "^22.20.7",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.2"
+  }
+}
