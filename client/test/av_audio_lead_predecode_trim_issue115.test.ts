@@ -181,6 +181,14 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
     const remaining = decoder.getPendingPacketsCount();
     expect(remaining).toBe(queued - dropped);
 
+    // トリム後の先頭は期待するキーフレーム (i=60, PTS=1.98s) そのもの、pendingBytes は減少し非負
+    const pp = (decoder as any).pendingPackets;
+    expect(Number(pp[0].pts)).toBe(60 * FRAME_INTERVAL_MS * 1000);
+    expect((pp[0].flags & VIDEO_FLAGS.KEYFRAME) !== 0).toBe(true);
+    const bytesAfter = (decoder as any).pendingBytes;
+    expect(bytesAfter).toBeGreaterThanOrEqual(0);
+    expect(bytesAfter).toBeLessThan(queued * 8); // 元は 8byte x queued 件。減少していること
+
     // 冪等: 同じ目標での再 trim は追加破棄しない
     expect(decoder.trimPendingBeforePts(3_500_000)).toBe(0);
     // 目標より古い要求も無害 (no-op)
