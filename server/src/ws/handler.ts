@@ -2153,6 +2153,11 @@ export class WebSocketHandler {
             this.exitBufferHold('force_video_idr');
             break;
           }
+          // 省電力・停止遷移との競合ガード: エンコーダが止まっている状態での再起动要求は無視
+          // (復帰は通常の再接続・ensureEncoderRunning 経路に委ねる)。
+          if (!this.encoder.isRunning()) {
+            break;
+          }
           const forcedNowMs = Date.now();
           if (forcedNowMs - this.lastForcedVideoIdrAtMs < WebSocketHandler.FORCED_IDR_COOLDOWN_MS) {
             break;

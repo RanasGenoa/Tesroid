@@ -128,7 +128,8 @@ export class FramePacer {
   // Issue #115: 滞留の生き残りがデコーダ手前 (pre-decode キュー) にある場合、ペーサーの
   // 4/tick 破棄は供給速率に勝てず平衡が残る。lead がこの値に達した tick で即座に上流 GOP
   // トリムを要求し、以降 1s のレート制限で重複発火を抑える (streaming.ts が
-  // decoder.trimPendingBeforePts へ配線)。単発スパイクでもトリム対象が無ければ no-op 安全弁。
+  // decoder.trimPendingBeforePts へ配線)。単発スパイクは 1 回の no-op を生むだけで、
+  // エスカレーション (サーバー映像再起動) は no-op が 2 回連続した場合にのみ発生する。
   private static readonly SUSTAINED_AUDIO_LEAD_TRIM_MS = 800;
   private static readonly TRIM_REQUEST_MIN_INTERVAL_MS = 1000;
 

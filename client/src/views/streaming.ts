@@ -751,24 +751,37 @@ export function renderStreamingView(
   // 滞留の自動化。クライアント 5s + サーバー 5s の二重レート制限。
   const FORCED_IDR_COOLDOWN_MS = 5_000;
   let lastForcedIdrRequestAtMs = -Infinity;
+  // no-op 連続カウント: GOP 格子ロックは「trim が切れない状態の持続」でのみ確定させる。
+  // ペーサーの検知は 1 回/秒上限なので、2 回連続 no-op = 最低 1 秒持続した証拠となる
+  // (単発ジッター/GC による 1 tick の空 queue 検知でエンコーダを再起動しない)。
+  const ESCALATE_NOOP_STREAK = 2;
+  let trimNoOpStreak = 0;
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
     // 局所 GOP 境界トリムを常に先に試行し、実際に破棄が発生 (>0) したなら局所機構が
-    // 機能している証拠なのでエンコーダは再起動しない (一過性スパイク耐性)。
+    // 機能している証拠なのでカウントを戻してエンコーダは再起動しない。
     const dropped = decoder.trimPendingBeforePts(
       playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US,
     );
     if (dropped > 0) {
+      trimNoOpStreak = 0;
       return;
     }
-    // trim が no-op = GOP 格子にロックされた証拠。そこで初めて映像限定のライブエッジ
-    // 再起動へエスカレートする (5s に 1回まで)。
+    // trim が no-op を ESCALATE_NOOP_STREAK 回連続で初めて、GOP 格子ロックとみなし
+    // 映像限定のライブエッジ再起動へエスカレートする (5s に 1回まで)。
+    trimNoOpStreak += 1;
+    if (trimNoOpStreak < ESCALATE_NOOP_STREAK) {
+      return;
+    }
     const nowMs = performance.now();
     if (nowMs - lastForcedIdrRequestAtMs < FORCED_IDR_COOLDOWN_MS || !wsClient.isConnected()) {
       return;
     }
     lastForcedIdrRequestAtMs = nowMs;
+    trimNoOpStreak = 0;
     if (telemetryCollector.isEnabled()) {
-      telemetryCollector.recordAvSync('force_video_idr_request', { playingAudioPtsUs });
+      telemetryCollector.recordAvSync('force_video_idr_request', {
+        playingAudioPtsUs: Math.round(playingAudioPtsUs),
+      });
     }
     // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
     // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
