@@ -56,4 +56,36 @@ describe('FramePacer Tests', () => {
 
     vi.useRealTimers();
   });
+
+  it('Issue #112 F-4b: jumpToLive(true) はネットワークストールで形成された自適応クッションを保持し、既定の jumpToLive() はゼロにする', () => {
+    vi.useFakeTimers();
+    try {
+      pacer.setTargetFps(30);
+
+      // 1フレーム目: 正常到着 → 予約後、時刻進行で描画 (hasRenderedAny=true)
+      const f1 = { close: vi.fn(), timestamp: 0 } as any;
+      pacer.queueFrame(f1);
+      vi.advanceTimersByTime(60);
+
+      // 2フレーム目: PTS差33msに対し実時間500ms後に到着 → ネットワークストール検出で
+      // autoCushionMs が minCushionMs (180ms) まで引き上げられる
+      const f2 = { close: vi.fn(), timestamp: 33_000 } as any;
+      pacer.queueFrame(f2);
+      vi.advanceTimersByTime(500);
+      const f3 = { close: vi.fn(), timestamp: 66_000 } as any;
+      pacer.queueFrame(f3);
+      expect(pacer.getAutoCushionMs()).toBeGreaterThanOrEqual(180);
+
+      // サーバー起因の早送り (preserveCushion=true): キューは空になるがクッションは維持
+      pacer.jumpToLive(true);
+      expect(pacer.getBufferedDurationMs()).toBeLessThanOrEqual(0);
+      expect(pacer.getAutoCushionMs()).toBeGreaterThanOrEqual(180);
+
+      // ユーザー LIVE tap (既定): 従来どおりクッションもリセット
+      pacer.jumpToLive();
+      expect(pacer.getAutoCushionMs()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

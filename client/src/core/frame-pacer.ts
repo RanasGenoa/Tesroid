@@ -781,9 +781,13 @@ export class FramePacer {
 
   /**
    * Explicitly discard catchup buffer and jump to real-time live stream.
+   * preserveCushion=true はサーバー起因の早送り用: 自適応クッション (autoCushionMs) を
+   * ゼロにせず維持し、直後の微小ジッタで WAIT(バッファリング状態) に落ちるのを防ぐ (Issue #112 F-4b)。
    */
-  public jumpToLive(): void {
-    this.autoCushionMs = 0;
+  public jumpToLive(preserveCushion = false): void {
+    if (!preserveCushion) {
+      this.autoCushionMs = 0;
+    }
     this.quietFramesCount = 0;
     this.flushQueue();
   }

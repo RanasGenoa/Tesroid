@@ -1012,6 +1012,21 @@ export function renderStreamingView(
     }
   };
 
+  // Issue #112 F-4b: サーバー起因の LIVE 復帰 (LIVE_JUMPED / CATCHUP→LIVE) では、音声側は
+  // 権威 PTS バリアで straggler を破棄するのに、映像側 (decoder pendingPackets + framePacer
+  // queue) はそのまま再生継続され、古い映像が 2〜3 秒分残って「音声先行」の A/V ズレが
+  // 恒常化していた (実測 drift −2.0〜−2.4s / decodeQueueSize 86〜98)。ユーザー LIVE tap の
+  // executeJumpToLive と同じ早送りを対称に発火させる。サーバー起因のため自適応クッションは
+  // 維持 (preserveCushion=true) し、直後の WAIT 揺動を誘発しない。
+  const fastForwardVideoToLiveEdge = () => {
+    if (typeof decoder.flushPendingForLiveJump === 'function') {
+      decoder.flushPendingForLiveJump();
+    }
+    if (typeof framePacer.jumpToLive === 'function') {
+      framePacer.jumpToLive(true);
+    }
+  };
+
   let isRestartingEncoder = false;
   let encoderRestartTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1386,7 +1401,13 @@ export function renderStreamingView(
         serverBufferMs = Math.max(0, msg.serverBufferMs);
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
+        const prevServerMode = serverMode;
         serverMode = msg.serverMode;
+        // Issue #112 F-4b: サーバー起因の CATCHUP→LIVE 完了は映像側にも同一境界の早送りが必要。
+        // 音声バリアだけで古い映像キュー (最大数秒分) を残すと音声先行ドリフトが再発生する
+        if (prevServerMode === 'CATCHUP' && serverMode === 'LIVE') {
+          fastForwardVideoToLiveEdge();
+        }
       }
       // Issue #111: Buffer-Hold Pause 中フラグを PONG 毎に同期（旧サーバーでは未定義=false）
       if (typeof msg.holdPaused === 'boolean') {
@@ -1499,6 +1520,9 @@ export function renderStreamingView(
         // 古い実時間チェーン上の再生位置が映像ジャンプ後のオフセット残留として居座るのを防ぐ
         audioPlayer.jumpToLive();
       }
+      // Issue #112 F-4b: 音声バリアと同一境界で映像側 (decoder pending + pacer queue) も早送りし、
+      // 破棄済み音声に対する古い映像の再生による音声先行ドリフトを遮断する
+      fastForwardVideoToLiveEdge();
       updateHudLiveStatus();
     } else if (msg.type === 'SESSION_ROLE_CHANGED') {
       if (!isSecondarySession) return;
