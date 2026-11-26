@@ -2,6 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+  buildChromeLaunchArgs,
+  buildChromeProcessEnv,
+  PROHIBITED_CHROME_FLAGS,
+} from "../../server/src/domains/browser/index.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -252,12 +257,36 @@ describe("Architecture & Specification Invariant Guardrails", () => {
     }
   });
 
-  it("Spec 06 AC-01: browser launch-args excludes prohibited Chrome GPU flags", () => {
+  it("Spec 06 AC-01: browser launch-args excludes prohibited Chrome GPU flags and strips GALLIUM_DRIVER=d3d12", () => {
     const launchArgsPath = path.join(rootDir, "server/src/domains/browser/launch-args.ts");
     const content = fs.readFileSync(launchArgsPath, "utf8");
-    expect(content).not.toContain("--enable-gpu-rasterization");
-    expect(content).not.toContain("--enable-zero-copy");
-    expect(content).not.toContain("--disable-gpu-vsync");
+    for (const flag of PROHIBITED_CHROME_FLAGS) {
+      expect(content).not.toContain(flag);
+    }
+
+    const args = buildChromeLaunchArgs({
+      display: ":99",
+      locale: "ja-JP",
+      timezone: "Asia/Tokyo",
+      userDataDir: "/tmp/tesroid-chrome-guard",
+      pulseSocketPath: "/tmp/pulse-socket",
+      cdpPort: 9222,
+      initialUrl: "https://www.youtube.com",
+      viewport: { width: 1280, height: 720 },
+    });
+    for (const flag of PROHIBITED_CHROME_FLAGS) {
+      expect(args).not.toContain(flag);
+    }
+
+    const chromeEnv = buildChromeProcessEnv(
+      { GALLIUM_DRIVER: "d3d12" },
+      "ja-JP",
+      "Asia/Tokyo",
+      ":99",
+      "/tmp/pulse-socket",
+    );
+    expect(chromeEnv.GALLIUM_DRIVER).toBeUndefined();
+    expect(chromeEnv.LIBVA_DRIVER_NAME).toBeUndefined();
   });
 
   it.todo(

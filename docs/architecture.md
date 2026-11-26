@@ -14,7 +14,7 @@
 | **ワークスペース構成** | npm workspaces (`shared`, `server`, `client`) | バイナリプロトコル・設定定義・純粋計算を `shared` に一元化し、クライアント/サーバー間の二重定義と乖離を構造的に防ぐ |
 | **品質ツール** | Biome (lint / format) + `tsc --noEmit` + Vitest | 単一ツールチェーンによる高速な静的検査・整形・振る舞いテストを実行し、CI ゲートへ直結する |
 | **バックエンド HTTP/WS** | Fastify + 単一多重化 WebSocket (`/ws`, `TCP_NODELAY`) | 映像・音声・制御・タッチ・リサイズ・メトリクス・テレメトリを単一 WSS 接続上で低遅延多重化する（[仕様書 03](specs/03-streaming-transport.md)） |
-| **仮想ブラウザ / 入力** | Xvfb + Openbox + PulseAudio UNIX ソケット + Google Chrome + CDP (`127.0.0.1:9222`) + `xdotool` フォールバック | VAAPI 動画デコード + CPU 2D ラスターのハイブリッド描画と、Blink ネイティブタッチ注入を両立する（[仕様書 06](specs/06-browser-input-cdp.md)） |
+| **仮想ブラウザ / 入力** | Xvfb + Openbox + PulseAudio UNIX ソケット + Google Chrome + CDP (`127.0.0.1:9222`) | VAAPI 動画デコード + CPU 2D ラスターのハイブリッド描画と、Blink ネイティブタッチ注入を両立する（[仕様書 06](specs/06-browser-input-cdp.md)） |
 | **メディアエンコード** | FFmpeg (`h264_nvenc` / VAAPI `radeonsi`/`iHD`/`i965`/`d3d12` / `libx264`) + `libopus` | サーバー側で Annex-B→AVCC 変換と OggOpus パースを完結させ、クライアントを軽量化する（[仕様書 05](specs/05-encoder-gpu.md)） |
 | **クライアント再生・UI** | Vanilla TypeScript + Vite + WebCodecs (`VideoDecoder` / `AudioDecoder`) + `<canvas>` 2D (`desynchronized: true`) + Web Audio API (`latencyHint: 'interactive'`) | テスラ車載 OS の走行時 `<video>` 停止ガードを回避し、小窓表示（`773×553 CSS` 基準・DPR 非ハードコード）を主対象とした軽量タッチ専用 UI を構築する（[仕様書 04](specs/04-client-playback-avsync.md), [仕様書 07](specs/07-ui-hud-settings.md)） |
 | **コンテナ・公開基盤** | Ubuntu 24.04 (`linux/amd64`) + `tini` + `no-systemd` APT Pinning (`dbus-x11`) + `INSTALL_CHROME=false` + 内蔵 `cloudflared` | ホスト Linux カーネル非依存性と Chrome 再配布規約遵守を両立し、ポート開放不要の HTTPS/WSS 公開を可能にする（[仕様書 09](specs/09-deploy-infra.md)） |
@@ -52,7 +52,7 @@ Tesroid/
 │       │   ├── settings/            # settings.json 永続化・初期セットアップ展開
 │       │   ├── auth/                # bcrypt PIN 認証・24h トークン管理・10回ロックアウト (lockout.json)
 │       │   ├── session/             # PRIMARY / ACTING_PRIMARY / SECONDARY 排他・猶予・基準PTS同期
-│       │   ├── browser/             # Xvfb/Openbox/Pulse/Chrome 起動・単一スクリプト注入・CDP/X11入力
+│       │   ├── browser/             # Xvfb/Openbox/Pulse/Chrome 起動・単一スクリプト注入・CDP 入力
 │       │   ├── encoder/             # GPU 検出/フォールバック・H.264 AVCC/OggOpus パーサ・媒体パイプライン
 │       │   ├── streaming/           # streaming-controller(単一遷移関数シェル)・リングバッファ・ヒステリシス・CATCHUP・Hold判定
 │       │   ├── power/               # 単一ライフサイクル状態機械・排他タイマー・ドメイン間Port定義
@@ -338,7 +338,7 @@ stateDiagram-v2
 | 階層 | 対象範囲 | テストダブルの方針 | 主な検証対象（仕様 AC 準拠） |
 | :--- | :--- | :--- | :--- |
 | **1. 純粋ドメイン・プロトコル単体テスト** | `shared/*`, `server/domains/*` 純粋ロジック, `client/media/sync-clock` 等 | **モック不使用**（タイマー系のみ `Clock` 注入） | `transitionStreamingState` の状態×イベント全組み合わせテーブル駆動テスト、バイナリ往復対称性、`streamEpoch` 旧世代破棄、Annex-B→AVCC(1B分断/AUD欠落)、OggOpus、小窓基準（`773×553 CSS`）・可変 DPR 寸法アライメント、ビットレート連動ヒステリシス、リングバッファ GOP 破棄、リンク認識 CATCHUP、単一マスタークロック 4 秒以内 `\|音ズレ\|<=60ms` 収束・真の符号付きドリフト、電源状態機械・排他タイマー (`autoSleepMinutes=0` 含む)、10 秒差分メトリクス |
-| **2. 境界結合テスト** | Fastify HTTP + WS (`/ws`) + ファイル永続化 + Coordinator | **外部 OS 境界の Port のみ Fake**（FFmpeg / Xvfb / Chrome / CDP / `xdotool` のみ、他ドメイン間は実オブジェクト結合） | セットアップ `403`/`400`、品質 3 択展開、ロックアウト 10 回→`1008`→起動ガード、PIN 変更時トークン全失効、同一トークン `4000` vs 競合 `4009`、代理昇格/非連鎖/降格同時リセット、後席待機保護、`POST /api/stream/reset`、テレメトリ `512 KiB`/`10 MiB`/`15` 世代/ループバック認証境界 |
+| **2. 境界結合テスト** | Fastify HTTP + WS (`/ws`) + ファイル永続化 + Coordinator | **外部 OS 境界の Port のみ Fake**（FFmpeg / Xvfb / Chrome / CDP のみ、他ドメイン間は実オブジェクト結合） | セットアップ `403`/`400`、品質 3 択展開、ロックアウト 10 回→`1008`→起動ガード、PIN 変更時トークン全失効、同一トークン `4000` vs 競合 `4009`、代理昇格/非連鎖/降格同時リセット、後席待機保護、`POST /api/stream/reset`、テレメトリ `512 KiB`/`10 MiB`/`15` 世代/ループバック認証境界 |
 | **3. 不変条件ガードレールテスト** | リポジトリ全体・ビルド後 `dist/`・`Dockerfile` | 静的解析・ビルド成果物検査 | ソース/ビルド後 HTML の `<video>` ゼロ・`<canvas>` 存在・小窓基準 HUD 中央揃え、`1.53` 等 DPR ハードコード禁止、`localStorage` 不使用、`window.prompt`/`confirm`/`Escape` 閉じ禁止、禁止 Chrome フラグ非含有、`/etc/libva.conf` 非ハードコード、`no-systemd` Pinning & `dbus-x11`、機密情報ゼロ |
 
 ### 4.3 禁止するテストアンチパターン
@@ -359,7 +359,7 @@ stateDiagram-v2
 | **Phase 1** | **`shared` 正典モジュール & 状態遷移スタブ** | `protocol` (`streamEpoch`, バイナリエンコード/デコード, チャンネル/クローズコード), `settings` (スキーマ, 単一既定値, 品質 3 択/負荷プロファイル, 検証), `geometry` (寸法アライメント, 水位式), **`state/streaming-fsm.ts`（排他 5 状態・イベント・副作用・単一遷移関数スタブ＆純粋セレクタ）** | Phase 0 | [仕様書 01](specs/01-auth-security.md), [03](specs/03-streaming-transport.md) (AC-06 含む), [05](specs/05-encoder-gpu.md), [07](specs/07-ui-hud-settings.md) のプロトコル・状態遷移・設定・計算 AC がモックゼロ単体テストで PASS |
 | **Phase 2** | **認証・設定永続化・セットアップ** | `infra/storage`, `domains/settings`, `domains/auth` (bcrypt, 24h トークン, `lockout.json` 起動ガード), REST `/api/status`, `/api/setup`, `/api/auth/verify`, `/api/settings` | Phase 1 | [仕様書 01](specs/01-auth-security.md) AC-01〜05（形式・ロックアウト・`403`/`400`・破損フォールバック）が実 HTTP 結合テストで PASS |
 | **Phase 3** | **セッション管理 & 単一電源状態機械** | `domains/session` (`PRIMARY`/`ACTING_PRIMARY`/`SECONDARY_*`, 3s 猶予, 非連鎖), `domains/power` (単一 FSM, 排他タイマー, Port 契約), WS 認証/ロール制御, `/api/power/*` | Phase 2 | [仕様書 02](specs/02-session-multidisplay.md) AC-01〜06 & [仕様書 10](specs/10-power-lifecycle.md) AC-01〜04 が Clock 注入 + Port Fake 結合テストで PASS |
-| **Phase 4** | **仮想ブラウザ & CDP/X11 入力** | `domains/browser` (PulseAudio/Xvfb/Openbox/Chrome 起動引数・環境構築, 単一 `page-scripts.ts`, `SIGSTOP`/`SIGCONT` ツリー, CDP タッチ優先 + `xdotool` フォールバック, URL 監視) | Phase 3 | [仕様書 06](specs/06-browser-input-cdp.md) AC-01〜05（禁止フラグ不在・WebAuthn/バブル抑止・ズーム `[50,250]`・YouTube フルスクリーン・プロセス順序）が PASS |
+| **Phase 4** | **仮想ブラウザ & CDP 入力** | `domains/browser` (PulseAudio/Xvfb/Openbox/Chrome 起動引数・環境構築, 単一 `page-scripts.ts`, `SIGSTOP`/`SIGCONT` ツリー, CDP ネイティブ入力専用, URL 監視) | Phase 3 | [仕様書 06](specs/06-browser-input-cdp.md) AC-01〜05（禁止フラグ不在・WebAuthn/バブル抑止・ズーム `[50,250]`・YouTube フルスクリーン・プロセス順序）が PASS |
 | **Phase 5** | **マルチ GPU エンコーダ & 統合ストリーミング** | `domains/encoder` (NVENC→AMD→Intel→Software 検出・フォールバック, Annex-B→AVCC/OggOpus, マスタークロック + ウォッチドッグ), `domains/streaming` (`streaming-controller` による単一遷移関数駆動・副作用実行, 60s/48MiB リングバッファ, ビットレート連動ヒステリシス, リンク認識 CATCHUP, Hold 連動), `POST /api/stream/reset` | Phase 4 | [仕様書 05](specs/05-encoder-gpu.md) AC-01〜04 & [仕様書 03](specs/03-streaming-transport.md) AC-01〜06 が PASS |
 | **Phase 6** | **観測性基盤（メトリクス & テレメトリ）** | `domains/observability` (360 件集計, 10 秒差分, 遅延 JSONL 10 MiB / 15 世代, ループバック免除ミドルウェア), `/api/health`, `/api/metrics/*`, `/api/telemetry/*` | Phase 5 | [仕様書 08](specs/08-observability.md) AC-01〜04 が PASS |
 | **Phase 7** | **クライアント再生エンジン & タッチ前処理** | `client/transport`, `client/media` (`playback-controller` による単一遷移関数駆動, `streamEpoch` ゲート, LIVE/CATCHUP キュー分離, 単一マスタークロック同期, `<canvas desynchronized>`, Web Audio `1.0x` + 40ms 保護), `client/input` (20px 上端ガード/スロップ/余白除外), `client/observability` | Phase 1, 6 | [仕様書 04](specs/04-client-playback-avsync.md) AC-01〜05（4 秒以内収束・GPU 解放 100%・真のドリフト）& [仕様書 06](specs/06-browser-input-cdp.md) AC-02 クライアント側が PASS |

@@ -31,18 +31,10 @@ export interface CdpClientPort {
   goBack(): Promise<void>;
   goForward(): Promise<void>;
   reload(): Promise<void>;
+  setViewportSize(dimensions: AlignedDimensions): Promise<void>;
   evaluate<T = unknown>(expression: string): Promise<T>;
   addScriptToEvaluateOnNewDocument(source: string): Promise<void>;
   getPageInfo(): Promise<BrowserPageInfo>;
-}
-
-export interface X11InputPort {
-  dispatchMouseOrWheel(frame: TouchFrame): Promise<void>;
-  typeText(text: string): Promise<void>;
-  pressKey(key: SpecialKey): Promise<void>;
-  goBack(): Promise<void>;
-  goForward(): Promise<void>;
-  reload(): Promise<void>;
 }
 
 export interface BrowserControlPort extends PowerBrowserPort {

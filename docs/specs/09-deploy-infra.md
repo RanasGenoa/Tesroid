@@ -12,7 +12,7 @@ Linux・各種 NAS OS（TrueNAS / QNAP 等）・Windows Docker Desktop・NVIDIA 
 - **対象プラットフォーム**: `linux/amd64` (`x86_64`) 専用（推奨メモリ 2 GB 以上、ARM64 / Raspberry Pi 等は非対応を明示）。
 - **マルチステージコンテナ構成 & Node.js 22 LTS 統一**:
   - ビルドステージ・ランタイムステージ・CI 実行環境すべてを **Node.js 22 LTS** へ統一する。
-  - Ubuntu 24.04 ランタイム上に Node.js 22、マルチ GPU VAAPI ドライバ群（`libva2`, `libva-drm2`, `intel-media-va-driver-non-free`, `i965-va-driver-shaders`, `mesa-va-drivers`, `libdrm-amdgpu1`, `vainfo`）、仮想ディスプレイ/音声/入力/エンコーダ（Xvfb, Openbox, xdotool, wmctrl, PulseAudio, FFmpeg）、日本語・絵文字フォント（Noto CJK / Color Emoji）を集約する。
+  - Ubuntu 24.04 ランタイム上に Node.js 22、マルチ GPU VAAPI ドライバ群（`libva2`, `libva-drm2`, `intel-media-va-driver-non-free`, `i965-va-driver-shaders`, `mesa-va-drivers`, `libdrm-amdgpu1`, `vainfo`）、仮想ディスプレイ/音声/エンコーダ（Xvfb, Openbox, wmctrl, PulseAudio, FFmpeg）、日本語・絵文字フォント（Noto CJK / Color Emoji）を集約する。
 - **ホストカーネル非依存（`no-systemd` ガードレール）**:
   - 商用 NAS 等の旧世代・カスタム Linux カーネル（例: Linux 5.10 系）では、新しい `systemd` 系パッケージが発行する Linux 6.6+ 固有システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）が `ENOENT` を返しビルド・起動不能となるため、`systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を APT Pinning（`Pin-Priority: -1`）で強制ブロックし、D-Bus セッションバス依存は `dbus-x11` で明示解決する。
   - パッケージ導入は `--no-install-recommends` を徹底し、特定の新しい Linux カーネルシステムコールへ依存しないことを維持する。

@@ -1,15 +1,5 @@
-import type {
-  AlignedDimensions,
-  EncoderBackend,
-  SpecialKey,
-  TouchFrame,
-  WsCloseCode,
-} from "@tesroid/shared";
-import type {
-  BrowserPageInfo,
-  CdpClientPort,
-  X11InputPort,
-} from "../../src/domains/browser/ports.js";
+import type { AlignedDimensions, EncoderBackend, SpecialKey, WsCloseCode } from "@tesroid/shared";
+import type { BrowserPageInfo, CdpClientPort } from "../../src/domains/browser/ports.js";
 import type { GpuHardwareProbePort } from "../../src/domains/encoder/ports.js";
 import type { SessionConnectionId, SessionTransportPort } from "../../src/domains/session/ports.js";
 import type {
@@ -213,51 +203,158 @@ export class FakeJsonlStore implements JsonlStore {
   }
 }
 
+export class FakeManagedProcess implements ManagedProcess {
+  readonly pid: number | null;
+  readonly spawnOptions: SpawnOptions;
+  readonly killedSignals: ProcessSignal[] = [];
+  ignoreSigterm = false;
+  private exited = false;
+  private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly exitListeners: ((code: number | null, signal: string | null) => void)[] = [];
+  private readonly errorListeners: ((error: Error) => void)[] = [];
+
+  constructor(pid: number | null, spawnOptions: SpawnOptions) {
+    this.pid = pid;
+    this.spawnOptions = spawnOptions;
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.stdoutListeners.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.stderrListeners.push(listener);
+  }
+
+  onExit(listener: (code: number | null, signal: string | null) => void): void {
+    this.exitListeners.push(listener);
+  }
+
+  onError(listener: (error: Error) => void): void {
+    this.errorListeners.push(listener);
+  }
+
+  kill(signal: ProcessSignal = "SIGTERM"): boolean {
+    if (this.exited || this.pid === null) {
+      return false;
+    }
+    this.killedSignals.push(signal);
+    if (signal === "SIGKILL" || (signal === "SIGTERM" && !this.ignoreSigterm)) {
+      this.emitExit(null, signal);
+    }
+    return true;
+  }
+
+  emitStdout(chunk: Uint8Array): void {
+    for (const listener of this.stdoutListeners) {
+      listener(chunk);
+    }
+  }
+
+  emitStderr(chunk: Uint8Array): void {
+    for (const listener of this.stderrListeners) {
+      listener(chunk);
+    }
+  }
+
+  emitExit(code: number | null, signal: string | null = null): void {
+    if (this.exited) {
+      return;
+    }
+    this.exited = true;
+    for (const listener of this.exitListeners) {
+      listener(code, signal);
+    }
+  }
+
+  emitError(error: Error): void {
+    for (const listener of this.errorListeners) {
+      listener(error);
+    }
+  }
+}
+
 export class FakeProcessRunner implements ProcessRunner {
+  readonly spawnCalls: SpawnOptions[] = [];
+  readonly spawnedProcesses: FakeManagedProcess[] = [];
+  readonly execCalls: {
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly options?: ProcessExecOptions;
+  }[] = [];
+  readonly signalCalls: { readonly pid: number; readonly signal: ProcessSignal }[] = [];
+  readonly terminatedProcesses: { readonly proc: ManagedProcess; readonly graceMs: number }[] = [];
+
+  nextPid = 1000;
+  processList: readonly ProcessEntry[] = [];
+  readonly deadPids = new Set<number>();
+  execHandler:
+    | ((
+        command: string,
+        args: readonly string[],
+        options?: ProcessExecOptions,
+      ) => ExecResult | Promise<ExecResult>)
+    | null = null;
+
   // Spec: docs/architecture.md#4.2
   spawn(options: SpawnOptions): ManagedProcess {
-    throw new Error("NOT_IMPLEMENTED");
+    this.spawnCalls.push(options);
+    const proc = new FakeManagedProcess(this.nextPid, options);
+    this.nextPid += 100;
+    this.spawnedProcesses.push(proc);
+    return proc;
   }
 
   // Spec: docs/architecture.md#4.2
-  exec(
+  async exec(
     command: string,
     args: readonly string[],
     options?: ProcessExecOptions,
   ): Promise<ExecResult> {
-    throw new Error("NOT_IMPLEMENTED");
+    this.execCalls.push({ command, args, options });
+    if (this.execHandler !== null) {
+      return this.execHandler(command, args, options);
+    }
+    return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
   }
 
   // Spec: docs/architecture.md#4.2
   sendSignal(pid: number, signal: ProcessSignal): boolean {
-    throw new Error("NOT_IMPLEMENTED");
+    this.signalCalls.push({ pid, signal });
+    return !this.deadPids.has(pid);
   }
 
   // Spec: docs/architecture.md#4.2
-  listProcesses(): Promise<readonly ProcessEntry[]> {
-    throw new Error("NOT_IMPLEMENTED");
+  async listProcesses(): Promise<readonly ProcessEntry[]> {
+    return [...this.processList];
   }
 
   // Spec: docs/architecture.md#4.2
-  terminateWithEscalation(proc: ManagedProcess, graceMs: number): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async terminateWithEscalation(proc: ManagedProcess, graceMs: number): Promise<void> {
+    this.terminatedProcesses.push({ proc, graceMs });
+    proc.kill("SIGTERM");
   }
 }
 
 export class FakeProcessTreeController implements ProcessTreeController {
+  readonly freezeCalls: number[] = [];
+  readonly resumeCalls: number[] = [];
+  readonly descendantsByRoot = new Map<number, readonly number[]>();
+
   // Spec: docs/architecture.md#4.2
-  collectDescendants(rootPid: number): Promise<readonly number[]> {
-    throw new Error("NOT_IMPLEMENTED");
+  async collectDescendants(rootPid: number): Promise<readonly number[]> {
+    return this.descendantsByRoot.get(rootPid) ?? [];
   }
 
   // Spec: docs/architecture.md#4.2
-  freezeTree(rootPid: number): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async freezeTree(rootPid: number): Promise<void> {
+    this.freezeCalls.push(rootPid);
   }
 
   // Spec: docs/architecture.md#4.2
-  resumeTree(rootPid: number): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async resumeTree(rootPid: number): Promise<void> {
+    this.resumeCalls.push(rootPid);
   }
 }
 
@@ -282,104 +379,122 @@ export class FakeProcessExit implements ProcessExitPort {
 }
 
 export class FakeCdpClient implements CdpClientPort {
+  connected = false;
+  connectedPort: number | null = null;
+  connectAttempts = 0;
+  disconnectCount = 0;
+  shouldFailConnect = false;
+  shouldThrowOnGetPageInfo = false;
+  pageInfo: BrowserPageInfo = { url: "https://www.youtube.com", title: "YouTube" };
+  getPageInfoCalls = 0;
+
+  readonly touchEvents: {
+    readonly type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel";
+    readonly touchPoints: readonly {
+      readonly x: number;
+      readonly y: number;
+      readonly id: number;
+    }[];
+  }[] = [];
+  readonly insertedTexts: string[] = [];
+  readonly dispatchedKeys: SpecialKey[] = [];
+  readonly navigatedUrls: string[] = [];
+  backCount = 0;
+  forwardCount = 0;
+  reloadCount = 0;
+  readonly viewportSizes: AlignedDimensions[] = [];
+  readonly evaluatedExpressions: string[] = [];
+  readonly initScripts: string[] = [];
+  evaluateHandler: ((expression: string) => unknown) | null = null;
+
   // Spec: docs/architecture.md#4.2
-  connect(port: number): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async connect(port: number): Promise<void> {
+    this.connectAttempts += 1;
+    if (this.shouldFailConnect) {
+      throw new Error(`Failed to connect to CDP port ${port}`);
+    }
+    this.connected = true;
+    this.connectedPort = port;
   }
 
   // Spec: docs/architecture.md#4.2
-  disconnect(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async disconnect(): Promise<void> {
+    this.disconnectCount += 1;
+    this.connected = false;
   }
 
   // Spec: docs/architecture.md#4.2
   isConnected(): boolean {
-    throw new Error("NOT_IMPLEMENTED");
+    return this.connected;
   }
 
   // Spec: docs/architecture.md#4.2
-  dispatchTouchEvent(
+  async dispatchTouchEvent(
     type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel",
     touchPoints: readonly { readonly x: number; readonly y: number; readonly id: number }[],
   ): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+    this.touchEvents.push({
+      type,
+      touchPoints: touchPoints.map((pt) => ({ ...pt })),
+    });
   }
 
   // Spec: docs/architecture.md#4.2
-  insertText(text: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async insertText(text: string): Promise<void> {
+    this.insertedTexts.push(text);
   }
 
   // Spec: docs/architecture.md#4.2
-  dispatchKey(key: SpecialKey): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async dispatchKey(key: SpecialKey): Promise<void> {
+    this.dispatchedKeys.push(key);
   }
 
   // Spec: docs/architecture.md#4.2
-  navigate(url: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async navigate(url: string): Promise<void> {
+    this.navigatedUrls.push(url);
   }
 
   // Spec: docs/architecture.md#4.2
-  goBack(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async goBack(): Promise<void> {
+    this.backCount += 1;
   }
 
   // Spec: docs/architecture.md#4.2
-  goForward(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async goForward(): Promise<void> {
+    this.forwardCount += 1;
   }
 
   // Spec: docs/architecture.md#4.2
-  reload(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async reload(): Promise<void> {
+    this.reloadCount += 1;
   }
 
   // Spec: docs/architecture.md#4.2
-  evaluate<T = unknown>(expression: string): Promise<T> {
-    throw new Error("NOT_IMPLEMENTED");
+  async setViewportSize(dimensions: AlignedDimensions): Promise<void> {
+    this.viewportSizes.push({ ...dimensions });
   }
 
   // Spec: docs/architecture.md#4.2
-  addScriptToEvaluateOnNewDocument(source: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async evaluate<T = unknown>(expression: string): Promise<T> {
+    this.evaluatedExpressions.push(expression);
+    if (this.evaluateHandler !== null) {
+      return this.evaluateHandler(expression) as T;
+    }
+    return undefined as T;
   }
 
   // Spec: docs/architecture.md#4.2
-  getPageInfo(): Promise<BrowserPageInfo> {
-    throw new Error("NOT_IMPLEMENTED");
-  }
-}
-
-export class FakeX11Input implements X11InputPort {
-  // Spec: docs/architecture.md#4.2
-  dispatchMouseOrWheel(frame: TouchFrame): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async addScriptToEvaluateOnNewDocument(source: string): Promise<void> {
+    this.initScripts.push(source);
   }
 
   // Spec: docs/architecture.md#4.2
-  typeText(text: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
-  }
-
-  // Spec: docs/architecture.md#4.2
-  pressKey(key: SpecialKey): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
-  }
-
-  // Spec: docs/architecture.md#4.2
-  goBack(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
-  }
-
-  // Spec: docs/architecture.md#4.2
-  goForward(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
-  }
-
-  // Spec: docs/architecture.md#4.2
-  reload(): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async getPageInfo(): Promise<BrowserPageInfo> {
+    this.getPageInfoCalls += 1;
+    if (this.shouldThrowOnGetPageInfo) {
+      throw new Error("CDP disconnected");
+    }
+    return { ...this.pageInfo };
   }
 }
 
