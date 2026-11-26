@@ -41,7 +41,7 @@
   - 音声ビットレート: `128,000〜320,000 bps`（既定 `128,000 bps`、範囲外は HTTP `400`）。
   - フレームレート: `24〜60 fps`（既定 `30 fps`）。
   - レイアウト最大辺 (`maxSize`): `640〜1,920 px`（既定 `1,280 px`）。**`PUT /api/settings` による `maxSize` 更新時は次のクライアントリサイズを待たず即座に仮想ブラウザおよびエンコーダ寸法へ反映する**。
-  - キャプチャ/レイアウト寸法アライメント: 幅 `8 px` 境界（下限 `640`）、高さ `2 px` 境界（下限 `360`、上限 `min(1080, maxSize)`）。クライアント幅 `< 1000 px` 時は DPR に応じた `1.25〜1.5` 倍スケーリングを適用する。
+  - キャプチャ/レイアウト寸法アライメント: 幅 `8 px` 境界（下限 `640`）、高さ `2 px` 境界（下限 `360`、上限 `min(1080, maxSize)`）。クライアント幅 `< 1000 px` 時は DPR に応じた `1.25〜1.5` 倍スケーリングを適用する。エンコード解像度は実車利用の中心となる小窓表示（代表基準 `773×553 CSS / DPR 1.53`）を主対象に最適化しつつ、`1.53` 等の特定 DPR 値は直書きせず、実行時物理ピクセルとサーバー側アライメント計算で吸収する。
 - **サーバー映像パフォーマンスプリセット（6 種）**:
   - GPU 稼働時（NVENC / VAAPI）: `high`（`maxSize=1920`, VAAPI 圧縮 `4`, GPU 色変換 ON）, `balanced`（既定: `maxSize=1280`, VAAPI 圧縮 `7`, GPU 色変換 ON）, `low_power`（`maxSize=960`, VAAPI 圧縮 `7`, GPU 色変換 ON）, `custom`。
   - CPU 稼働時（`software`）: `cpu_balanced`（`maxSize=1280`, `x264Preset=veryfast`）, `cpu_low_power`（`maxSize=960`, `x264Preset=ultrafast`）, `custom`。許可 x264 プリセットは `ultrafast / superfast / veryfast / faster / fast / medium`。

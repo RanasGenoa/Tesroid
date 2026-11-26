@@ -16,7 +16,7 @@
 | **バックエンド HTTP/WS** | Fastify + 単一多重化 WebSocket (`/ws`, `TCP_NODELAY`) | 映像・音声・制御・タッチ・リサイズ・メトリクス・テレメトリを単一 WSS 接続上で低遅延多重化する（[仕様書 03](specs/03-streaming-transport.md)） |
 | **仮想ブラウザ / 入力** | Xvfb + Openbox + PulseAudio UNIX ソケット + Google Chrome + CDP (`127.0.0.1:9222`) + `xdotool` フォールバック | VAAPI 動画デコード + CPU 2D ラスターのハイブリッド描画と、Blink ネイティブタッチ注入を両立する（[仕様書 06](specs/06-browser-input-cdp.md)） |
 | **メディアエンコード** | FFmpeg (`h264_nvenc` / VAAPI `radeonsi`/`iHD`/`i965`/`d3d12` / `libx264`) + `libopus` | サーバー側で Annex-B→AVCC 変換と OggOpus パースを完結させ、クライアントを軽量化する（[仕様書 05](specs/05-encoder-gpu.md)） |
-| **クライアント再生・UI** | Vanilla TypeScript + Vite + WebCodecs (`VideoDecoder` / `AudioDecoder`) + `<canvas>` 2D (`desynchronized: true`) + Web Audio API (`latencyHint: 'interactive'`) | テスラ車載 OS の走行時 `<video>` 停止ガードを回避し、フレームワーク肥大化のないタッチ専用 UI を構築する（[仕様書 04](specs/04-client-playback-avsync.md), [仕様書 07](specs/07-ui-hud-settings.md)） |
+| **クライアント再生・UI** | Vanilla TypeScript + Vite + WebCodecs (`VideoDecoder` / `AudioDecoder`) + `<canvas>` 2D (`desynchronized: true`) + Web Audio API (`latencyHint: 'interactive'`) | テスラ車載 OS の走行時 `<video>` 停止ガードを回避し、小窓表示（`773×553 CSS` 基準・DPR 非ハードコード）を主対象とした軽量タッチ専用 UI を構築する（[仕様書 04](specs/04-client-playback-avsync.md), [仕様書 07](specs/07-ui-hud-settings.md)） |
 | **コンテナ・公開基盤** | Ubuntu 24.04 (`linux/amd64`) + `tini` + `no-systemd` APT Pinning (`dbus-x11`) + `INSTALL_CHROME=false` + 内蔵 `cloudflared` | ホスト Linux カーネル非依存性と Chrome 再配布規約遵守を両立し、ポート開放不要の HTTPS/WSS 公開を可能にする（[仕様書 09](specs/09-deploy-infra.md)） |
 
 ### 1.2 ディレクトリ構成
@@ -126,7 +126,7 @@ flowchart LR
 | **`client/state`** | `transport`, `media`/`input`/`observability` 制御面, `shared/*`, `sessionStorage` | `localStorage`, 生の HTML テンプレート構築 |
 | **`client/ui`** | `state`, `shared/settings` (表示メタデータ), DOM API | `transport` 生ソケット、`media` キュー/デコーダ内部、`window.prompt`/`confirm`、`<video>` |
 
-### 2.2 変更波及を防ぐ 6 つの構造的境界ルール
+### 2.2 変更波及を防ぐ 8 つの構造的境界ルール
 
 1. **単一電源・ライフサイクル権威 (`domains/power`)**:
    - 稼働状態（`STOPPED | STARTING | ACTIVE | BUFFER_HOLD | SLEEP_PAUSED | RESTARTING | ERROR`）およびタイマー排他制御（`autoSleepTimer` XOR `holdExpireTimer`）は `domains/power` が唯一所有する。
@@ -150,6 +150,9 @@ flowchart LR
    - `STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD` の配信・視聴状態を複数の独立 boolean フラグ（`isLive`, `isCatchup`, `isStandby`, `isInteractive`, `isHolding` 等）で表現することを禁止し、不正な組み合わせを型レベルで表現不能にする排他的判別ユニオン `StreamingState` へカプセル化する。
    - すべての状態遷移は `shared/src/state/streaming-fsm.ts` の **単一純粋遷移関数 `transitionStreamingState(state, event)`** に集約し、呼び出し元（`streaming-controller` / `playback-controller`）はイベント投入と返却された宣言的 `effects` の実行のみを担う。
    - 実装時は Phase 1 で状態・イベント・副作用・`assertNever` 網羅性チェック付きスタブを先行作成し、状態依存の振る舞い（キュー選択、入力許可、HUD 表示）は散在 `if` 分岐ではなく純粋セレクタ経由でのみ参照する。
+8. **小窓表示主対象 & DPR 非ハードコード境界 (`shared/geometry` / `client/input` / `client/ui` / `server/encoder`)**:
+   - 実車利用の中心であるナビ等と並べた小窓表示（代表基準 `773×553 CSS / DPR 1.53`）を主対象として、UI 視認性およびエンコード解像度を最適化する（全画面表示にも追従）。
+   - 将来のファームウェア更新で DPR が変化し得るため、`1.53` 等の特定 DPR 値を UI・CSS・設定・計算式へ直書きしてはならず、クライアントの実行時物理ピクセル（`devicePixelRatio`）および `shared/src/geometry` を単一正典とするサーバー側リサイズ計算で吸収する。
 
 ### 2.3 ドメイン間 Port 契約一覧
 
@@ -187,6 +190,7 @@ flowchart LR
 ### 3.3 クライアント状態管理
 
 - **永続ストレージ方針**: `localStorage` は **完全廃止**（コード上の読み書き禁止）。タブ内リロード・瞬断復帰に必要な `token` と `role` のみを `sessionStorage` に保持する。
+- **表示ターゲットと DPR 非ハードコード**: UI レイアウト・視認性およびエンコード解像度は実車中心の小窓表示（`773×553 CSS` 基準）を主対象としつつ、`1.53` 等の DPR 値は直書きせず実行時物理ピクセルとサーバー側リサイズ計算で動的に吸収する。
 - **単方向状態管理 (`AppStore`)**:
   - `route`: `CONNECTING | CONNECTION_ERROR | SETUP | PIN | STREAMING | LOCKED | SUPERSEDED_4000 | CONFLICT_4009`
   - `powerState`: サーバー通知と同期した電源状態（`SECONDARY_STANDBY` 中は電源状態通知で待機オーバーレイを上書きしない）
@@ -333,9 +337,9 @@ stateDiagram-v2
 
 | 階層 | 対象範囲 | テストダブルの方針 | 主な検証対象（仕様 AC 準拠） |
 | :--- | :--- | :--- | :--- |
-| **1. 純粋ドメイン・プロトコル単体テスト** | `shared/*`, `server/domains/*` 純粋ロジック, `client/media/sync-clock` 等 | **モック不使用**（タイマー系のみ `Clock` 注入） | `transitionStreamingState` の状態×イベント全組み合わせテーブル駆動テスト、バイナリ往復対称性、`streamEpoch` 旧世代破棄、Annex-B→AVCC(1B分断/AUD欠落)、OggOpus、寸法アライメント、ビットレート連動ヒステリシス、リングバッファ GOP 破棄、リンク認識 CATCHUP、単一マスタークロック 4 秒以内 `\|音ズレ\|<=60ms` 収束・真の符号付きドリフト、電源状態機械・排他タイマー (`autoSleepMinutes=0` 含む)、10 秒差分メトリクス |
+| **1. 純粋ドメイン・プロトコル単体テスト** | `shared/*`, `server/domains/*` 純粋ロジック, `client/media/sync-clock` 等 | **モック不使用**（タイマー系のみ `Clock` 注入） | `transitionStreamingState` の状態×イベント全組み合わせテーブル駆動テスト、バイナリ往復対称性、`streamEpoch` 旧世代破棄、Annex-B→AVCC(1B分断/AUD欠落)、OggOpus、小窓基準（`773×553 CSS`）・可変 DPR 寸法アライメント、ビットレート連動ヒステリシス、リングバッファ GOP 破棄、リンク認識 CATCHUP、単一マスタークロック 4 秒以内 `\|音ズレ\|<=60ms` 収束・真の符号付きドリフト、電源状態機械・排他タイマー (`autoSleepMinutes=0` 含む)、10 秒差分メトリクス |
 | **2. 境界結合テスト** | Fastify HTTP + WS (`/ws`) + ファイル永続化 + Coordinator | **外部 OS 境界の Port のみ Fake**（FFmpeg / Xvfb / Chrome / CDP / `xdotool` のみ、他ドメイン間は実オブジェクト結合） | セットアップ `403`/`400`、品質 3 択展開、ロックアウト 10 回→`1008`→起動ガード、PIN 変更時トークン全失効、同一トークン `4000` vs 競合 `4009`、代理昇格/非連鎖/降格同時リセット、後席待機保護、`POST /api/stream/reset`、テレメトリ `512 KiB`/`10 MiB`/`15` 世代/ループバック認証境界 |
-| **3. 不変条件ガードレールテスト** | リポジトリ全体・ビルド後 `dist/`・`Dockerfile` | 静的解析・ビルド成果物検査 | ソース/ビルド後 HTML の `<video>` ゼロ・`<canvas>` 存在、`localStorage` 不使用、`window.prompt`/`confirm`/`Escape` 閉じ禁止、禁止 Chrome フラグ非含有、`/etc/libva.conf` 非ハードコード、`no-systemd` Pinning & `dbus-x11`、機密情報ゼロ |
+| **3. 不変条件ガードレールテスト** | リポジトリ全体・ビルド後 `dist/`・`Dockerfile` | 静的解析・ビルド成果物検査 | ソース/ビルド後 HTML の `<video>` ゼロ・`<canvas>` 存在・小窓基準 HUD 中央揃え、`1.53` 等 DPR ハードコード禁止、`localStorage` 不使用、`window.prompt`/`confirm`/`Escape` 閉じ禁止、禁止 Chrome フラグ非含有、`/etc/libva.conf` 非ハードコード、`no-systemd` Pinning & `dbus-x11`、機密情報ゼロ |
 
 ### 4.3 禁止するテストアンチパターン
 
