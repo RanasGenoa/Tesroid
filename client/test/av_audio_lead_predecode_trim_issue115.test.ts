@@ -32,6 +32,7 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   const nowMs = () => performance.now();
@@ -60,7 +61,7 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
     pacer.setTelemetryCollector(telemetry);
 
     const trimRequests: number[] = [];
-    (pacer as any).onSustainedAudioLead = (playingAudioPtsUs: number) => {
+    pacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
       trimRequests.push(playingAudioPtsUs);
     };
 
@@ -78,7 +79,7 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
       vi.advanceTimersByTime(0);
     }
 
-    // 要求は最低 3 回 (5s / 1s レート制限)、かつ 5 回以下 (1 秒未満の間隔で連続発火しない)
+    // 要求は最低 3 回 (5s 間・レート制限 1 回/秒)、かつ 6 回以下 (1 秒未満の間隔で連続発火しない)
     expect(trimRequests.length).toBeGreaterThanOrEqual(3);
     expect(trimRequests.length).toBeLessThanOrEqual(6);
     // 引数は要求時点の再生中音声 PTS (µs・有限・正)
@@ -103,10 +104,10 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
       return mockDecoderInstance;
     };
     mockConstructor.isConfigSupported = vi.fn().mockResolvedValue({ supported: true });
-    (globalThis as any).VideoDecoder = mockConstructor;
-    (globalThis as any).EncodedVideoChunk = function (this: any, init: any) {
+    vi.stubGlobal('VideoDecoder', mockConstructor);
+    vi.stubGlobal('EncodedVideoChunk', function (this: any, init: any) {
       return init;
-    } as any;
+    } as any);
 
     const decoder = new VideoStreamDecoder(vi.fn());
     // 下流 (ペーサー) 満杯を模擬 → 全パケットが pre-decode キューに滞留する実測状態と同じ
@@ -116,27 +117,25 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
     // KF@0, P..KF@2s, P..KF@4s, P.. → target=3.5s なら KF@2s が目標直前のキーフレーム
     const idr = new Uint8Array([0, 0, 0, 1, 0x65, 0x01, 0x02, 0x03]);
     const pFrame = new Uint8Array([0, 0, 0, 1, 0x41, 0x01, 0x02, 0x03]);
-    let total = 0;
     for (let i = 0; i < 180; i++) {
       // GOP=2.0s 相当: 60フレーム (=1980ms) 毎にキーフレーム (サーバー ffmpeg gop=2.0fps と同等)
       const isKey = i % 60 === 0;
       const ptsUs = BigInt(i * FRAME_INTERVAL_MS * 1000);
       await decoder.handlePacket(isKey ? VIDEO_FLAGS.KEYFRAME : 0, ptsUs, isKey ? idr : pFrame);
-      total++;
     }
     const queued = decoder.getPendingPacketsCount();
     expect(queued).toBeGreaterThan(100);
 
     // 目標 = 音声再生 PTS − 250ms クッション相当。KF@2.0s が保持され、それ以前が破棄されること
-    const dropped = (decoder as any).trimPendingBeforePts(3_500_000);
+    const dropped = decoder.trimPendingBeforePts(3_500_000);
     expect(typeof dropped).toBe('number');
     expect(dropped).toBeGreaterThanOrEqual(Math.floor(2000 / FRAME_INTERVAL_MS));
     const remaining = decoder.getPendingPacketsCount();
     expect(remaining).toBe(queued - dropped);
 
     // 冪等: 同じ目標での再 trim は追加破棄しない
-    expect((decoder as any).trimPendingBeforePts(3_500_000)).toBe(0);
+    expect(decoder.trimPendingBeforePts(3_500_000)).toBe(0);
     // 目標より古い要求も無害 (no-op)
-    expect((decoder as any).trimPendingBeforePts(1_000_000)).toBe(0);
+    expect(decoder.trimPendingBeforePts(1_000_000)).toBe(0);
   });
 });

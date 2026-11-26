@@ -691,6 +691,9 @@ export function renderStreamingView(
   window.addEventListener('tesroid:settings-updated', onSettingsUpdated);
 
   const MAX_BUFFER_DEPTH_MS = 30000;
+  // Issue #115: pre-decode ゴープトリムの目標から音声エッジへ残すクッション (µs)。
+  // 250ms = 実測平衡 (lead≈2s) に対して GOP 2.0s + 余裕で一度に巻き戻しすぎない緩い下限
+  const PREDECODE_TRIM_AUDIO_CUSHION_US = 250_000;
   const clampBufferDepthMs = (ms: number): number =>
     Number.isFinite(ms) ? Math.max(0, Math.min(MAX_BUFFER_DEPTH_MS, Math.round(ms))) : 10000;
 
@@ -743,7 +746,7 @@ export function renderStreamingView(
   // 音声エッジ直前の GOP 境界まで破棄する。ペーサーの 4/tick 破棄は供給速率 (60fps) に
   // 勝てないため、滞留の供給元 (pre-decode) を上流で断つのが本修正の本体。
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
-    decoder.trimPendingBeforePts(playingAudioPtsUs - 250_000);
+    decoder.trimPendingBeforePts(playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US);
   };
 
   const syncTelemetryAttachment = (enabled: boolean) => {

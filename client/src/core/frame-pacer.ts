@@ -136,8 +136,10 @@ export class FramePacer {
   // Issue #11: 1フレームの canvas 描画所要時間 (ms)。クライアント側の描画負荷計測に使用
   public onFrameRenderTimed?: (durationMs: number) => void;
   public onBufferingChange?: (isBuffering: boolean) => void;
-  // Issue #115: 音声先行 ≥800ms 継続時に、上流 (デコーダ手前キュー) の GOP 境界トリムを
-  // 要求する。引数は要求時点の再生中音声 PTS (µs)。
+  // Issue #115: 音声先行 ≥800ms を検知した tick で、上流 (デコーダ手前キュー) の GOP 境界
+  // トリムを要求する (連続検知ではなく検知毎に最大 1 回/秒のレート制限)。スパイク時の
+  // 過剰トリムは trimPendingBeforePts 側で適格な境界が無ければ no-op になる安全弁で抑える。
+  // 引数は要求時点の再生中音声 PTS (µs)。
   public onSustainedAudioLead?: (playingAudioPtsUs: number) => void;
 
   constructor(
@@ -943,6 +945,7 @@ export class FramePacer {
     this.lastLargeShiftLogTimeMs = -Infinity;
     this.largeShiftSuppressedCount = 0;
     this.lastStaleDropLogTimeMs = -Infinity;
+    this.lastSustainedTrimRequestMs = -Infinity;
   }
 
   public resetFirstFrame(): void {
