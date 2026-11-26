@@ -106,14 +106,21 @@ export class FramePacer {
   // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
   private static readonly AV_SYNC_KP =
     FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
-  // Issue #112: 音声先行 (再生中音声PTS > 映像スケジュール) は負方向シフトが 1x 間隔クランプ
-  // (maxNegativeShiftAllowed) で構造的に吸収不能な場合がある。backlog (キュー滞留 > 8 フレーム) かつ
-  // 150ms 超の音声先行時に限り、再生中音声より古い映像フレームを破棄して映像側で吸収する。
-  // 許容 40ms (デッドバンド 45ms 未満) と 1 tick あたり上限 4 フレームで可視ジャンプを抑え、
-  // 正常な 1x 到着 (スケジュールに余裕があり PLL が機能する状態) には一切干渉しない。
-  private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 40_000;
+  // Issue #112/#113: 音声先行 (再生中音声PTS > 映像スケジュール) は負方向シフトが 1x 間隔クランプ
+  // (maxNegativeShiftAllowed) で構造的に吸収不能な場合がある。backlog (キュー滞留 > 8 フレーム) の
+  // 音声先行時に、再生中音声より古い映像フレームを破棄して映像側で吸収する。
+  // 短キュー (≤8 フレーム) はスケジュール前倒し余地があるため PLL 負方向シフト (Issue #15 の
+  // graceful catch-up) に任せ、本経路は発動しない。
+  // Issue #113: 発動ゲートを旧 150ms から 60ms (デッドバンド+余裕) へ引き下げた。旧ゲートでは
+  // 破棄停止目標 (40ms) との間に 60〜150ms の収束不能域が残り、~270ms の先行が定着した。
+  // 停止目標 (tolerance) は次に描画される先頭フレームに対する基準で、実際に画面へ出るのはその
+  // 1 フレーム分手前になるため、体感ズレは tolerance + 1フレーム以内 (30fps で約 53ms) に収まる。
+  // 可視ジャンプ抑止のため 1 tick あたり上限 4 フレーム。正常な 1x 到着 (先頭が再生中音声より
+  // 新しい) は破棄条件自体が成立せず一切干渉しない。
+  private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 20_000;
   private static readonly AV_SYNC_MAX_STALE_DROPS_PER_TICK = 4;
   private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
+  private static readonly AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS = 60;
   private static readonly AV_SYNC_MAX_STALE_DROP_LEAD_MS = 60_000;
 
   public onFrameDropped?: () => void;
@@ -654,18 +661,18 @@ export class FramePacer {
         if (typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function') {
           const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
           if (playingAudioPts !== null && playingAudioPts > 0) {
-            // Issue #112: 音声先行 (映像遅れ) は負方向シフトが 1x 間隔クランプで構造的に
+            // Issue #112/#113: 音声先行 (映像遅れ) は負方向シフトが 1x 間隔クランプで構造的に
             // 吸収できないため、再生中音声より古いフレームを映像側で上限付き破棄する。
             const staleDropTargetUs = playingAudioPts - FramePacer.AV_SYNC_STALE_DROP_TOLERANCE_US;
             let staleDropped = 0;
-            // 真の backlog (キュー滞留 > 8 フレーム) かつ 150ms 超のズレのみ対象。
-            // 到着 1x ペースで常に先頭が now に張り付く場合のみ PLL 負方向クランプが発動するため、
-            // 正常な 1x 到着 (スケジュールに余裕がある状態) では従来どおり PLL 圧縮に任せる。
+            // Issue #113: 吸収ゲートは 60ms (デッドバンド45ms+余裕)。ゲートは破棄開始の閾値で、
+            // 停止目標は head.ptsUs >= staleDropTargetUs (tolerance 20ms)。対象は大バックログ
+            // (>8 フレーム) のみ。短キューはスケジュール前倒し余地があるため PLL 負方向シフトに任せる。
             const backlogLagMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
             while (
               this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
               staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
-              backlogLagMs > FramePacer.AV_SYNC_MAX_ERROR_MS &&
+              backlogLagMs > FramePacer.AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS &&
               backlogLagMs < FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS
             ) {
               const head = this.frameQueue[0];
@@ -680,10 +687,22 @@ export class FramePacer {
                 break;
               }
             }
+            // Issue #113: 破棄しただけでは 1x の再生クロックは進まない。破棄した内容分の時間を
+            // キュー全体の前倒しシフトとして適用し、再生間隔 (1x) を保ったまま描画 PTS を
+            // 音声へ追従させる (>2000ms 大遅延経路の head 即時化と同じ目的の 1x 保存版)。
+            if (staleDropped > 0 && this.frameQueue.length > 0) {
+              const headSchedule = this.frameQueue[0].scheduledRenderTime + totalShift;
+              const maxBackwardMs = Math.max(0, headSchedule - (now + 8));
+              const dropShiftMs = Math.min(staleDropped * this.getFrameIntervalMs(), maxBackwardMs);
+              if (dropShiftMs > 0) {
+                totalShift -= dropShiftMs;
+              }
+            }
             if (staleDropped > 0 && this.telemetry?.isEnabled()) {
               if (now - this.lastStaleDropLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
                 this.telemetry.recordAvSync('stale_video_drop', {
                   droppedCount: staleDropped,
+                  leadMs: Math.round(backlogLagMs),
                   playingAudioPts,
                   queueLength: this.frameQueue.length,
                 });
