@@ -32,6 +32,18 @@ export class AudioPlayer {
   private hasInitialPlaybackStarted: boolean = false;
   private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
+
+  // Issue #103 (2026-11-25 インシデント): JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
+  // ソケット/リンク経路上を漂流中の古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
+  // ライブ音声の後ろに ~2 秒分連結されると、音声マスタークロックが映像から永久に先行する。
+  // ジャンプ直後の短期間だけバリア PTS 未満の古い音声を受信破棄して固定オフセットの発生を防ぐ。
+  private liveBarrierPtsUs = 0;
+  private liveBarrierUntilMs = 0;
+  private staleBarrierDropped = 0;
+  private lastScheduledPtsUs = 0;
+  private minAcceptedDecodedPtsUs = 0;
+
+  public static readonly LIVE_BARRIER_TTL_MS = 5000;
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
@@ -279,6 +291,11 @@ export class AudioPlayer {
       return;
     }
 
+    // Issue #103: ジャンプ後の straggler 音声はデコード前に破棄する
+    if (this.isStaleByLiveBarrier(ptsUs)) {
+      return;
+    }
+
     this.lastChunkPtsUs = ptsUs;
 
     try {
@@ -307,6 +324,20 @@ export class AudioPlayer {
       audioData.timestamp !== undefined && audioData.timestamp !== null
         ? audioData.timestamp
         : this.lastChunkPtsUs;
+
+    // Issue #103: decodeAndPlayChunk 通過後に非同期 AudioDecoder.output で遅れて出てきた
+    // ジャンプ前の straggler 音声も AudioBuffer 化・スケジュール前に確実に破棄する
+    if (this.minAcceptedDecodedPtsUs > 0) {
+      if (performance.now() > this.liveBarrierUntilMs) {
+        this.minAcceptedDecodedPtsUs = 0;
+      } else if (ptsUs < this.minAcceptedDecodedPtsUs) {
+        audioData.close();
+        return;
+      } else {
+        this.minAcceptedDecodedPtsUs = 0;
+      }
+    }
+
     this.activeChannels = numChannels;
 
     const buffer = this.ctx.createBuffer(numChannels, numFrames, sampleRate);
@@ -372,6 +403,63 @@ export class AudioPlayer {
     let queuedSec = 0;
     for (const item of this.bufferQueue) queuedSec += item.buffer.duration;
     return Math.round((scheduledAheadSec + queuedSec + this.totalOverflowDurationSec) * 1000);
+  }
+
+  /** Issue #103: ジャンプ基準 PTS バリアの設定（0 以下は無視。明示解除は clearLiveEdgeBarrier を使用）。TTL 自動失効付き。 */
+  public setLiveEdgeBarrier(ptsUs: number, ttlMs: number = AudioPlayer.LIVE_BARRIER_TTL_MS): void {
+    if (!Number.isFinite(ptsUs) || ptsUs <= 0) return;
+    // TCP FIFO 順序により LIVE_JUMPED 到着前にすでにクライアントへ滑り込んでしまった
+    // straggler 音声（スケジューリング済み／待機キュー内）を検出した場合は即座にパージする
+    const hasStaleScheduled =
+      this.scheduledSources.size > 0 &&
+      this.lastScheduledPtsUs > 0 &&
+      this.lastScheduledPtsUs < ptsUs;
+    const hasStaleQueued =
+      this.bufferQueue.some((item) => item.ptsUs > 0 && item.ptsUs < ptsUs) ||
+      this.overflowQueue.some((item) => item.ptsUs > 0 && item.ptsUs < ptsUs);
+    if (hasStaleScheduled || hasStaleQueued) {
+      this.resetJitterBuffer();
+    }
+    this.liveBarrierPtsUs = ptsUs;
+    this.minAcceptedDecodedPtsUs = ptsUs;
+    // Date.now() でなく performance.now()（モノトニッククロック）で TTL を管理し、
+    // NTP 等のシステム時刻補正の影響を受けさせない（streaming.ts と同じ方針）
+    this.liveBarrierUntilMs = performance.now() + Math.max(1000, ttlMs);
+    // ジャンプ毎のエピソードとして初回ドロップログを必ず出力し、調査時の追跡性を確保する
+    this.staleBarrierDropped = 0;
+  }
+
+  public clearLiveEdgeBarrier(): void {
+    this.liveBarrierPtsUs = 0;
+    this.liveBarrierUntilMs = 0;
+    this.minAcceptedDecodedPtsUs = 0;
+  }
+
+  /** Issue #103: 最後に受信した音声 PTS（ストリーム単調性を前提にした straggler 判定基準）。 */
+  public getLastKnownPtsUs(): number {
+    return this.lastChunkPtsUs;
+  }
+
+  private isStaleByLiveBarrier(ptsUs: number): boolean {
+    if (this.liveBarrierPtsUs <= 0) return false;
+    if (performance.now() > this.liveBarrierUntilMs) {
+      this.clearLiveEdgeBarrier();
+      return false;
+    }
+    if (ptsUs >= this.liveBarrierPtsUs) {
+      // 入力側バリア以上のライブ音声が届いた時点で decode 前ガードは役割を終える。
+      // ただし既に AudioDecoder へ投入済みの straggler が非同期 output で出てくるレースに備え、
+      // minAcceptedDecodedPtsUs（playAudioData 側ガード）は出力確認まで保持する
+      this.liveBarrierPtsUs = 0;
+      return false;
+    }
+    this.staleBarrierDropped++;
+    if (this.staleBarrierDropped === 1 || this.staleBarrierDropped % 50 === 0) {
+      console.warn(
+        `[AudioPlayer] Dropping post-jump straggler audio (pts=${Math.round(ptsUs)} < barrier=${Math.round(this.liveBarrierPtsUs)}, dropped=${this.staleBarrierDropped})`,
+      );
+    }
+    return true;
   }
 
   private hasSufficientResumeCushion(): boolean {
@@ -634,6 +722,7 @@ export class AudioPlayer {
         source.connect(this.ctx.destination);
       }
       source.start(startAt);
+      this.lastScheduledPtsUs = ptsUs;
 
       this.scheduledSources.add(source);
       source.onended = () => {
@@ -670,6 +759,10 @@ export class AudioPlayer {
     this.overflowQueue = [];
     this.totalOverflowDurationSec = 0;
     this.nextPlayTime = 0;
+    // Issue #103: ストリーム再構築では旧ストリームの PTS 基準も破棄する（再構築直後の
+    // 暫定バリア外挿フォールバックに古い値が混入しないため）
+    this.lastChunkPtsUs = 0;
+    this.lastScheduledPtsUs = 0;
     this.stopAllScheduledSources();
     this.avSync.clearAudioAnchor();
   }
