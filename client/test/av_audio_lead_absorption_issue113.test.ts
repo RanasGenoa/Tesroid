@@ -28,7 +28,7 @@ describe('audio-lead absorption on video side (Issue #113)', () => {
     vi.useRealTimers();
   });
 
-  const nowMs = () => Number((performance as any).now());
+  const nowMs = () => performance.now();
 
   const setup = (audioDepthUs: number) => {
     const avSync = new AvSyncController();

@@ -675,6 +675,7 @@ export class FramePacer {
             // 停止目標は head.ptsUs >= staleDropTargetUs (tolerance 20ms)。対象は大バックログ
             // (>8 フレーム) のみ。短キューはスケジュール前倒し余地があるため PLL 負方向シフトに任せる。
             const backlogLagMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
+            const firstStalePtsUs = this.frameQueue[0].ptsUs;
             while (
               this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
               staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
@@ -702,7 +703,10 @@ export class FramePacer {
                 0,
                 headSchedule - (now + FramePacer.MIN_RENDER_SPACING_MS),
               );
-              const dropShiftMs = Math.min(staleDropped * this.getFrameIntervalMs(), maxBackwardMs);
+              // 実 PTS 差分ベース (破棄前の旧先頭から新先頭までの経過時間)。公称間隔x個数より
+              // VFR・フレーム欠落混在ストリームで正確に収束する。
+              const droppedSpanMs = (this.frameQueue[0].ptsUs - firstStalePtsUs) / 1000;
+              const dropShiftMs = Math.min(droppedSpanMs, maxBackwardMs);
               if (dropShiftMs > 0) {
                 totalShift -= dropShiftMs;
               }
