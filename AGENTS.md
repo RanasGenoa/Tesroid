@@ -1,182 +1,71 @@
-# Tesroid - Developer & AI Agent Guide (AGENTS.md)
+# AGENTS.md — Tesroid 開発・AI エージェント規約
 
-本ドキュメントは、Tesroid の開発・保守・機能拡張を行う **開発者および AI コーディングエージェント** 向けのアーキテクチャ設計・開発規約ガイドラインです。
-
----
-
-## 1. プロジェクト概要 & アーキテクチャ
-
-Tesroid は、単一 Docker コンテナ内で稼働する **VAAPI ハードウェア支援 Google Chrome** の画面と音声を、**テスラ車載ブラウザへ WebCodecs (`<canvas>`) + Web Audio API + 単一多重化 WebSocket 経由で超低遅延ストリーミング・タッチ操作するシステム** です。
-
-```text
-[ Tesla Browser (Client) ]
-        │  HTTPS / WSS (Port 9001 / 443)
-        │  (WebCodecs VideoDecoder -> <canvas> ゼロコピー描画 + Web Audio API)
-        ▼
-[ Docker Host (Linux / VPS / NAS / Windows Docker Desktop) ]
-  └── [ Container: tesroid-server (Ubuntu 24.04 / Single Container) ]
-        ├── GPU Access    : /dev/dri/renderD* (Intel iHD/i965, AMD radeonsi) or /dev/dxg (Windows D3D12)
-        ├── Xvfb & Openbox: 仮想ディスプレイ (:99, デフォルト 1280x720)
-        ├── PulseAudio    : 仮想シンク (unix:/tmp/pulse-socket, virtual_sink)
-        ├── Google Chrome : ハードウェアアクセラレーション (VAAPI VP9/H.264デコード / 不可時は自動SW)
-        ├── FFmpeg        : VAAPI h264_vaapi (ゼロ遅延) / libx264 フォールバック + libopus
-        └── Node.js Fastify: WebSocketストリーミング + CDP/xdotool入力注入 + 電源管理
-```
-
-- **クライアント (`client/`)**: Vanilla TypeScript + Vite。`<video>` タグを使わず、WebCodecs の `VideoDecoder` で H.264 を直接 `<canvas>` に描画（テスラのDレンジ走行時動画停止ガードを回避）。
-- **サーバー (`server/`)**: Node.js (Fastify) + WebSocket + FFmpeg VAAPI / `libx264` + X11/CDP。
+> 本ファイルは AI コーディングエージェント（`.cursorrules` / `CLAUDE.md` / Antigravity 等）共通の絶対遵守ルールブックである。
+> 要件・設計の唯一の正典は [`docs/specs/`](docs/specs/) および [`docs/architecture.md`](docs/architecture.md) とする。
 
 ---
 
-## 2. ビルド・テスト・デプロイ手順
+## 1. 実装前ワークフロー（設計確認の義務）
 
-### ローカル開発 & テスト
-コードを変更した際は、必ずリント・型チェック、単体テスト、および TypeScript ビルドが通ることを確認してください：
+コードを追加・変更する前に、**必ず以下の手順をこの順序で実施すること**：
 
-```bash
-# Biome リント・フォーマット & TypeScript 型チェック (client & server)
-npm run check
-
-# コード自動修正 & フォーマット (Safe Fix)
-npm run lint:fix
-
-# 全テストスイート実行 (client/test & server/test)
-npm test
-
-# クライアント & サーバーのプロダクションビルド検証
-npm run build
-```
-
-### コンテナの起動・確認
-```bash
-# Docker Compose によるローカルイメージビルド & 起動
-npm run docker:up
-# または
-docker compose up -d --build
-
-# ログ確認
-npm run docker:logs
-```
-
-### 本番環境・NAS での更新デプロイ
-本番環境や NAS での最新版更新手順、および永続化データの初期化方法については [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#4-リモートホストnas-上での更新--再デプロイ手順) を参照してください。
+1. **正典の参照**: 対象機能に関係する [`docs/specs/*.md`](docs/specs/)（要件・エッジケース・受け入れ条件 AC）と [`docs/architecture.md`](docs/architecture.md)（レイヤー・モジュール境界・依存マトリクス）を読む。
+2. **設計方針の事前確認**: 実装に着手する前に、以下 4 点を頭の中または作業計画で明示的に確定する。
+   - どのレイヤー・ドメインのどのモジュールに置くか
+   - 越えるべき Port 境界と依存方向（逆方向依存やドメイン跨ぎ直参照がないか）
+   - `shared` へ置くべき単一正典（型・定数・計算・検証）と重複しないか
+   - 検証すべき対象 AC はどれか
+3. **仕様との矛盾・未定義発見時の停止原則**: 仕様と矛盾する挙動や未定義ケースを発見した場合、コード側の場当たり的なワークアラウンドで回避してはならない。先に [`docs/specs/`](docs/specs/) または [`docs/architecture.md`](docs/architecture.md) の更新案をユーザーへ提示し、合意を得てから実装する。
+4. **最小実装とゲート検証**: 設計に沿って最小限かつ自己完結したコード・テストを実装し、品質ゲートをすべて通す。
 
 ---
 
-## 3. ディレクトリ構造 & 主要モジュール
+## 2. 厳格なコーディング規約（継ぎ足し・肥大化防止）
 
-```text
-Tesroid/
-├── AGENTS.md                   # 本ドキュメント (開発・設計ガイドライン)
-├── CONTRIBUTING.md             # コントリビューション・ブランチ運用ガイド
-├── README.md                   # プロジェクト概要・クイックスタート
-├── LICENSE                     # MIT ライセンス
-├── THIRD_PARTY_NOTICES.md      # サードパーティライセンス表記・再配布注意事項
-├── Dockerfile                  # マルチステージビルド (Ubuntu 24.04 + Chrome + マルチGPU VAAPI)
-├── docker-compose.yml          # 標準 Docker Compose 定義 (Linux ローカルビルド)
-├── docker-compose.prebuilt.yml # 事前ビルドイメージ用 Docker Compose 定義 (Linux)
-├── docker-compose.windows.yml  # Docker Desktop for Windows 用 Compose 定義 (/dev/dxg)
-├── docs/
-│   ├── DEPLOYMENT.md           # デプロイメント・運用ガイド
-│   ├── NETWORK.md              # リバースプロキシ・HTTPS・Cloudflare Tunnel 設定ガイド
-│   └── OPTIMIZATION_KNOWLEDGE.md # 描画・低遅延ストリーミング・CDPタッチ技術仕様
-├── client/                     # フロントエンド (TypeScript + Vite)
-│   ├── src/
-│   │   ├── core/               # WebCodecs デコーダ、キャンバス描画、A/V同期、ジッターバッファ
-│   │   ├── input/              # タッチ座標変換、エッジガード
-│   │   ├── transport/          # バイナリプロトコル、WebSocket 自動再接続クライアント
-│   │   └── views/              # フルスクリーンPIN入力、ストリーミングHUD、設定モーダル
-│   └── test/                   # クライアント Vitest テスト
-└── server/                     # バックエンド (Node.js Fastify + FFmpeg VAAPI)
-    ├── extension/              # 車載表示ズーム & Webフルスクリーン最適化 Chrome 拡張
-    ├── src/
-    │   ├── browser/manager.ts  # Xvfb, Openbox, Chrome, PulseAudio プロセス & 省電力管理
-    │   ├── encoder/            # FFmpeg VAAPI エンコーダ & 再接続キャッチアップバッファ
-    │   ├── input/xdotool.ts    # CDP ネイティブタッチ (`CdpTouchBridge`) & xdotool フォールバック
-    │   ├── ws/                 # WebSocket ハンドラー、バイナリ多重化 (0x01: VIDEO, 0x02: AUDIO)
-    │   └── routes/             # REST API (setup, settings, browser, health, metrics)
-    └── test/                   # サーバー Vitest テスト
-```
+### 2.1 構造的解決の原則
+- **ワークアラウンド・症状パッチの厳禁**: 不具合に対して「特定 ms だけ弾く特別ゲート」「後付けのストラグラーフラグ」「特定呼び出し箇所だけの迂回分岐」を継ぎ足してはならない。原因を上位の設計機構（`streamEpoch` による世代隔離、単一 `power` 状態機械、単一音声マスタークロック、`LIVE`/`CATCHUP` キュー分離、Port 境界）で構造的に解決する。
+- **単一情報源（SSOT）**: プロトコル定数、設定スキーマ、既定値、許容境界、品質 3 択/プリセット定義、寸法アライメント式は [`shared/`](shared/) に唯一定義する。`server/` や `client/` に同等の定数・計算式を二重定義してはならない。
+- **依存方向と疎結合の厳守**: [`docs/architecture.md`](docs/architecture.md) §2 の依存マトリクスを破らない。ドメイン間の連携は必ず `app/` で配線された狭い Port インターフェース経由とし、グローバル可変シングルトンを作らない。
+- **TypeScript 規律**: `strict: true` を維持する。`any`・`@ts-ignore`・`@ts-expect-error`・安全でない型アサーションを安易に使わない。純粋計算ロジックと I/O（fs・child_process・DOM・WebSocket）を分離し、1 関数・1 ファイルが肥大化する前に責務単位へ分割する。
+
+### 2.2 コメント規約（コメント肥大化・陳腐化の禁止）
+- **「What」は書かない**: コードやシンボル名から自明な処理内容の説明コメントは書かない。
+- **書いてよいのは「Why（不変条件）」のみ**: ハードウェア制約、車載ブラウザ仕様、カーネル互換性、非自明なアルゴリズム上の理由に限り、1〜2 行で簡潔に記述する。
+- **絶対禁止コメント**:
+  - 修正経緯・履歴コメント（例: `以前は〜だった`, `Issue #123 修正`, `PR #45 対応`, `Phase 2 で変更`, `互換性維持のため暫定`）
+  - 取り消したコードのコメントアウト残置
+  - 所有者・対処方針のない `TODO` / `FIXME` の放置
+  - 変更経緯や背景は Git コミットメッセージおよび PR 本文に記録する。
+
+### 2.3 テスト規約（モック乱用・内部結合の禁止）
+- **振る舞いベース・最小限**: テストは [`docs/specs/`](docs/specs/) 各仕様書の「セクション 5: 受け入れ条件（AC）」に基づき、外部から観測可能な振る舞い（入力に対する出力・状態遷移・プロトコル/HTTP 応答）のみを検証する。
+- **絶対禁止テスト**:
+  - **内部実装のモック乱用**: 同一プロセス内のドメインモジュールやヘルパー関数を `vi.mock` 等で差し替えること（差し替えを許すのは外部 OS/I/O 境界の Port Fake と `Clock` のみ）。
+  - **内部実装への結合**: private 状態の確認や、`toHaveBeenCalledTimes(n)`・呼び出し順序などの手順テスト。
+  - **過剰・重複テスト**: TypeScript の型で既に保証される自明なテスト、同じ仕様を複数レイヤーで重複検証するテスト、エッジケースの無意味な水増し。
 
 ---
 
-## 4. 開発・修正時の重要ナレッジ
+## 3. 絶対厳禁事項（仕様由来のアーキテクチャ不変条件）
 
-- **テスラ車載ブラウザの `<video>` 制約**:
-  クライアント側で `<video>` 要素は絶対に使用しないでください（Dレンジ走行時に OS 側で強制停止されるため）。映像描画は常に `client/src/core/canvas-renderer.ts` の `<canvas>` + WebCodecs API を経由してください。
-- **省電力・一時停止 (`SIGSTOP` / `SIGCONT`)**:
-  WebSocket クライアント切断後、一定時間経過で Chrome プロセスツリーを `SIGSTOP` して CPU/GPU 使用率を 0% に解放し、再接続・認証時に `SIGCONT` で即座に復帰します。
-- **セキュリティロックアウト**:
-  PIN 入力を 10 回連続で失敗するとサーバープロセスが `exit 1` で緊急停止し、`lockout.json` に記録されます。
-- **WebAuthn / パスキーネイティブダイアログ抑止**:
-  Docker/Xvfb 環境には物理・プラットフォーム認証器が存在せず、Chrome ネイティブの WebAuthn ダイアログが出ると車載タッチ操作で閉じられず操作不能になります。`server/extension/content.js` および CDP による WebAuthn インターセプトで即時フォールバックさせています。
-- **マルチ GPU VAAPI・`/etc/libva.conf` 優先順位・D3D12 スコープ**:
-  - `libva` は環境変数 `LIBVA_DRIVER_NAME` より `/etc/libva.conf` を優先するため、`/etc/libva.conf` に `LIBVA_DRIVER_NAME=iHD` 等をハードコードしてはなりません（コメントのみ維持し、実行時自動判定または環境変数で `iHD` / `i965` / `radeonsi` / `d3d12` を切り替えます）。
-  - Windows Docker Desktop / WSL2 環境で D3D12 を使う場合も、Chrome の Xvfb 安定描画（CPU Skia + `llvmpipe`）を維持するため `GALLIUM_DRIVER=d3d12` をグローバルに付与せず、FFmpeg の `d3d12` プローブ / サブプロセスのみに限定します。`d3d12` VAAPI エンコード非対応または `/dev/dri/renderD*` 不在時は `ENCODER_MODE=auto` により `libx264` ソフトウェアエンコードへ自動フォールバックします。
-- **ホスト環境に依存しないポータビリティ最優先方針 & コンテナパッケージ追加・更新時のガードレール (Issue #93)**:
-  - Tesroid は **「特定の Linux カーネルバージョンやディストリビューションに極力依存せず、あらゆるホスト環境（一般的な Linux、QNAP / Synology / TrueNAS / Unraid 等の NAS OS、旧世代 LTS カーネル、Windows Docker Desktop / WSL2 等）で広くそのまま動作すること」** を設計原則とします。
-  - Docker コンテナはホスト OS のカーネルを共有するため、Ubuntu 24.04 等の新しいユーザーランドに含まれるシステム管理パッケージ（`systemd` v255+ / `libsystemd-shared` の `systemd-tmpfiles`, `systemd-sysusers` 等）が Linux 6.6+ 固有の最新システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）を発行すると、NAS 等のカスタムカーネルや古い seccomp / OverlayFS 環境が `ENOSYS`（未実装）ではなく `ENOENT` 等の想定外エラーを返し、フォールバック不能となって `dpkg --configure`（`postinst`）やランタイムが即死します。
-  - したがって、コンテナのベースイメージ更新や `Dockerfile` のパッケージ追加・変更を行う際は、「ホストカーネルへの依存を最小化し、標準的な POSIX システムコールのみで完結させる」ために以下のガードレールを必ず守ってください：
-    1. **`--no-install-recommends` の徹底と仮想パッケージの非カーネル依存・軽量代替指定**: OR 依存（例: `default-dbus-session-bus | dbus-session-bus`）が `dbus-user-session` → `libpam-systemd` → `systemd` を暗黙的に引き込まないよう、`dbus-x11` を明示指定します。
-    2. **APT Pinning (`/etc/apt/preferences.d/no-systemd`) の維持**: `systemd`, `systemd-sysv`, `systemd-standalone-sysusers`, `systemd-standalone-tmpfiles`, `libpam-systemd`, `dbus-user-session`, `udev` を `Pin-Priority: -1` でブロックし、単一プロセスのアプリケーションコンテナにホストカーネルと強く結合した init / デバイス管理デーモン群が混入することを防止します。
-    3. **パッケージ追加時の依存ツリー & `postinst` 事前監査**: 新規パッケージを追加する際は `apt-get install -s` で意図しないシステムデーモンや `libsystemd-shared` が引き込まれないこと、および `/var/lib/dpkg/info/*.postinst` が特定の新しい Linux カーネル機能・システムコール（`fchmodat2`, `openat2`, `mount_setattr` 等）に依存していないことを確認してください。
-- **詳細な最適化仕様の参照**:
-  コンテナ内 Chrome 安定化、ヒステリシス・バックプレッシャー、PulseAudio UNIX ソケット構成、CDP ネイティブタッチの詳細は [docs/OPTIMIZATION_KNOWLEDGE.md](docs/OPTIMIZATION_KNOWLEDGE.md) に網羅されています。コア処理を変更する前に必ず参照してください。
+1. **`<video>` タグの完全禁止（[仕様書 04](docs/specs/04-client-playback-avsync.md)）**: クライアントのソース・ビルド成果物に `<video>` 要素を記述・動的生成してはならない。映像描画は常に `<canvas>`（`{ alpha: false, desynchronized: true }`）+ WebCodecs のみとし、デコード済みフレームは `close()` で 100% 解放する。
+2. **完全タッチオンリー制約（[仕様書 01](docs/specs/01-auth-security.md), [07](docs/specs/07-ui-hud-settings.md)）**: `client/` に物理キーボード前提 UI（`Escape` キー閉じ、ショートカット、`keydown` 依存）やマウス前提 UI（`hover` 専用露出、右クリック、ポインタドラッグ）、およびネイティブ `window.prompt()` / `window.confirm()` を実装してはならない。文字入力は常に HUD 仮想キーボードの編集可能 `<input>` 経由の CDP 注入のみとする。
+3. **車載 `localStorage` 設定保存禁止（[仕様書 01](docs/specs/01-auth-security.md), [07](docs/specs/07-ui-hud-settings.md)）**: 設定・拡大率・バッファ深度・テレメトリ有無・お気に入り等はすべてサーバー保存に一元化する。ブラウザ `sessionStorage` に保持してよいのはタブ内再接続用 `token` と `role` のみとする。
+4. **Xvfb Chrome コンポジタ保護（[仕様書 06](docs/specs/06-browser-input-cdp.md)）**: Chrome 起動引数に `--enable-gpu-rasterization`・`--enable-zero-copy`・`--disable-gpu-vsync` を絶対に付与しない。また単一注入元による WebAuthn/パスワード保存/翻訳のネイティブバブル抑止を外さない。
+5. **タッチ入力方式（[仕様書 06](docs/specs/06-browser-input-cdp.md)）**: 常設タッチ入力をマウスエミュレーションへ戻してはならない。CDP `Input.dispatchTouchEvent` を優先し、`xdotool` は CDP 切断時フォールバックに限定する。
+6. **GPU・ドライバ環境変数の境界（[仕様書 05](docs/specs/05-encoder-gpu.md), [09](docs/specs/09-deploy-infra.md)）**: `/etc/libva.conf` に特定ドライバ名を直書きしない。起動スクリプトで未指定 `LIBVA_DRIVER_NAME` へ勝手な既定値を注入しない。`GALLIUM_DRIVER=d3d12` は FFmpeg / `vainfo` サブプロセスのみに限定し Chrome へ絶対付与しない。
+7. **コンテナ基盤・配布規約・秘匿性（[仕様書 09](docs/specs/09-deploy-infra.md)）**: `Dockerfile` の `no-systemd` APT Pinning（`Pin-Priority: -1`）・`dbus-x11`・`--no-install-recommends` を削除してはならない。Google Chrome 同梱イメージをパブリックレジストリへ公開（`INSTALL_CHROME=false` 違反）してはならない。`TUNNEL_TOKEN` をコマンドライン引数へ渡したり子プロセス環境へ残存させてはならない。
+8. **電源・配信・セッション不変条件（[仕様書 02](docs/specs/02-session-multidisplay.md), [03](docs/specs/03-streaming-transport.md), [10](docs/specs/10-power-lifecycle.md)）**:
+   - `autoSleepTimer` と `holdExpireTimer` を同時稼働させない（`autoSleepMinutes = 0` でも `BUFFER_HOLD` 中のプライマリ切断時は `holdExpireTimer` を再武装する）。
+   - `ACTIVE` 復帰時は必ず映像・音声双方のエンコーダ稼働を保証する。
+   - LIVE 配信時のソケット輻輳で `CATCHUP` モードへ遷移させない。
+   - セカンダリ回線輻輳をプライマリおよびエンコーダへ波及させず、通常セカンダリへ音声パケットを送らない。
+9. **機密情報・環境固有情報の非コミット（[仕様書 01](docs/specs/01-auth-security.md), [09](docs/specs/09-deploy-infra.md)）**: 平文 PIN・トークン・API キー・SSH 鍵・プライベート固定 IP・ローカル絶対パスをリポジトリやログへ出力・コミットしない。
 
 ---
 
-## 5. 開発時のアンチパターン（厳禁事項）
+## 4. Git・ブランチ・品質ゲート運用
 
-1. **Xvfb 環境で `--enable-gpu-rasterization` や `--enable-zero-copy` を追加しない**:
-   Mesa llvmpipe と VAAPI デコーダが競合し、コンポジタがデッドロックして画面下部が黒くフリーズします。2D DOM は常に Chrome の高速 CPU ラスター（Skia SIMD）で描画してください。
-2. **WebSocket バックプレッシャーで単一閾値のフレームドロップを行わない**:
-   IDR キーフレーム送信時に一時的にソケットバッファが跳ね上がるため、必ず高低水位ヒステリシス（High: 768KB, Low: 128KB）を維持してください。
-3. **タッチ入力を `mousedown 1` マウスエミュレーションに戻さない**:
-   微小移動で画像ドラッグやテキスト選択が誤爆します。必ず `server/src/input/xdotool.ts` の `CdpTouchBridge`（CDP `Input.dispatchTouchEvent`）を優先使用してください。
-4. **ビルド済みコンテナイメージ（Google Chrome 同梱）をパブリックレジストリへ公開しない**:
-   `Dockerfile` はビルド時に Google Chrome 公式パッケージを取得します。再配布規約を遵守し、ソースコードおよび `Dockerfile` のみを提供してください。
-5. **WebAuthn / パスキーのネイティブ UI 抑止を外さない**:
-   Docker/Xvfb 環境には物理・プラットフォーム認証器がなく、Chrome ネイティブダイアログ（"No passkeys available"）が表示されると車載タッチ操作で閉じられず操作不能になります。WebAuthn インターセプト（`content.js` / CDP）を維持してください。
-6. **車載文字入力を `<canvas>` への直接タッチに依存させない**:
-   テスラ車載 Chromium は `<canvas>` タッチでは OS ソフトウェアキーボードを起動しません。必ず DOM `<input>`（`user-select: text`）を備えた HUD 仮想キーボードバーを経由した CDP 入力注入を行ってください。
-7. **クライアント側 (`client/`) で物理キーボードやマウス操作を前提とした機能・UIを実装しない**:
-   テスラ車載ディスプレイは **完全タッチオンリー環境** であり、運転席から物理キーボードやマウスは使用できません。`Escape` キーによるモーダル閉じ、キーボードショートカット、`keydown` リスナーへの依存、および `hover` 前提 UI・右クリックメニュー・マウスポインタ前提ドラッグなど、タッチのみで完結しない操作を `client/` に実装・要求することを厳禁とします。リモート側へのキー・文字入力は必ずタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入のみで行ってください。
-8. **`Dockerfile` で `/etc/apt/preferences.d/no-systemd` や `dbus-x11` を削除し、`systemd` / `dbus-user-session` / `udev` 等のホストカーネル依存システムパッケージを引き込まない**:
-   QNAP Container Station 等の NAS カスタムカーネル（Linux 5.10 系等）では、Ubuntu 24.04 の `systemd` v255 (`libsystemd-shared`) が発行する Linux 6.6+ システムコール（`fchmodat2(..., AT_EMPTY_PATH)` 等）が `ENOSYS` ではなく `ENOENT` を返し、`dpkg --configure` が失敗してビルド不能になります（Issue #93）。コンテナへのパッケージ追加時は常にホストカーネル後方互換性を確認してください。
-
----
-
-## 6. AI エージェント行動規範 & ブランチ・リリース運用ルール (AI Agent Rules)
-
-AI エージェント（Antigravity, Cursor, Gemini, Claude 等）が自律的またはペアプログラミングで作業を行う際、**以下のルールを最優先で遵守** してください。
-
-### 1. 保護ブランチへの直接コミット・プッシュ厳禁
-- **`main` および `release/*` ブランチへ直接コミットまたは直接プッシュ（Direct push）することは厳禁** です。
-- 新機能の実装やバグ修正を行う際は、必ず最新の `main` から派生したトピックブランチ（`feat/...`, `fix/...`, `test/...`, `refactor/...`, `docs/...`）を作成して作業してください。
-- 作業完了後はトピックブランチから `main` ブランチへ向けた **Pull Request (PR)** を作成し、ユーザー（オーナー）に確認を求めてください。
-
-### 2. リリースタグ・バージョニング規則の遵守
-- リリースタグ `v<MAJOR>.<MINOR>.<PATCH>` の作成は、**ユーザーから明示的なリリース指示があった場合のみ** 行ってください。
-- タグ付与前には必ず CONTRIBUTING.md §1「リリースタグ付与時のバージョン同期手順」に従い、`package.json`（root / client / server）と各 `package-lock.json` の `"version"` をタグと同じ値へ同期する PR をマージした上で、タグを付与してください。
-- バージョン採番は **SemVer 2.0.0** に厳格に従ってください：
-  - `MAJOR`: WebSocket プロトコル仕様破壊、必須環境の大幅刷新
-  - `MINOR`: 新機能追加、設定拡張、HUD改善
-  - `PATCH`: バグ修正、安定性改善、ドキュメント更新
-- テスラ実車検証を行うフェーズでは、プレリリースタグ（例: `v0.2.0-rc.1`）を活用してください。
-
-### 3. テスト実行とビルド検証の義務
-- コードを変更した後は、コミットまたは PR 作成前に **必ず以下のコマンドを実行し、全件 PASS を確認** してください：
-  - `npm run check`: Biome リント・フォーマット検証および TypeScript 厳格型チェック
-  - `npm test`: クライアント・サーバーの全単体・結合テスト
-  - `npm run build`: クライアント・サーバー双方のプロダクションビルド
-
-### 4. 機密情報・特定環境固有パラメータのコミット防止
-- 平文パスワード、SSH 鍵、個人アクセストークン、プライベート IP アドレス（固定IP）、ホスト固有パスをコードやドキュメントに直書きしてコミットしてはなりません。
-- 特定環境向けの情報は必ず `.gitignore` 対象（`PRIVATE_ENVIRONMENT.md` または `.env`）に記述し、公開ドキュメント上はプレースホルダー（`<SERVER_IP>`, `<SSH_USER>` 等）を使用してください。
-
-### 5. 車載アーキテクチャ制約の厳守
-- クライアント側で `<video>` 要素は絶対に追加しないでください（テスラ D レンジ動画停止ガードを回避するため）。
-- 映像描画は常に `client/src/core/canvas-renderer.ts` の `<canvas desynchronized>` + WebCodecs API を経由してください。
-- 画面タッチ操作は `CdpTouchBridge` による CDP ネイティブタッチ（`Input.dispatchTouchEvent`）を維持してください。
-- テスラ車載画面は完全タッチオンリー環境のため、`client/` で物理キーボード（`Escape` キー閉じ、ショートカット、`keydown` 依存）やマウス操作（`hover` 専用 UI、右クリック、マウスドラッグ）を前提とした実装を行わないでください。リモート入力はタッチ操作可能な HUD 仮想キーボード `<input>` + CDP 注入に限定してください。
-
+- **保護ブランチ保護**: `main` および `release/*` への直接コミット・直接プッシュを厳禁とする。作業は必ずトピックブランチ（`feat/...`, `fix/...`, `docs/...`, `refactor/...`, `chore/...`）で行い、PR 経由で統合する。
+- **リリースタグ運用**: リリースタグ `v<MAJOR>.<MINOR>.<PATCH>`（SemVer 2.0.0）はユーザーの明示指示があるときのみ付与し、付与前にすべての `package.json` / `package-lock.json` のバージョンを一致させる。
+- **コミット・PR 前必須ゲート**: パッケージ基盤整備（Phase 0）以降、すべてのコード変更はコミットおよび PR 作成前に `npm run check`（Biome + `tsc --noEmit`）、`npm test`、`npm run build` の全 PASS を必須とする。
