@@ -68,17 +68,17 @@ export class WebSocketHandler {
   private static readonly CATCHUP_MIN_BACKLOG_CAP_MS = 30000;
 
   // Issue #111 Buffer-Hold Pause: 動的閾値の境界。holdTriggerMs は targetBufferMs に連動し
-  // 10〜30秒へクランプ (target=0 は Hold 無効)。再開側は VAAPI の IDR/GOP ヘッドルーム 2s、
-  // ソフトウェアエンコード 3s を基準とし、holdTrigger − resume ≥ 7.2s のヒステリシス幅を確保する。
+  // 10〜30秒へクランプ (target=0 は Hold 無効)。再開側はハードウェアエンコード (VAAPI/NVENC) の
+  // IDR/GOP ヘッドルーム 2s、ソフトウェアエンコード 3s を基準とし、holdTrigger − resume ≥ 7.2s を確保する。
   private static readonly HOLD_TRIGGER_MIN_MS = 10000;
   private static readonly HOLD_TRIGGER_MAX_MS = 30000;
   private static readonly HOLD_HEADROOM_VAAPI_MS = 2000;
   private static readonly HOLD_HEADROOM_SOFTWARE_MS = 3000;
   private static readonly HOLD_MIN_HYSTERESIS_MS = 7200;
-  // Issue #111 F-4: 復帰ゲートの時間項は安全弁 (再起動後に IDR が一度も来ない異常対策)。
-  // 本来の境界は PTS 比較 (ffmpeg.ts resumeBoundaryPtsUs) で決まるため、期限は長く取る。
+  // Issue #111: 復帰ゲートのタイムアウト安全弁 (再起動後に IDR が一度も来ない異常対策)。
+  // 本来の境界は PTS 比較 (ffmpeg.ts の resumeBoundaryPtsUs) で決まるため、期限は長めに取る。
   private static readonly RESUME_GATE_MS = 8000;
-  // Issue #112 F-6: 健康な LIVE 状態の LIVE tap で全体再起動をスキップする滞留上限 (ms)。
+  // Issue #112: 正常な LIVE 状態での LIVE タップ時に全体再起動をスキップする滞留上限 (ms)。
   // 250ms の BUFFER_FEEDBACK 周期・クライアント側ペーサークッション・RTT を考慮し 1000ms を許容する。
   private static readonly LIVE_TAP_SKIP_MAX_HELD_MS = 1000;
   // targetBufferMs=0 (オフ) でも CATCHUP 送出ゲートが永久閉鎖しないための実効窓下限
@@ -314,8 +314,8 @@ export class WebSocketHandler {
   private sendLiveJumped(socket: WebSocket): void {
     const liveEdgePtsUs =
       typeof this.encoder.getCurrentPts === 'function' ? Number(this.encoder.getCurrentPts()) : 0;
-    // Issue #111 F-4: クライアントへ権威 PTS を返すだけでなく、サーバー側でも同一境界より古い
-    // 音声パケットの送出を破棄する (straggler 音声が A/V オフセットとして残留するのを防ぐ)。
+    // Issue #111: クライアントへライブエッジ基準 PTS を返すだけでなく、サーバー側でも同一境界より古い
+    // 音声パケットの送出を破棄する (滞留音声が A/V オフセットとして残留するのを防ぐ)。
     if (liveEdgePtsUs > 0 && typeof this.encoder.setResumeBoundary === 'function') {
       this.encoder.setResumeBoundary(BigInt(Math.round(liveEdgePtsUs)));
     }
@@ -327,8 +327,8 @@ export class WebSocketHandler {
   }
 
   private notifyOtherSessionsLiveJump(sourceSocket: WebSocket): void {
-    // Issue #103: セカンダリセッションにも権威的なライブエッジ PTS を伝え、PONG 外挿の
-    // 暫定バリアだけでなく同一の権威値で straggler 音声から保護する（マルチセッション構成対策）
+    // Issue #103: 他の認証済みセッションにも確定ライブエッジ PTS を通知し、PONG 外挿の
+    // 暫定バリアだけでなく同一の基準値で滞留音声の混入を防ぐ（マルチセッション構成対策）
     const liveEdgePtsUs =
       typeof this.encoder.getCurrentPts === 'function' ? Number(this.encoder.getCurrentPts()) : 0;
     for (const client of this.authenticatedClients) {
@@ -520,7 +520,7 @@ export class WebSocketHandler {
           this.browserManager.getState() === 'running' || this.encoder.isRunning();
         if (isPipelineActive) {
           // Keep existing secondary clients streaming during the auto-sleep grace period
-          // so transient network drops (< 3 min) recover seamlessly for both front & rear.
+          // so transient network drops (within autoSleepMinutes, default 3 min) recover seamlessly for both front & rear.
           this.scheduleAutoSleep();
         } else {
           this.enterSecondaryStandby();
@@ -597,8 +597,8 @@ export class WebSocketHandler {
   }
 
   /**
-   * Issue #112 F-6: LIVE tap 由来の全体再起動を安全にスキップできるかを判定する。
-   * パイプラインが既に健康な LIVE 状態 (Hold 非発動・Video/Audio 両エンコーダ稼働・
+   * Issue #112: LIVE タップ由来の全体再起動を安全にスキップできるかを判定する。
+   * パイプラインが既に正常な LIVE 状態 (Hold 非発動・Video/Audio 両エンコーダ稼働・
    * CATCHUP / GOPドロップ中セッション無し・サーバー保持量 serverHeldMs が小さい) の場合のみ true。
    * PlaybackBuffer は過去 60 秒の再接続用履歴を常時保持するリングバッファのため、
    * getBufferedDurationMs() は滞留指標に使わない。
@@ -978,7 +978,7 @@ export class WebSocketHandler {
     // - Token auto-reconnect while primary is absent ->
     //   * If previously actingPrimary and pipeline is still active (and no other actingPrimary), resume as actingPrimary.
     //   * Enter standby if previously standby OR pipeline already stopped/slept.
-    //   * Otherwise, if pipeline is still active within the 3-minute grace period and secondary was streaming, resume seamlessly!
+    //   * Otherwise, if pipeline is still active within the auto-sleep grace period (default 3 min) and secondary was streaming, resume seamlessly!
     if (session?.role === 'secondary' && !this.hasPrimaryClients()) {
       const authEntry = session.authToken
         ? this.authorizedSessions.get(session.authToken)
@@ -1057,7 +1057,7 @@ export class WebSocketHandler {
       }
     }
 
-    // Issue #111 ケースA: Hold 停止中 (BUFFER_HOLD_PAUSED) のプライマリ再接続は、生成を凍結したまま
+    // Issue #111: Hold 停止中 (BUFFER_HOLD_PAUSED) のプライマリ再接続は、生成を凍結したまま
     // CATCHUP で再生位置へ追いつかせ、resumeTriggerServerMs 到達後に自動再開する。
     // セカンダリ接続では消費者が不在のまま holdExpireTimer が消えないよう解除しない。
     const holdingForReconnect =
@@ -1133,10 +1133,10 @@ export class WebSocketHandler {
     } else {
       let lastAckPts = session?.lastAckPts ?? this.lastKnownAckPts;
 
-      // Issue #111 ack 遅延補正 (review 追加項): 切断前の高RTT in-flight で lastAckPts が陳腐化すると、
+      // Issue #111 (ack 遅延補正): 切断前の高RTT in-flight で lastAckPts が陳腐化すると、
       // backlog が holdTrigger を大幅に超えて再生開始 (または保持範囲外 → LIVE 強制 = 大幅スキップ)
       // していた。再開位置を resumeFromPts = max(lastAckPts, latestBuffered − holdTriggerMs)
-      // (getFramesToCatchup により直前 KEYFRAME へスナップ) へクランプし、 backlog を常に
+      // (getFramesToCatchup により直前 KEYFRAME へスナップ) へクランプし、backlog を常に
       // holdTrigger 以下に収めてから CATCHUP を開始する。
       const holdCfgForReconnect = this.computeHoldConfig();
       if (holdCfgForReconnect && lastAckPts !== null && lastAckPts > 0n) {
@@ -1152,7 +1152,7 @@ export class WebSocketHandler {
         }
       }
 
-      // 要件4: now - lastInputAt > IDLE_TO_BUFFER_SECONDS（既定5秒、環境変数）なら CATCHUP 許可状態
+      // now - lastInputAt > IDLE_TO_BUFFER_SECONDS（既定5秒、環境変数）なら CATCHUP 許可状態
       const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
       const isIdle = Date.now() - this.lastInputAt > idleThresholdMs;
 
@@ -1162,13 +1162,13 @@ export class WebSocketHandler {
           : null;
 
       if (catchupData && catchupData.frames.length > 0 && session) {
-        // 要件6: CATCHUP 許可状態での再接続 = バッファから lastAckPts 以降を再生
+        // CATCHUP 許可状態での再接続: バッファから lastAckPts 以降を再生
         console.log(
           `[WebSocketHandler] Client reconnected in idle state. Starting CATCHUP playback (${catchupData.frames.length} frames from lastAckPts=${lastAckPts})...`,
         );
         this.startCatchup(session, catchupData);
       } else {
-        // 要件5: LIVE 状態での再接続 = 現挙動のまま（stale判定→restart→ライブ）
+        // LIVE 状態での再接続: キーフレーム鮮度判定のうえライブ配信を開始
         if (session) {
           session.mode = 'LIVE';
         }
@@ -1235,7 +1235,7 @@ export class WebSocketHandler {
   }
 
   /**
-   * LIVE 再接続処理 (現挙動を完全維持: stale判定 -> restart -> ライブ)
+   * LIVE 接続・再接続処理 (キャッシュ済みキーフレームの鮮度を確認し、必要に応じて映像エンコーダを再起動してライブ配信を開始する)
    */
   private startLive(socket: WebSocket, options?: { skipVideoRestart?: boolean }): void {
     const cachedKeyframe = this.encoder.getCachedKeyframe();
@@ -1288,7 +1288,7 @@ export class WebSocketHandler {
    *   ネットワーク中およびクライアント未再生バッファの合計ミリ秒数をリアルタイムに算出する。
    * - クライアントから報告された最新のローカルバッファ量 (bufferedMs) と比較し、より大きい方を採用することで、
    *   フィードバック受信直後 (bufferedMs=0) でもバースト送出がクライアント許容上限 (targetBufferMs) を
-   *   突破しないよう確実に保護する (Issue 26)。
+   *   突破しないよう確実に保護する (Issue #26)。
    */
   private getClientInFlightBufferMs(session: ClientSession): number {
     let ptsInFlightMs = 0;
@@ -1361,7 +1361,7 @@ export class WebSocketHandler {
   }
 
   /**
-   * targetBufferMs の解決単一正典。スライディングウィンドウ実制御と Issue #107 の診断ログで
+   * targetBufferMs の共通解決ロジック。スライディングウィンドウ制御と Issue #107 の診断ログで
    * 参照が食い違わないよう共通化する（再接続直後等で session.targetBufferMs が未設定でも、
    * 直前の有効値 lastKnownTargetBufferMs を基準にする）。
    */
@@ -1375,9 +1375,9 @@ export class WebSocketHandler {
 
   /**
    * Issue #104: CATCHUP のスライディングウィンドウを実測排水レートへ適応させる。
-   * 健全なリンク（排水レート >= 0.85x）では従来どおり targetBufferMs をそのまま使用し、
-   * 排水が実時間未満のリンクでは in-flight を「target × レート（下限2.5秒、target を
-   * 超えない）」へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
+   * 健全なリンク（排水レート >= 0.85x）では targetBufferMs（下限 400ms）をそのまま使用し、
+   * 排水レート < 0.85x の低速リンクでは in-flight 上限を「target × レート（下限 2.5秒、target 以下）」
+   * へ縮めることで、中間バッファへの過剰な詰め込み（自己輻輳）を抑制する。
    */
   private effectiveCatchupWindowMs(session: ClientSession): number {
     // Issue #111: targetBufferMs=0 (オフ) でも送出ゲート (inFlight >= window) が永久閉鎖せぬよう
@@ -1474,14 +1474,13 @@ export class WebSocketHandler {
     session.catchupCongestionStreak = 0;
     session.isBurstMode = this.isBurstCatchupEnabled();
 
-    // Issue #107: 実効スライディングウィンドウとバーストモードを記録。これらの値はこれまで
-    // どのログにも出力されておらず、インシデント解析時に当日のフロー制御設定を復元できなかった。
+    // Issue #107: 障害解析時にフロー制御設定を追跡できるよう、実効ウィンドウ・ソケットガード・バースト設定を出力する
     console.log(
       `[WebSocketHandler] CATCHUP pacing started (queued=${session.playbackQueue.length} frames, targetBufferMs=${this.getBaseTargetBufferMs(session)}, effectiveWindowMs=${this.effectiveCatchupWindowMs(session)}, socketGuardKB=${Math.round(this.getEffectiveCatchupSocketGuardBytes(session) / 1024)}, burst=${session.isBurstMode})`,
     );
 
     // キャッチアップ送出開始にあたり、基準ACKがキュー先頭キーフレームより古い、または未設定の場合は
-    // キュー先頭の映像PTS（フォールバックとして先頭フレームPTS）でアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue 26)
+    // キュー先頭の映像PTS（フォールバックとして先頭フレームPTS）でアンカーを初期化し、正確なIn-Flightウィンドウ計算を保証する (Issue #26)
     const firstVideoPts =
       session.playbackQueue.find((f) => f.type === 'video')?.pts ?? session.playbackQueue[0]?.pts;
     if (
@@ -1533,7 +1532,7 @@ export class WebSocketHandler {
     if (session.mode !== 'CATCHUP' || session.isStandby || session.socket.readyState !== 1) {
       return;
     }
-    // Issue #104: ソケット滞留でペーシングが停止している間もフレームはキューへ積み続くため、
+    // Issue #104: ソケット滞留でペーシングが停止している間もフレームはキューへ蓄積され続けるため、
     // 再開判定のたびにバックログ上限を監視する（完全ストール時の無限成長防止。内部 2 秒スロットル）
     this.enforceCatchupBacklogCap(session);
     if (session.playbackQueue.length === 0) {
@@ -1615,7 +1614,7 @@ export class WebSocketHandler {
     }
 
     // クライアント先行バッファ上限チェック（スライディングウィンドウ・フロー制御）
-    // targetBufferMs（既定10秒）を超えて送信しないよう、満杯時は一時停止する
+    // 実効スライディングウィンドウ (effectiveCatchupWindowMs、既定10秒) を超えて送信しないよう、満杯時は一時停止する
     const targetBufferMs = this.effectiveCatchupWindowMs(session);
     const inFlightMs = this.getClientInFlightBufferMs(session);
 
@@ -1758,14 +1757,14 @@ export class WebSocketHandler {
 
     this.resizeTimer = setTimeout(async () => {
       try {
-        // PR #94 レビュー (Medium): デバウンス待機中にプロファイル変更があった場合へ備え、
+        // デバウンス待機中にプロファイル変更があった場合へ備え、
         // タイマー発火時点で実効スケールからエンコード寸法を再計算する
         const liveProfile = resolveClientProfile(this.configStore.getConfig().stream);
         const liveEncodeDims = computeEncodeDimensions(width, height, liveProfile.resolutionScale);
         const liveEncodeW = liveEncodeDims ? liveEncodeDims.width : width;
         const liveEncodeH = liveEncodeDims ? liveEncodeDims.height : height;
         console.log(`[WebSocketHandler] Executing dynamic server resize to ${width}x${height}...`);
-        // 解像度変更時はバッファ全消去 (要件2)
+        // 解像度変更時はバッファを全消去する
         this.playbackBuffer.clear();
         for (const session of this.clientSessions.values()) {
           if (session.mode === 'CATCHUP') {
@@ -1787,7 +1786,7 @@ export class WebSocketHandler {
             liveEncodeDims,
           );
         } else {
-          // 標準プロファイル (scale 1.0) は従来と完全に同一の呼び出し形を維持する
+          // エンコード縮小なし (scale 1.0) の場合は通常リスタートのみ実行する
           await this.encoder.restart(width, height);
         }
         this.inputManager.updateDimensions(width, height);
@@ -1814,7 +1813,7 @@ export class WebSocketHandler {
    * Issue #11: クライアント負荷プロファイル変更時に設定ルートから呼ばれる。
    * レイアウト (リモートビューポート) 寸法は変えず、エンコード出力寸法のみを再計算して適用する。
    * streamUpdate を渡した場合は、ビットレート・FPS 等の連動変更を新しいエンコード寸法と
-   * 単一の updateConfig 再起動へ統合する (PR #94 レビュー Medium: 二重再起動の抑制)。
+   * 単一の updateConfig 再起動へ統合して二重再起動を防ぐ。
    */
   public async reapplyClientProfile(streamUpdate?: {
     fps?: number;
@@ -1935,7 +1934,7 @@ export class WebSocketHandler {
       const cmd = JSON.parse(jsonStr);
 
       switch (cmd.type) {
-        // 要件3: ACK プロトコル (デコード済み video PTS)
+        // ACK プロトコル (デコード済み video PTS)
         case 'ACK': {
           if (cmd.pts !== undefined && cmd.pts !== null) {
             const ackPts = BigInt(Math.round(Number(cmd.pts)));
@@ -2008,7 +2007,7 @@ export class WebSocketHandler {
             typeof this.encoder.getCurrentPts === 'function'
               ? Number(this.encoder.getCurrentPts())
               : 0;
-          // 1. サーバー側送出待ちキューの秒数
+          // 1. サーバー側送出待ちキューの長さ (ms)
           let catchupQueueMs = 0;
           if (session && session.playbackQueue.length > 0) {
             let firstPts: bigint | null = null;
@@ -2033,7 +2032,7 @@ export class WebSocketHandler {
             serverLagMs = Math.round((latestPts - Number(lastAck)) / 1000);
           }
 
-          // 3. クライアント未達のサーバー側保持バッファ秒数 (全体遅延からクライアント手元バッファを除いた残余)
+          // 3. クライアント未達のサーバー側保持バッファ時間 (ms: 全体遅延からクライアント手元バッファを除いた残余)
           const clientBufferedMs = session?.bufferedMs ?? 0;
           const serverRemainingMs = Math.max(0, serverLagMs - clientBufferedMs);
 
@@ -2092,7 +2091,7 @@ export class WebSocketHandler {
             break;
           }
           const wasHolding = this.pipelineHoldState === 'BUFFER_HOLD_PAUSED';
-          // Issue #111: Hold 中の LIVE ジャンプも即時解除・再生成から。
+          // Issue #111: Hold 中に LIVE ジャンプされた場合は即座に Hold を解除し、エンコードを再開する。
           this.exitBufferHold('jump_to_live');
           // Issue #103: recordInputActivity(socket) を呼ぶと CATCHUP 中に abortCatchupAndSwitchToLive と
           // notifyOtherSessionsLiveJump が二重実行されるため、入力時刻のみ更新して下の単一経路に集約する
@@ -2113,8 +2112,8 @@ export class WebSocketHandler {
               // 起動直後の Video FFmpeg を stale 判定で即殺して二重起動するのを防ぐ。
               this.abortCatchupAndSwitchToLive(session, { skipEncoderRestart: wasHolding });
             } else {
-              // 既に健康な LIVE セッションで JUMP_TO_LIVE が来た場合、過去キーフレーム再送や
-              // Video FFmpeg の強制再起動を行うと画面の瞬間巻き戻り・FPS 急落の原因になる (F-6)。
+              // 既に正常な LIVE セッションで JUMP_TO_LIVE を受けた場合、過去キーフレーム再送や
+              // Video FFmpeg の強制再起動を行うと画面の瞬間巻き戻り・FPS 急落の原因になる (Issue #112)。
               // エンコーダ稼働のみ保証し、ストリームを途切れさせずに LIVE 同期を完了する。
               if (session.pacingTimer) {
                 clearTimeout(session.pacingTimer);
@@ -2126,8 +2125,8 @@ export class WebSocketHandler {
             }
             this.notifyOtherSessionsLiveJump(socket);
           }
-          // Issue #103: 破棄基準となるライブエッジ PTS を権威値としてクライアントへ返し、
-          // 経路上を漂流中の古い音声（straggler）を受信側で確実に破棄できるようにする
+          // Issue #103: 破棄基準となる確定ライブエッジ PTS をクライアントへ返し、
+          // 経路上に滞留している古い音声（straggler）を受信側で確実に破棄できるようにする
           this.sendLiveJumped(socket);
           break;
         }
@@ -2177,7 +2176,7 @@ export class WebSocketHandler {
             });
             break;
           }
-          // 要件8: ページ移動・再ナビゲーション時はバッファ消去＋LIVE
+          // ページ移動・再ナビゲーション時はバッファ消去＋LIVE 復帰
           this.playbackBuffer.clear();
           for (const s of this.clientSessions.values()) {
             if (s.mode === 'CATCHUP') {
@@ -2348,10 +2347,10 @@ export class WebSocketHandler {
     this.encoder.on(
       'video',
       ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
-        // 要件2: 'video' イベント時にバッファへ追記
+        // 'video' イベント時にバッファへ追記
         this.playbackBuffer.addVideo(flags, pts, data);
 
-        // Issue #111: 生成が続く限りケースA (切断中の蓄積) / ケースB (CATCHUP 滞留) を評価。
+        // Issue #111: 生成が続く限り、切断中の蓄積や CATCHUP 滞留による Buffer-Hold 発動条件を評価する。
         // Hold 発動後は FFmpeg が停止するためこのフック自体も停止し、再開判定は
         // holdResumePollTimer (消費=ack 進捗) が担う。
         this.evaluateBufferHold();
@@ -2397,8 +2396,8 @@ export class WebSocketHandler {
             // (inFlight < effectiveCatchupWindowMs) が閉じたままとなり、backlog が永久に排水されない
             // (通信回復後も配信遅延・A/Vオフセットが恒久化する)。リアルタイム配信ではリンクが生成速度を
             // 運べずクライアントバッファも満杯なら余剰フレームはいずれどこかで必ず破棄されるため、
-            // 破棄は実証済みのヒステリシススキップへ一元化し、通信回復で即時に復帰させる。
-            // CATCHUP キューは「クライアントが後方になった場合」(再接続/resume、上記1.の経路) のみで使用する。
+            // 破棄はヒステリシススキップへ一元化し、通信回復時に即時復帰させる。
+            // CATCHUP キューは再接続や追っかけ再開時 (上記 1. の経路) のみで使用する。
             if (buffered > HIGH_WATER_MARK) {
               (client as any)._droppingGop = true;
             }
@@ -2421,7 +2420,7 @@ export class WebSocketHandler {
     this.encoder.on(
       'audio',
       ({ flags, pts, data }: { flags: number; pts: bigint; data: Buffer }) => {
-        // 要件2: 'audio' イベント時にバッファへ追記
+        // 'audio' イベント時にバッファへ追記
         this.playbackBuffer.addAudio(flags, pts, data);
 
         if (this.authenticatedClients.size === 0) return;
@@ -2441,7 +2440,7 @@ export class WebSocketHandler {
               continue;
             }
 
-            // 2. LIVE クライアント: リアルタイム送信 (音声はドロップせず 2MB まで許容)
+            // 2. LIVE クライアント: リアルタイム送信 (GOP ドロップ対象外とし、ソケット滞留 2MB 以下なら送出・超過時のみ破棄)
             const buffered = (client as any).bufferedAmount || 0;
             if (buffered <= 2 * 1024 * 1024) {
               client.send(packet);
@@ -2490,7 +2489,7 @@ export class WebSocketHandler {
     return Number(latest - ack) / 1000;
   }
 
-  /** 生成イベント起点の評価フック (最大1秒に1回)。ケースA=切断中の蓄積 / ケースB=CATCHUP 滞留 */
+  /** 生成イベント起点の Buffer-Hold 評価フック (最大1秒に1回)。切断中の蓄積と CATCHUP 滞留を監視する。 */
   private evaluateBufferHold(): void {
     if (this.pipelineHoldState !== 'ACTIVE') return;
     const nowMs = Date.now();
@@ -2549,7 +2548,7 @@ export class WebSocketHandler {
     });
   }
 
-  /** Hold の期限タイマーを武装する (満了時は共通スリープフローへ合流) */
+  /** Hold の期限タイマーを設定する (満了時は共通スリープフローへ合流) */
   private armHoldExpireTimer(): void {
     if (this.holdExpireTimer) {
       clearTimeout(this.holdExpireTimer);
@@ -2655,7 +2654,7 @@ export class WebSocketHandler {
     }
     // Issue #111: Hold 中は autoSleepTimer を起動せず、holdExpireTimer のみで排他管理する。
     // Hold 中の再接続で一旦解除された後に排水前で再切断した場合も、autoSleepMinutes=0 環境を
-    // 含めて確実に holdExpireTimer を再武装し、永久 Hold 滞留を防ぐ。
+    // 含めて確実に holdExpireTimer を再設定し、永久 Hold 滞留を防ぐ。
     if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
       if (!this.holdExpireTimer) {
         this.armHoldExpireTimer();
@@ -2669,8 +2668,8 @@ export class WebSocketHandler {
       return;
     }
     let delayMs = Math.max(15000, autoSleepMins * 60 * 1000);
-    // Issue #111: Hold が有効な設定で autoSleepMinutes が極短の場合、Hold の排水機会を
-    // 潰さないよう holdTrigger+5s へ繰延べる (排他統合: 両タイマーの同時稼働は発生しない)
+    // Issue #111: Hold が有効な設定で autoSleepMinutes が極短の場合、Hold が発動する前に
+    // スリープしないよう holdTriggerMs + 5s へ繰り延べる (両タイマーの同時稼働は発生しない)
     const holdCfg = this.computeHoldConfig();
     if (holdCfg) {
       delayMs = Math.max(delayMs, holdCfg.holdTriggerMs + 5000);

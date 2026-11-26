@@ -114,7 +114,7 @@ async function bootstrap() {
 
   const inputManager = new X11InputManager(displayNum, displayWidth, displayHeight);
 
-  // Start Browser stack & Encoder in background
+  // Initialize Browser stack and start FFmpeg encoder
   try {
     console.log('[Bootstrap] Initializing Browser Stack (Xvfb + Openbox + Chrome)...');
     await browserManager.start();
@@ -148,7 +148,7 @@ async function bootstrap() {
       wildcard: false,
     });
 
-    // SPA fallback: any non-API route serves index.html
+    // SPA fallback: serve index.html for unmatched routes
     app.setNotFoundHandler((_req, reply) => {
       reply.sendFile('index.html', publicDir);
     });

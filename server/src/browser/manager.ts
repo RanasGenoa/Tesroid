@@ -74,7 +74,7 @@ export class BrowserManager {
   private isPageMonitorStopped = true;
   // Issue #111 Buffer-Hold Pause: true の間 Chrome プロセスツリーは SIGSTOP 中だが、
   // 省電力スリープ ('paused') とは異なり配信再開待ちの状態であるため BROWSER_STATUS は
-  // 'running' のまま維持し、凍結 renderer への背景 CDP 呼び出しのみ抑制する。
+  // 'running' のまま維持し、凍結 renderer へのバックグラウンド CDP 呼び出しのみ抑制する。
   private holdPaused = false;
   private isConnectingPageMonitor = false;
 
@@ -1567,7 +1567,7 @@ export class BrowserManager {
   }
 
   private async pollPageInfoFromJsonList(): Promise<void> {
-    // Issue #111: Hold 停止中は凍結 renderer への背景 CDP 呼び出しを抑制する
+    // Issue #111: Hold 停止中は凍結 renderer へのバックグラウンド CDP 呼び出しを抑制する
     if (
       this.isPageMonitorStopped ||
       this.state === 'paused' ||

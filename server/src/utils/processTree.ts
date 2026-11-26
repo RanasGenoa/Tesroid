@@ -116,7 +116,7 @@ export function getProcessMap(deps: ProcessTreeDeps = {}): {
 /**
  * Returns all process IDs in the process tree rooted at rootPid.
  * Ordered top-down (rootPid first, then children, then grandchildren).
- * To traverse leaf-to-root, iterate or reverse the returned array.
+ * To traverse leaf-to-root, iterate in reverse or reverse a copy of the returned array.
  *
  * @param rootPid - Root process PID
  * @param options - Options (e.g. includeRoot, defaults to true)

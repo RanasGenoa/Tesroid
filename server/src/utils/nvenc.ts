@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import type { EncoderMode } from './vaapi.js';
 
 /**
- * NVIDIA NVENC 検出・能力プローブ (Issue #36 Phase 3)。
+ * NVIDIA NVENC 検出・能力プローブ (Issue #36)。
  *
  * NVIDIA Container Toolkit (`--gpus all` / `runtime: nvidia` / Compose の
  * `deploy.resources.reservations.devices`) が露出する次のいずれかを根拠に
  * NVIDIA デバイスの存在を判定する:
- *  - `NVIDIA_VISIBLE_DEVICES` 環境変数 (Toolkit フラグメントが注入する)
+ *  - `NVIDIA_VISIBLE_DEVICES` 環境変数 (NVIDIA Container Toolkit が設定する)
  *  - `/dev/nvidiactl` / `/dev/nvidia0` などのキャラクターデバイス
  *
  * 実際のエンコード可否は VAAPI 側と同じ「能力実測ゲート」方針に従い、
@@ -39,7 +39,7 @@ const NVIDIA_DEVICE_PATHS = ['/dev/nvidiactl', '/dev/nvidia0'] as const;
 /**
  * 起動時に NVENC 能力プローブ (spawnSync) を実行すべきかを判定する。
  * - `software` / `vaapi` 固定: 不要 (結果を使わない)
- * - `nvenc` 固定: 必須 (結果で警告したい)
+ * - `nvenc` 固定: 必須 (失敗時に起動ログへ原因を警告するため)
  * - `auto`: VAAPI が非対応な場合のみ (Optimus 等の混在環境で VAAPI 成功時に最大 8s の起動遅延を避ける)
  */
 export function shouldProbeNvenc(encoderMode: EncoderMode, vaapiEncodeSupported: boolean): boolean {
@@ -50,7 +50,8 @@ export function shouldProbeNvenc(encoderMode: EncoderMode, vaapiEncodeSupported:
 
 /**
  * NVIDIA デバイスがコンテナに露出しているかを判定する。
- * `NVIDIA_VISIBLE_DEVICES` の空 / `none` / `void` は「露出なし」とみなす。
+ * `NVIDIA_VISIBLE_DEVICES` が `none` / `void` の場合は明示的オプトアウトとして false を返し、
+ * 空または未設定の場合は `/dev/nvidiactl` / `/dev/nvidia0` の存在有無で判定する。
  */
 export function hasNvidiaDevice(deps?: Pick<NvencDetectDeps, 'env' | 'existsSync'>): boolean {
   const env = deps?.env ?? process.env;

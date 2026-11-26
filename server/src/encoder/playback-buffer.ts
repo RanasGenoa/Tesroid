@@ -22,7 +22,7 @@ export interface PlaybackBufferOptions {
  * - 高ビットレート設定 (API/環境変数で最大 10Mbps + 音声 320kbps):
  *   - 30秒間: (10,000,000 + 320,000) / 8 * 30 = 約 38.70 MB (約 36.91 MiB)
  * -> 30秒〜60秒の弱電波・瞬断リカバリとバースト時の安全係数を含め、
- *    メモリ上限ガード (maxBytes) は 48MB (48 * 1024 * 1024 bytes) を既定値とする。
+ *    メモリ上限ガード (maxBytes) は 48 MiB (48 * 1024 * 1024 bytes) を既定値とする。
  * 保持時間上限 (bufferSeconds, 既定60秒) または maxBytes を超過した場合は、
  * GOP(2秒)境界を維持しながら最古のGOP単位でフレームを破棄する。
  */
@@ -42,7 +42,7 @@ export class PlaybackBuffer {
     this.bufferSeconds = options.bufferSeconds || (envSec > 0 ? envSec : 60);
 
     const envBytes = Number(process.env.PLAYBACK_BUFFER_MAX_BYTES);
-    // 既定 48MB (48 * 1024 * 1024)
+    // 既定 48 MiB (48 * 1024 * 1024 bytes)
     this.maxBytes = options.maxBytes || (envBytes > 0 ? envBytes : 48 * 1024 * 1024);
   }
 
@@ -96,9 +96,8 @@ export class PlaybackBuffer {
    */
   public addVideo(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & VIDEO_FLAGS.CONFIG) !== 0) {
-      // Issue #111 (F-1b 根因): CONFIG パケット (pts: 0n) をフレーム配列へ混入させると
-      // getBufferedDurationMs() と GOP prune が pts エポック混入で破壊される
-      // (実測: backlog 2,353,603ms 表記 vs 実フレーム数 ~1,570)。メタキャッシュのみ更新する。
+      // CONFIG パケット (pts: 0n) はメタキャッシュのみ更新し、フレーム配列へ混入させない
+      // (pts 0 の混入による getBufferedDurationMs() / GOP prune 破綻を防止, Issue #111)。
       this.cachedSpsPps = data;
       return;
     }
@@ -121,8 +120,8 @@ export class PlaybackBuffer {
    */
   public addAudio(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & AUDIO_FLAGS.CONFIG) !== 0) {
-      // Issue #111 (F-1b 根因): CONFIG (OpusHead, pts: 0n) はメタキャッシュのみ更新し、
-      // 音声フレーム配列へは混入させない (prune の PTS 比較を汚染しない)。
+      // CONFIG (OpusHead, pts: 0n) はメタキャッシュのみ更新し、
+      // 音声フレーム配列へは混入させない (prune の PTS 比較を汚染しない, Issue #111)。
       this.cachedOpusHead = data;
       return;
     }

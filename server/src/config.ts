@@ -9,7 +9,7 @@ export type PerformancePreset =
   | 'cpu_low_power'
   | 'custom';
 
-// GPU前提プリセット（VAAPIバックエンドでのみ有効）とCPU向けプリセット（libx264でのみ有効）の区分 (Issue #90)
+// GPU向けプリセット（VAAPI/NVENC 用、vaapi* 項目は VAAPI のみ有効）と CPU 向けプリセット（libx264 用）の区分 (Issue #90)
 export const GPU_PERFORMANCE_PRESETS: readonly PerformancePreset[] = [
   'high',
   'balanced',
@@ -86,14 +86,15 @@ export interface StreamConfig {
 }
 
 // クライアント負荷プロファイル (Issue #11): 車載ブラウザ側のデコード/描画負荷を決める軸。
-// サーバー負荷プリセット (performancePreset) とは直交し、配信解像度は両者の厳しい方が採用される。
+// サーバー負荷プリセット (performancePreset) の maxSize で上限決定したレイアウト解像度に対し、
+// resolutionScale を乗じてエンコード出力解像度を縮小する。
 export type ClientPerformanceProfile = 'standard' | 'lightweight' | 'custom';
 
 export interface ClientProfileConfig {
   profile: ClientPerformanceProfile;
-  // custom のみ: 明示値 (プリセット時は resolveClientProfile が規定値を展開)
+  // custom のみ: 明示値 (プリセット時は resolveClientProfile が既定値を展開)
   resolutionScale?: number; // 0.4〜1.0 (レイアウト解像度に対するエンコード倍率)
-  fpsOptions?: number[]; // HUD 選択肢集合 (24〜60、D2 下限)
+  fpsOptions?: number[]; // HUD の FPS 選択肢一覧 (24〜60)
   bitrateDefault?: number; // プロファイル切替時のビットレート既定値
 }
 
@@ -101,15 +102,14 @@ export const CLIENT_PROFILE_DEFAULTS: Record<
   Exclude<ClientPerformanceProfile, 'custom'>,
   Required<Omit<ClientProfileConfig, 'profile'>>
 > = {
-  // 現行動作と同一 (Ryzen / MCU3 推奨)。HUD の 24fps 選択肢追加のみ (D4 裁定)
+  // Ryzen / MCU3 推奨の標準プロファイル (等倍エンコード・24/30/60fps 選択可)
   standard: {
     resolutionScale: 1.0,
     fpsOptions: [24, 30, 60],
     bitrateDefault: 1_000_000,
   },
-  // Intel / MCU2 推奨。Phase 0 実車計測で容認確認済み (D1 裁定):
-  // 車載ビューポート (~966x752 レイアウト) で scale 0.65 ≈ 640x458 相当・fps<=30
-  // bitrateDefault は HUD の 0.5M 段階と一致させる (オーナー裁定 2026-11: 0.7M → 0.5M)
+  // Intel / MCU2 推奨: 車載ビューポート (~966x752 レイアウト) で scale 0.65 ≈ 624x488 相当・最大 30fps。
+  // bitrateDefault は HUD の 0.5M プリセット段階と一致させる。
   lightweight: {
     resolutionScale: 0.65,
     fpsOptions: [24, 30],
@@ -119,7 +119,7 @@ export const CLIENT_PROFILE_DEFAULTS: Record<
 
 export interface ResolvedClientProfile {
   resolutionScale: number; // clamped 0.4..1.0
-  fpsOptions: number[]; // sorted, unique, 24..60 (D2 裁定: 24fps 未満は不可)
+  fpsOptions: number[]; // sorted, unique, clamped to 24..60
   bitrateDefault?: number;
 }
 

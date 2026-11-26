@@ -39,7 +39,7 @@ export class AvSyncController {
   }
 
   /**
-   * Called when an AudioBufferSourceNode is scheduled to start at `scheduledContextTimeSec` (in AudioContext seconds).
+   * Called when an AudioBufferSourceNode is scheduled to start at `scheduledAudioTime` (in AudioContext seconds).
    */
   public updateAudioPts(ptsUs: number, scheduledAudioTime?: number): void {
     if (this.baseAudioPts === null && ptsUs > 0) {
@@ -49,7 +49,7 @@ export class AvSyncController {
     const schedTime = scheduledAudioTime ?? performance.now();
     this.lastAudioScheduledTime = schedTime;
 
-    // If scheduledAudioTime is in AudioContext seconds (small number compared to performance.now() or provider exists)
+    // Update audio playout clock anchor when an explicit AudioContext schedule time is provided
     if (scheduledAudioTime !== undefined) {
       this.audioAnchorContextTimeSec = scheduledAudioTime;
       this.audioAnchorPtsUs = ptsUs;
@@ -57,8 +57,8 @@ export class AvSyncController {
   }
 
   /**
-   * Returns the exact Audio PTS (in microseconds) that is currently playing out of the speakers right now.
-   * Returns null if audio is not actively playing.
+   * Returns the current Audio PTS (in microseconds) playing out of the speakers,
+   * falling back to the external master PTS provider when local audio is inactive, or null if unavailable.
    */
   public getCurrentPlayingAudioPtsUs(): number | null {
     if (!this.audioContextTimeProvider || this.audioAnchorPtsUs <= 0) {
@@ -69,7 +69,7 @@ export class AvSyncController {
       return this.externalMasterPtsProvider ? this.externalMasterPtsProvider() : null;
     }
     const deltaSec = nowCtxSec - this.audioAnchorContextTimeSec;
-    // If the anchor is more than 2 seconds in the past with no new audio packets, audio stream is idle/silent
+    // If the anchor is >1.5s in the past (idle/silent) or >10s in the future (invalid), fall back
     if (deltaSec > 1.5 || deltaSec < -10.0) {
       return this.externalMasterPtsProvider ? this.externalMasterPtsProvider() : null;
     }

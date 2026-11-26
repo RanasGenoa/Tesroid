@@ -39,7 +39,7 @@ export async function encoderRestart(token: string): Promise<void> {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
-      // Issue #112 F-6: サーバーが健康な LIVE 状態と判定して全体再起動をスキップした場合、
+      // Issue #112: サーバーが滞留のない正常な LIVE 状態と判定して全体再起動をスキップした場合、
       // クライアント側だけ decoder.reset() (tesroid:stream-reset) を発火すると SPS/PPS と
       // 次 IDR 待ちで最大 2 秒映像が止まり FPS が急落するため、実際に再起動した場合のみ発火する。
       let skipped = false;

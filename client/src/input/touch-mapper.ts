@@ -99,7 +99,7 @@ export class TouchMapper {
     const clientX = e.clientX;
     const clientY = e.clientY;
 
-    // Edge guard: allow Tesla OS swipe down at very top edge if pointerdown occurs there
+    // Edge guard: do not forward pointerdown near the very top edge so Tesla OS top-edge gestures are not sent remotely
     if (actionType === AMOTION_EVENT_ACTION.DOWN && EdgeGuard.isTopEdgeGesture(clientY)) {
       return;
     }
@@ -177,7 +177,7 @@ export class TouchMapper {
       this.startPositions.delete(e.pointerId);
     }
 
-    // Determine correct AMotionEvent action for multi-touch
+    // Determine multi-touch event action (DOWN vs POINTER_DOWN, UP vs POINTER_UP)
     let finalAction = actionType;
     if (actionType === AMOTION_EVENT_ACTION.DOWN) {
       if (this.activePointers.size > 0) {

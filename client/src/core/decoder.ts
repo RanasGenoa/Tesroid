@@ -183,7 +183,7 @@ export class VideoStreamDecoder {
   }
 
   /**
-   * Trim oldest frames up to the next available KEYFRAME if buffer exceeds duration or byte limits
+   * Trim oldest frames up to the next available KEYFRAME if buffer exceeds packet count, duration, or byte limits
    */
   private trimPendingPackets(): void {
     while (this.pendingPackets.length > 1) {

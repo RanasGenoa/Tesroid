@@ -17,7 +17,7 @@ export function registerSoundRoutes(app: FastifyInstance, authService: AuthServi
   app.post('/api/audio/test', { preHandler: requireAuth }, async (_req, reply) => {
     try {
       console.log('[SoundRoute] Triggering test audio playback on PulseAudio...');
-      // Generate a short 440Hz beep using paplay or sox/ffmpeg
+      // Generate a 1-second 440Hz sine beep via FFmpeg into PulseAudio virtual_sink
       exec(
         'ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -f pulse virtual_sink 2>/dev/null || true',
       );

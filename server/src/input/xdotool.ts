@@ -4,7 +4,7 @@ import { buildCarFullscreenScript } from '../browser/fullscreen-script.js';
 import { buildWebAuthnSuppressorScript } from '../browser/webauthn-script.js';
 
 export interface TouchEventData {
-  action: number; // 0: DOWN, 1: UP, 2: MOVE, 3: CANCEL
+  action: number; // 0: DOWN, 1: UP, 2: MOVE, 3: CANCEL, 5: POINTER_DOWN, 6: POINTER_UP
   pointerId: number;
   x: number;
   y: number;
@@ -344,7 +344,8 @@ class CdpTouchBridge {
   }
 
   /**
-   * Dispatches key events (keydown, char, keyup) for special navigation/action keys.
+   * Dispatches CDP key events (rawKeyDown, optional char, keyUp) for special navigation/action keys
+   * and single printable characters.
    */
   public sendKeyEvent(key: string): boolean {
     if (!this.isConnected() || !key) return false;

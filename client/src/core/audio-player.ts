@@ -33,8 +33,8 @@ export class AudioPlayer {
   private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
 
-  // Issue #103 (2026-11-25 インシデント): JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
-  // ソケット/リンク経路上を漂流中の古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
+  // Issue #103: JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
+  // 経路上に残っている古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
   // ライブ音声の後ろに ~2 秒分連結されると、音声マスタークロックが映像から永久に先行する。
   // ジャンプ直後の短期間だけバリア PTS 未満の古い音声を受信破棄して固定オフセットの発生を防ぐ。
   private liveBarrierPtsUs = 0;
@@ -54,7 +54,7 @@ export class AudioPlayer {
   private static readonly REBUFFER_CUSHION_SEC = 0.08;
   // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
   private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.5;
-  // Maximum catchup buffer before trimming oldest audio (45s, aligned with 30s video target + 43s max margin)
+  // Maximum catchup buffer before trimming oldest audio (45s, aligned with 30s video target / 43s max trim window)
   private static readonly MAX_CATCHUP_BUFFER_SEC = 45.0;
   // Hardware lookahead when starting playback from currentTime (25ms)
   private static readonly HARDWARE_LOOKAHEAD_SEC = 0.025;
@@ -186,7 +186,7 @@ export class AudioPlayer {
 
     // Check if this is an OpusHead / CONFIG packet
     if (flags & AUDIO_FLAGS.CONFIG) {
-      // Issue #111 音声冪等性: 前回と同一の OpusHead でデコーダが configured 済みなら、
+      // Issue #111: 同一 OpusHead の CONFIG 再送時は冪等に扱い、デコーダが configured 済みなら
       // 再初期化と resetJitterBuffer をスキップし、クライアント手元に再生待ちで保持済みの
       // 音声を保全する (CATCHUP CONFIG 再送・Hold 復帰時の無音ギャップ防止)。
       const prevConfig = this.lastConfigData;
@@ -592,7 +592,7 @@ export class AudioPlayer {
     }
 
     let startAt = this.nextPlayTime;
-    // Guard against slight sub-millisecond precision drift
+    // Guard against timing drift when startAt falls within 5ms of currentTime
     if (startAt < now + 0.005) {
       startAt = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
     }
