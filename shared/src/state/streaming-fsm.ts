@@ -29,7 +29,6 @@ export type StreamingState =
       readonly kind: "BUFFER_HOLD";
       readonly streamEpoch: number;
       readonly holdSinceMs: number;
-      readonly targetBufferMs: number;
     };
 
 export type StreamingStateKind = StreamingState["kind"];
@@ -64,7 +63,6 @@ export type StreamingEvent =
   | {
       readonly type: "HOLD_THRESHOLD_REACHED";
       readonly atMs: number;
-      readonly targetBufferMs: number;
     }
   | {
       readonly type: "HOLD_DRAINED";
@@ -264,7 +262,6 @@ function transitionFromLive(
           kind: "BUFFER_HOLD",
           streamEpoch: state.streamEpoch,
           holdSinceMs: event.atMs,
-          targetBufferMs: event.targetBufferMs,
         },
         effects: [
           { type: "CANCEL_INTERACTION_TIMER" },
@@ -342,7 +339,6 @@ function transitionFromCatchup(
           kind: "BUFFER_HOLD",
           streamEpoch: state.streamEpoch,
           holdSinceMs: event.atMs,
-          targetBufferMs: event.targetBufferMs,
         },
         effects: [
           { type: "CANCEL_INTERACTION_TIMER" },
@@ -377,8 +373,8 @@ function transitionFromBufferHold(
     case "SESSION_ACTIVATED":
       if (event.resumeCatchup !== undefined) {
         return {
-          nextState: activateSessionState(event.streamEpoch, event.resumeCatchup),
-          effects: [{ type: "REQUEST_POWER_RESUME" }, { type: "BROADCAST_STATE" }],
+          nextState: state,
+          effects: [{ type: "BROADCAST_STATE" }],
         };
       }
       return {
@@ -516,6 +512,21 @@ export function isInputAllowed(state: StreamingState): boolean {
 
 // Spec: docs/specs/03-streaming-transport.md#2.2
 export function shouldSuppressMediaSend(state: StreamingState): boolean {
+  switch (state.kind) {
+    case "STANDBY":
+      return true;
+    case "INTERACTIVE":
+    case "LIVE":
+    case "CATCHUP":
+    case "BUFFER_HOLD":
+      return false;
+    default:
+      return assertNever(state);
+  }
+}
+
+// Spec: docs/specs/03-streaming-transport.md#2.4
+export function shouldPauseGeneration(state: StreamingState): boolean {
   switch (state.kind) {
     case "STANDBY":
     case "BUFFER_HOLD":

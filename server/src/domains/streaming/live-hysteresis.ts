@@ -1,12 +1,21 @@
+import {
+  calculateLiveWatermarks,
+  LIVE_HYSTERESIS_BOUNDS,
+  type LiveWatermarks,
+} from "@tesroid/shared";
+
 export interface SocketDropDecision {
   readonly send: boolean;
   readonly congestionTriggered: boolean;
 }
 
 export class SocketLiveHysteresis {
+  private watermarks: LiveWatermarks;
+  private droppingGop = false;
+
   // Spec: docs/specs/03-streaming-transport.md#2.3
   constructor(initialBitrateBps: number) {
-    throw new Error("NOT_IMPLEMENTED");
+    this.watermarks = calculateLiveWatermarks(initialBitrateBps);
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.3
@@ -15,21 +24,40 @@ export class SocketLiveHysteresis {
     isKeyframe: boolean,
     bufferedAmountBytes: number,
   ): SocketDropDecision {
-    throw new Error("NOT_IMPLEMENTED");
+    if (mediaType === "audio") {
+      return {
+        send: bufferedAmountBytes <= LIVE_HYSTERESIS_BOUNDS.audioMaxBufferedBytes,
+        congestionTriggered: false,
+      };
+    }
+
+    if (!this.droppingGop) {
+      if (bufferedAmountBytes > this.watermarks.highWaterBytes) {
+        this.droppingGop = true;
+        return { send: false, congestionTriggered: true };
+      }
+      return { send: true, congestionTriggered: false };
+    }
+
+    if (bufferedAmountBytes <= this.watermarks.lowWaterBytes && isKeyframe) {
+      this.droppingGop = false;
+      return { send: true, congestionTriggered: false };
+    }
+    return { send: false, congestionTriggered: false };
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.3
   updateBitrate(videoBitrateBps: number): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.watermarks = calculateLiveWatermarks(videoBitrateBps);
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.3
   isDroppingGop(): boolean {
-    throw new Error("NOT_IMPLEMENTED");
+    return this.droppingGop;
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.3
   reset(): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.droppingGop = false;
   }
 }

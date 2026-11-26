@@ -33,7 +33,7 @@ import type {
 } from "../../src/domains/encoder/ports.js";
 import { SERVER_ENV_DEFAULTS, type ServerEnvConfig } from "../../src/infra/env.js";
 import { createHttpServer } from "../../src/interfaces/http/server.js";
-import { FakeClock } from "../helpers/fakes.js";
+import { FakeClock, FakeGpuHardwareProbe, FakeProcessRunner } from "../helpers/fakes.js";
 
 const tempDirs: string[] = [];
 
@@ -538,18 +538,20 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       await flushMicrotasks();
       expect(harness.browserFake.resizeCalls).toHaveLength(1);
       expect(harness.encoderFake.reconfigureCalls).toHaveLength(1);
+      const activeEpoch = harness.encoderFake.getEpoch();
+      expect(activeEpoch).toBeGreaterThan(authP.streamEpoch);
 
       harness.encoderFake.emitPacket({
         mediaType: "video",
         flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
-        streamEpoch: authP.streamEpoch,
+        streamEpoch: activeEpoch,
         ptsUs: 1_000_000n,
         payload: new Uint8Array([1, 2, 3]),
       });
       harness.encoderFake.emitPacket({
         mediaType: "audio",
         flags: AUDIO_FLAG.KEYFRAME,
-        streamEpoch: authP.streamEpoch,
+        streamEpoch: activeEpoch,
         ptsUs: 1_020_000n,
         payload: new Uint8Array([4, 5, 6]),
       });
@@ -568,7 +570,7 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
 
       primary.sendControl({
         type: "PLAYBACK_FEEDBACK",
-        streamEpoch: authP.streamEpoch,
+        streamEpoch: activeEpoch,
         renderedPtsUs: 4_500_000,
         videoBufferedMs: 250,
         audioBufferedMs: 200,
@@ -805,7 +807,7 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       expect(harness.encoderFake.getStopCalls()).toBe(stopBefore + 1);
       expect(harness.encoderFake.isDualRunning()).toBe(true);
 
-      await harness.container.power.enterBufferHold(10_000);
+      await harness.container.power.enterBufferHold();
       const statusHold = await harness.app.inject({ method: "GET", url: "/api/power/status" });
       expect((statusHold.json() as { state: string }).state).toBe("BUFFER_HOLD");
 
@@ -859,6 +861,157 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       expect(wsResumed.powerState).toBe("ACTIVE");
     } finally {
       await harness.cleanup();
+    }
+  });
+
+  it("Spec 03 AC-03 & AC-05: enters BUFFER_HOLD at >=85% ring buffer occupancy, keeps CATCHUP drain active on same-token reconnect until <=10%, and exits immediately on 4009 takeover", async () => {
+    const harness = await startHarness();
+    try {
+      const primary = await harness.connectClient();
+      await primary.nextControl("AUTH_REQUIRED");
+      primary.sendBinary(encodeAuthFrame({ kind: "PRIMARY_PIN", pin: "1234" }));
+      const authP = await primary.nextControl("AUTH_OK");
+
+      harness.encoderFake.emitPacket({
+        mediaType: "video",
+        flags: VIDEO_FLAG.CONFIG,
+        streamEpoch: authP.streamEpoch,
+        ptsUs: 0n,
+        payload: new Uint8Array([0x01, 0x64]),
+      });
+      harness.encoderFake.emitPacket({
+        mediaType: "video",
+        flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
+        streamEpoch: authP.streamEpoch,
+        ptsUs: 1_000_000n,
+        payload: new Uint8Array([1, 2, 3]),
+      });
+      harness.encoderFake.emitPacket({
+        mediaType: "video",
+        flags: VIDEO_FLAG.AVCC,
+        streamEpoch: authP.streamEpoch,
+        ptsUs: 5_000_000n,
+        payload: new Uint8Array([4, 5, 6]),
+      });
+      await primary.nextMedia();
+      await primary.nextMedia();
+
+      primary.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: authP.streamEpoch,
+        renderedPtsUs: 1_000_000,
+        videoBufferedMs: 400,
+        audioBufferedMs: 2_800,
+      });
+      await flushMicrotasks();
+
+      // PONG reflects audio lag > video lag: max(0, 4000 - 2800) = 1200 ms.
+      primary.sendControl({ type: "PING", clientTimestampMs: 777 });
+      const pong = await primary.nextControl("PONG");
+      expect(pong.serverRemainingBufferMs).toBe(1_200);
+
+      // Simulate transient 1006 disconnect; ring buffer fills to 52s (>= 85% of 60s) -> BUFFER_HOLD.
+      const authority = harness.container.session.getPrimaryAuthority();
+      if (authority !== null) {
+        harness.container.coordinator.handleWsClose(authority.id, 1006);
+      }
+      for (let sec = 6; sec <= 52; sec += 1) {
+        harness.encoderFake.emitPacket({
+          mediaType: "video",
+          flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
+          streamEpoch: authP.streamEpoch,
+          ptsUs: BigInt(sec) * 1_000_000n,
+          payload: new Uint8Array([sec]),
+        });
+      }
+      await flushMicrotasks();
+      expect(harness.container.power.getStatus().state).toBe("BUFFER_HOLD");
+      expect(harness.container.streaming.getState().kind).toBe("BUFFER_HOLD");
+
+      // Reconnect with same token: preserves BUFFER_HOLD (generation paused) while draining CATCHUP.
+      const primaryReconn = await harness.connectClient();
+      await primaryReconn.nextControl("AUTH_REQUIRED");
+      primaryReconn.sendBinary(encodeAuthFrame({ kind: "TOKEN", token: authP.token }));
+      const authReconn = await primaryReconn.nextControl("AUTH_OK");
+      expect(authReconn.powerState).toBe("BUFFER_HOLD");
+
+      // Advance client feedback + clock so CATCHUP drains <= 10% and auto-resumes ACTIVE.
+      primaryReconn.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: authP.streamEpoch,
+        renderedPtsUs: 48_000_000,
+        videoBufferedMs: 100,
+        audioBufferedMs: 100,
+      });
+      await flushMicrotasks();
+      harness.clock.advanceByMs(200);
+      await flushMicrotasks();
+      expect(harness.container.power.getStatus().state).toBe("ACTIVE");
+      expect(harness.container.streaming.getState().kind).toBe("LIVE");
+
+      // Re-enter BUFFER_HOLD and verify 4009 raw PIN takeover discards buffer and resumes ACTIVE immediately.
+      await harness.container.power.enterBufferHold();
+      expect(harness.container.power.getStatus().state).toBe("BUFFER_HOLD");
+      const takeover = await harness.connectClient();
+      await takeover.nextControl("AUTH_REQUIRED");
+      takeover.sendBinary(encodeAuthFrame({ kind: "PRIMARY_PIN", pin: "1234" }));
+      await primaryReconn.closed;
+      const authTakeover = await takeover.nextControl("AUTH_OK");
+      expect(authTakeover.powerState).toBe("ACTIVE");
+      expect(harness.container.streaming.getState().kind).toBe("LIVE");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("Phase 5B DI wiring: wires real EncoderService + StreamingController + PowerService + SessionService inside createAppContainer", async () => {
+    const dataDir = await makeTempDataDir();
+    const clock = new FakeClock(1_700_000_000_000);
+    const browserFake = createPhase3BrowserFake();
+    const runner = new FakeProcessRunner();
+    const gpuProbe = new FakeGpuHardwareProbe();
+    const container = createAppContainer(makeEnv(dataDir), {
+      clock,
+      browser: browserFake.port,
+      processRunner: runner,
+      gpuProbe,
+    });
+    await container.coordinator.initialize();
+    const app = createHttpServer(container);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address() as AddressInfo;
+    const client = await WsTestClient.connect(`ws://127.0.0.1:${address.port}/ws`);
+
+    try {
+      await app.inject({ method: "POST", url: "/api/setup", payload: { pin: "1234" } });
+      await client.nextControl("AUTH_REQUIRED");
+      client.sendBinary(encodeAuthFrame({ kind: "PRIMARY_PIN", pin: "1234" }));
+      const authOk = await client.nextControl("AUTH_OK");
+      expect(authOk.powerState).toBe("ACTIVE");
+      expect(container.encoder.getHealthStatus().running).toBe(true);
+      expect(container.streaming.getState()).toEqual({
+        kind: "LIVE",
+        streamEpoch: authOk.streamEpoch,
+      });
+
+      const resetRes = await app.inject({
+        method: "POST",
+        url: "/api/stream/reset",
+        headers: { authorization: `Bearer ${authOk.token}` },
+      });
+      expect(resetRes.statusCode).toBe(200);
+      const resetBody = resetRes.json() as { ok: boolean; streamEpoch: number; state: string };
+      expect(resetBody.ok).toBe(true);
+      expect(resetBody.state).toBe("ACTIVE");
+      expect(resetBody.streamEpoch).toBe(authOk.streamEpoch + 1);
+      expect(container.streaming.getState()).toEqual({
+        kind: "LIVE",
+        streamEpoch: resetBody.streamEpoch,
+      });
+    } finally {
+      client.ws.terminate();
+      await app.close();
+      await container.dispose();
     }
   });
 });

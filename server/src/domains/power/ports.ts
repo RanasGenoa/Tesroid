@@ -23,7 +23,7 @@ export interface PowerStreamingPort {
   clearBufferAndQueues(): void;
   broadcastPowerState(state: PowerState, streamEpoch: number): void;
   onPowerSleep(): void;
-  onPowerHoldEntered(atMs: number, targetBufferMs: number): void;
+  onPowerHoldEntered(atMs: number): void;
   onPowerHoldExited(newStreamEpoch: number): void;
 }
 
@@ -41,9 +41,9 @@ export interface PowerControllerPort {
   sleep(): Promise<PowerActionResult>;
   resume(): Promise<PowerActionResult>;
   restartBrowser(): Promise<PowerActionResult>;
-  enterBufferHold(targetBufferMs: number): Promise<PowerActionResult>;
+  enterBufferHold(): Promise<PowerActionResult>;
   exitBufferHold(reason: HoldExitReason): Promise<PowerActionResult>;
-  onPrimaryConnected(): Promise<void>;
+  onPrimaryConnected(options?: { readonly preserveBufferHold?: boolean }): Promise<void>;
   onPrimaryDisconnected(): void;
   dispose(): void;
 }

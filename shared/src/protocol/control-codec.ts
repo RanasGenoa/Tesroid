@@ -168,7 +168,7 @@ function assertValidStreamingState(value: unknown): asserts value is StreamingSt
       }
       return;
     case "BUFFER_HOLD":
-      if (!isFiniteNumber(value.holdSinceMs) || !isFiniteNumber(value.targetBufferMs)) {
+      if (!isFiniteNumber(value.holdSinceMs)) {
         throw new ProtocolError("INVALID_CONTROL_JSON", "Invalid BUFFER_HOLD state fields");
       }
       return;
@@ -294,12 +294,7 @@ function assertValidServerControlMessage(value: unknown): asserts value is Serve
       assertValidStreamingState(value.state);
       return;
     case "BUFFER_HOLD":
-      if (
-        !isBoolean(value.active) ||
-        !isFiniteNumber(value.streamEpoch) ||
-        !isFiniteNumber(value.triggerMs) ||
-        !isFiniteNumber(value.resumeMs)
-      ) {
+      if (!isBoolean(value.active) || !isFiniteNumber(value.streamEpoch)) {
         throw new ProtocolError("INVALID_CONTROL_JSON", "Invalid BUFFER_HOLD fields");
       }
       return;

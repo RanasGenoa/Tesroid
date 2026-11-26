@@ -13,8 +13,10 @@ export interface BufferedMediaEntry {
 }
 
 export interface StreamingPowerHooks {
-  requestHold(targetBufferMs: number): Promise<void>;
-  requestResumeFromHold(reason: "DRAINED" | "INTERACTION" | "RESET"): Promise<void>;
+  requestHold(): Promise<void>;
+  requestResumeFromHold(
+    reason: "DRAINED" | "INTERACTION" | "RESET" | "LIVE_FALLBACK",
+  ): Promise<void>;
 }
 
 export interface StreamingEncoderHooks {

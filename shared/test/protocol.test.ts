@@ -184,11 +184,17 @@ describe("shared/protocol (Spec 02, 03, 08)", () => {
         },
       },
       {
+        type: "STREAM_STATE",
+        state: {
+          kind: "BUFFER_HOLD",
+          streamEpoch: 2,
+          holdSinceMs: 1_234_567,
+        },
+      },
+      {
         type: "BUFFER_HOLD",
         active: true,
         streamEpoch: 2,
-        triggerMs: 10_000,
-        resumeMs: 2_000,
       },
       {
         type: "SERVER_STATS",

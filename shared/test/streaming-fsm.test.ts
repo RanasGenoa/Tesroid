@@ -8,6 +8,7 @@ import {
   type StreamingStateKind,
   selectHudModeBadge,
   selectQueueKind,
+  shouldPauseGeneration,
   shouldSuppressMediaSend,
   transitionStreamingState,
 } from "@tesroid/shared";
@@ -49,7 +50,7 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
     for (const event of [
       { type: "USER_INTERACTION", atMs: 1_000, newStreamEpoch: 5 },
       { type: "SOCKET_CONGESTED" },
-      { type: "HOLD_THRESHOLD_REACHED", atMs: 1_000, targetBufferMs: 10_000 },
+      { type: "HOLD_THRESHOLD_REACHED", atMs: 1_000 },
       { type: "INTERACTION_TIMEOUT" },
       { type: "CATCHUP_DRAINED" },
       { type: "HOLD_DRAINED", newStreamEpoch: 5 },
@@ -153,27 +154,50 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
         transitionStreamingState(active, {
           type: "HOLD_THRESHOLD_REACHED",
           atMs: 9_000,
-          targetBufferMs: 12_000,
         }),
       ).toEqual({
         nextState: {
           kind: "BUFFER_HOLD",
           streamEpoch: 8,
           holdSinceMs: 9_000,
-          targetBufferMs: 12_000,
         },
         effects: expectedEffects,
       });
     }
   });
 
-  it("Spec 03 AC-06 & Spec 10 AC-03: transitions BUFFER_HOLD -> LIVE on HOLD_DRAINED and BUFFER_HOLD -> INTERACTIVE on USER_INTERACTION with REQUEST_POWER_RESUME + ADVANCE_EPOCH_AND_RESET", () => {
+  it("Spec 03 AC-06 & Spec 10 AC-03: transitions BUFFER_HOLD -> LIVE on HOLD_DRAINED, preserves BUFFER_HOLD on CATCHUP SESSION_ACTIVATED, and exits immediately on 4009 takeover or USER_INTERACTION", () => {
     const hold: StreamingState = {
       kind: "BUFFER_HOLD",
       streamEpoch: 10,
       holdSinceMs: 4_000,
-      targetBufferMs: 10_000,
     };
+
+    expect(
+      transitionStreamingState(hold, {
+        type: "SESSION_ACTIVATED",
+        streamEpoch: 10,
+        resumeCatchup: { targetBufferMs: 10_000, resumePtsUs: 200_000 },
+      }),
+    ).toEqual({
+      nextState: hold,
+      effects: [{ type: "BROADCAST_STATE" }],
+    });
+
+    expect(
+      transitionStreamingState(hold, {
+        type: "SESSION_ACTIVATED",
+        streamEpoch: 11,
+      }),
+    ).toEqual({
+      nextState: { kind: "LIVE", streamEpoch: 11 },
+      effects: [
+        { type: "FLUSH_CATCHUP_QUEUE" },
+        { type: "REQUEST_POWER_RESUME" },
+        { type: "ADVANCE_EPOCH_AND_RESET", streamEpoch: 11 },
+        { type: "BROADCAST_STATE" },
+      ],
+    });
 
     expect(transitionStreamingState(hold, { type: "HOLD_DRAINED", newStreamEpoch: 11 })).toEqual({
       nextState: { kind: "LIVE", streamEpoch: 11 },
@@ -207,7 +231,6 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
       kind: "BUFFER_HOLD",
       streamEpoch: 10,
       holdSinceMs: 4_000,
-      targetBufferMs: 10_000,
     };
 
     const sleepResult = transitionStreamingState(hold, { type: "POWER_SLEEP" });
@@ -232,7 +255,7 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
       { kind: "INTERACTIVE", streamEpoch: 1, lastInteractionAtMs: 500 },
       { kind: "LIVE", streamEpoch: 1 },
       { kind: "CATCHUP", streamEpoch: 1, targetBufferMs: 10_000, resumePtsUs: 100 },
-      { kind: "BUFFER_HOLD", streamEpoch: 1, holdSinceMs: 1_000, targetBufferMs: 10_000 },
+      { kind: "BUFFER_HOLD", streamEpoch: 1, holdSinceMs: 1_000 },
     ];
 
     for (const state of activeStates) {
@@ -252,18 +275,19 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
     }
   });
 
-  it("Spec 03 AC-06 & Spec 04 §2.3 & Spec 07 §2.1: verifies pure selectors selectQueueKind, isInputAllowed, shouldSuppressMediaSend, and selectHudModeBadge across all states", () => {
+  it("Spec 03 AC-06 & Spec 04 §2.3 & Spec 07 §2.1: verifies pure selectors selectQueueKind, isInputAllowed, shouldSuppressMediaSend, shouldPauseGeneration, and selectHudModeBadge across all states", () => {
     const states: readonly StreamingState[] = [
       { kind: "STANDBY", streamEpoch: 1, reason: "UNAUTHENTICATED" },
       { kind: "INTERACTIVE", streamEpoch: 1, lastInteractionAtMs: 1_000 },
       { kind: "LIVE", streamEpoch: 1 },
       { kind: "CATCHUP", streamEpoch: 1, targetBufferMs: 10_000, resumePtsUs: 1_000 },
-      { kind: "BUFFER_HOLD", streamEpoch: 1, holdSinceMs: 1_000, targetBufferMs: 10_000 },
+      { kind: "BUFFER_HOLD", streamEpoch: 1, holdSinceMs: 1_000 },
     ];
 
     expect(states.map(selectQueueKind)).toEqual(["NONE", "LIVE", "LIVE", "CATCHUP", "CATCHUP"]);
     expect(states.map(isInputAllowed)).toEqual([false, true, true, true, true]);
-    expect(states.map(shouldSuppressMediaSend)).toEqual([true, false, false, false, true]);
+    expect(states.map(shouldSuppressMediaSend)).toEqual([true, false, false, false, false]);
+    expect(states.map(shouldPauseGeneration)).toEqual([true, false, false, false, true]);
 
     const calm = { localBufferedMs: 100, serverBufferedMs: 100, isWaitingForKeyframe: false };
     const waiting = { localBufferedMs: 1_000, serverBufferedMs: 1_000, isWaitingForKeyframe: true };
@@ -313,7 +337,6 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
         kind: "BUFFER_HOLD",
         streamEpoch: 1,
         holdSinceMs: 200,
-        targetBufferMs: 10_000,
       },
     };
 
@@ -324,7 +347,7 @@ describe("shared/state streaming-fsm (Spec 03 AC-04, AC-06, Spec 04, Spec 07, Sp
       INTERACTION_TIMEOUT: { type: "INTERACTION_TIMEOUT" },
       CATCHUP_DRAINED: { type: "CATCHUP_DRAINED" },
       SOCKET_CONGESTED: { type: "SOCKET_CONGESTED" },
-      HOLD_THRESHOLD_REACHED: { type: "HOLD_THRESHOLD_REACHED", atMs: 400, targetBufferMs: 10_000 },
+      HOLD_THRESHOLD_REACHED: { type: "HOLD_THRESHOLD_REACHED", atMs: 400 },
       HOLD_DRAINED: { type: "HOLD_DRAINED", newStreamEpoch: 2 },
       STREAM_RESET: { type: "STREAM_RESET", newStreamEpoch: 2 },
       POWER_SLEEP: { type: "POWER_SLEEP" },

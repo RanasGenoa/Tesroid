@@ -1,4 +1,5 @@
 import {
+  type AlignedDimensions,
   alignLayoutDimensions,
   CHANNEL_ID,
   decodeAuthFrame,
@@ -8,7 +9,9 @@ import {
   encodeServerControlFrame,
   expandSetupQualityPreset,
   type HealthResponse,
+  isInputAllowed,
   type PowerActionResult,
+  PROTOCOL_TIMING,
   type PrimaryPlaybackMode,
   type PublicAppSettings,
   type SettingsUpdateInput,
@@ -34,7 +37,7 @@ import type {
 import { SettingsDomainError } from "../domains/settings/errors.js";
 import type { SettingsRepository } from "../domains/settings/ports.js";
 import type { StreamingControlPort } from "../domains/streaming/ports.js";
-import type { Clock, ServerEnvConfig } from "../infra/index.js";
+import type { Clock, ServerEnvConfig, TimerHandle } from "../infra/index.js";
 
 export interface CoordinatorDeps {
   readonly clock: Clock;
@@ -53,6 +56,10 @@ export interface CoordinatorDeps {
 export class ServerCoordinator {
   private readonly deps: CoordinatorDeps;
   private readonly pendingTransports = new Map<SessionConnectionId, SessionTransportPort>();
+  private resizeTimer: TimerHandle | null = null;
+  private pendingResize: AlignedDimensions | null = null;
+  private lastResizeAppliedAtMs: number | null = null;
+  private resizeQueue: Promise<void> = Promise.resolve();
 
   // Spec: docs/architecture.md#1.2
   constructor(deps: CoordinatorDeps) {
@@ -287,15 +294,14 @@ export class ServerCoordinator {
             dpr: frame.dprX100 > 0 ? frame.dprX100 / 100 : undefined,
             maxSize: this.deps.settings.getCurrent().stream.maxSize,
           });
-          await this.deps.browser.resizeViewport(aligned);
-          await this.deps.encoder.reconfigureDimensions(aligned);
+          await this.scheduleResize(aligned);
         } catch {
           // Ignore malformed resize frames or transient resize errors.
         }
         return;
       }
       case CHANNEL_ID.TOUCH: {
-        if (isStandby) {
+        if (isStandby || !isInputAllowed(this.deps.streaming.getState())) {
           return;
         }
         try {
@@ -341,10 +347,57 @@ export class ServerCoordinator {
 
   // Spec: docs/specs/10-power-lifecycle.md#2.4
   async dispose(): Promise<void> {
+    if (this.resizeTimer !== null) {
+      this.deps.clock.clearTimeout(this.resizeTimer);
+      this.resizeTimer = null;
+    }
+    this.pendingResize = null;
     this.deps.auth.stopTokenSweep();
     this.deps.power.dispose();
     this.deps.streaming.dispose();
     this.pendingTransports.clear();
+  }
+
+  private async scheduleResize(aligned: AlignedDimensions): Promise<void> {
+    const nowMs = this.deps.clock.nowMs();
+    const canApplyLeading =
+      this.resizeTimer === null &&
+      (this.lastResizeAppliedAtMs === null ||
+        nowMs - this.lastResizeAppliedAtMs >= PROTOCOL_TIMING.serverResizeDebounceMs);
+
+    if (canApplyLeading) {
+      this.lastResizeAppliedAtMs = nowMs;
+      await this.enqueueResize(aligned);
+      return;
+    }
+
+    this.pendingResize = aligned;
+    if (this.resizeTimer === null) {
+      const elapsed =
+        this.lastResizeAppliedAtMs === null ? 0 : Math.max(0, nowMs - this.lastResizeAppliedAtMs);
+      const delayMs = Math.max(1, PROTOCOL_TIMING.serverResizeDebounceMs - elapsed);
+      this.resizeTimer = this.deps.clock.setTimeout(() => {
+        this.resizeTimer = null;
+        const next = this.pendingResize;
+        this.pendingResize = null;
+        if (next !== null) {
+          this.lastResizeAppliedAtMs = this.deps.clock.nowMs();
+          void this.enqueueResize(next);
+        }
+      }, delayMs);
+    }
+  }
+
+  private enqueueResize(aligned: AlignedDimensions): Promise<void> {
+    const run = this.resizeQueue.then(async () => {
+      await this.deps.browser.resizeViewport(aligned);
+      this.deps.streaming.clearBufferAndQueues();
+      const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
+      await this.deps.encoder.reconfigureDimensions(aligned);
+      this.deps.streaming.handleStreamReset(newEpoch);
+    });
+    this.resizeQueue = run.catch(() => undefined);
+    return run;
   }
 
   private async handleWsAuthMessage(
@@ -420,8 +473,16 @@ export class ServerCoordinator {
       }
     }
 
-    if (outcome.session.role === "PRIMARY" || outcome.session.role === "ACTING_PRIMARY") {
-      await this.deps.power.onPrimaryConnected();
+    const isPrimaryAuthorityRole =
+      outcome.session.role === "PRIMARY" || outcome.session.role === "ACTING_PRIMARY";
+    const preserveBufferHold =
+      authPayload.kind === "TOKEN" &&
+      isPrimaryAuthorityRole &&
+      !outcome.requiresDualEncoderReset &&
+      outcome.displacedSessionId === undefined;
+
+    if (isPrimaryAuthorityRole) {
+      await this.deps.power.onPrimaryConnected({ preserveBufferHold });
     }
 
     const activeEpoch = this.deps.encoder.getCurrentEpoch();
@@ -438,7 +499,14 @@ export class ServerCoordinator {
     );
 
     if (outcome.session.role !== "SECONDARY_STANDBY") {
-      this.deps.streaming.handleSessionActivated(outcome.session.id, activeEpoch, null);
+      let lastAckPtsUs: bigint | null = null;
+      if (preserveBufferHold) {
+        const sync = this.deps.session.getPrimarySyncMetadata();
+        if (sync.primaryRenderedPts !== null) {
+          lastAckPtsUs = BigInt(Math.round(sync.primaryRenderedPts));
+        }
+      }
+      this.deps.streaming.handleSessionActivated(outcome.session.id, activeEpoch, lastAckPtsUs);
     }
   }
 
@@ -480,6 +548,13 @@ export class ServerCoordinator {
         if (!isPrimaryAuthority) {
           return;
         }
+        this.deps.streaming.handlePrimaryFeedback(
+          session.id,
+          command.streamEpoch,
+          command.renderedPtsUs,
+          command.videoBufferedMs,
+          command.audioBufferedMs,
+        );
         const powerState = this.deps.power.getStatus().state;
         const streamingKind = this.deps.streaming.getState().kind;
         const mode: PrimaryPlaybackMode =
@@ -493,13 +568,6 @@ export class ServerCoordinator {
           command.renderedPtsUs,
           this.deps.settings.getCurrent().stream.targetBufferMs,
           mode,
-        );
-        this.deps.streaming.handlePrimaryFeedback(
-          session.id,
-          command.streamEpoch,
-          command.renderedPtsUs,
-          command.videoBufferedMs,
-          command.audioBufferedMs,
         );
         return;
       }
@@ -525,6 +593,9 @@ export class ServerCoordinator {
         return;
       }
       case "NAVIGATE": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.navigate(command.url);
@@ -534,6 +605,9 @@ export class ServerCoordinator {
         return;
       }
       case "HISTORY_BACK": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.goBack();
@@ -543,6 +617,9 @@ export class ServerCoordinator {
         return;
       }
       case "HISTORY_FORWARD": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.goForward();
@@ -552,6 +629,9 @@ export class ServerCoordinator {
         return;
       }
       case "RELOAD": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.reload();
@@ -561,6 +641,9 @@ export class ServerCoordinator {
         return;
       }
       case "TOGGLE_FULLSCREEN": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.toggleFullscreen();
@@ -578,6 +661,9 @@ export class ServerCoordinator {
         return;
       }
       case "INPUT_TEXT": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.injectText(command.text);
@@ -587,6 +673,9 @@ export class ServerCoordinator {
         return;
       }
       case "INPUT_KEY": {
+        if (!isInputAllowed(this.deps.streaming.getState())) {
+          return;
+        }
         try {
           this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
           await this.deps.browser.injectKey(command.key);

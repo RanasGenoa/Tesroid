@@ -31,27 +31,15 @@ export const CATCHUP_FLOW_CONSTANTS = {
 } as const;
 
 export const BUFFER_HOLD_CONSTANTS = {
-  minTriggerMs: 10_000,
-  maxTriggerMs: 30_000,
-  bufferUsageTriggerRatio: 0.85,
-  hwResumeHeadroomMs: 2_000,
-  swResumeHeadroomMs: 3_000,
-  minHysteresisSpanMs: 7_200,
+  triggerOccupancyRatio: 0.85,
+  resumeOccupancyRatio: 0.1,
   defaultExpireMinutes: 10,
   minExpireMinutes: 1,
-  autoSleepHoldMarginMs: 5_000,
 } as const;
 
 export interface LiveWatermarks {
   readonly highWaterBytes: number;
   readonly lowWaterBytes: number;
-}
-
-export interface BufferHoldThresholds {
-  readonly enabled: boolean;
-  readonly triggerMs: number;
-  readonly resumeMs: number;
-  readonly bufferUsageTriggerRatio: number;
 }
 
 export interface CatchupFlowProfile {
@@ -88,38 +76,17 @@ export function calculateLiveWatermarks(videoBitrateBps: number): LiveWatermarks
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.4
-export function calculateBufferHoldThresholds(
-  targetBufferMs: number,
-  isHardwareEncoder: boolean,
-): BufferHoldThresholds {
-  if (!Number.isFinite(targetBufferMs) || targetBufferMs <= 0) {
-    return {
-      enabled: false,
-      triggerMs: 0,
-      resumeMs: 0,
-      bufferUsageTriggerRatio: BUFFER_HOLD_CONSTANTS.bufferUsageTriggerRatio,
-    };
-  }
-
-  const triggerMs = clamp(
-    Math.round(targetBufferMs),
-    BUFFER_HOLD_CONSTANTS.minTriggerMs,
-    BUFFER_HOLD_CONSTANTS.maxTriggerMs,
-  );
-  const headroomMs = isHardwareEncoder
-    ? BUFFER_HOLD_CONSTANTS.hwResumeHeadroomMs
-    : BUFFER_HOLD_CONSTANTS.swResumeHeadroomMs;
-  const resumeMs = Math.max(
-    0,
-    Math.min(headroomMs, triggerMs - BUFFER_HOLD_CONSTANTS.minHysteresisSpanMs),
-  );
-
-  return {
-    enabled: true,
-    triggerMs,
-    resumeMs,
-    bufferUsageTriggerRatio: BUFFER_HOLD_CONSTANTS.bufferUsageTriggerRatio,
-  };
+export function calculateBufferHoldOccupancy(
+  unconsumedDurationMs: number,
+  maxSeconds: number,
+  unconsumedBytes: number,
+  maxBytes: number,
+): number {
+  const maxDurationMs = nonNegativeFinite(maxSeconds) * 1_000;
+  const maxByteCap = nonNegativeFinite(maxBytes);
+  const timeRatio = maxDurationMs > 0 ? nonNegativeFinite(unconsumedDurationMs) / maxDurationMs : 0;
+  const byteRatio = maxByteCap > 0 ? nonNegativeFinite(unconsumedBytes) / maxByteCap : 0;
+  return Math.max(0, timeRatio, byteRatio);
 }
 
 // Spec: docs/specs/03-streaming-transport.md#2.4
@@ -193,25 +160,10 @@ export function calculateServerRemainingBufferMs(
 }
 
 // Spec: docs/specs/10-power-lifecycle.md#2.4
-export function calculateAutoSleepDelayMs(
-  autoSleepMinutes: number,
-  holdTriggerMs: number | null,
-): number | null {
+export function calculateAutoSleepDelayMs(autoSleepMinutes: number): number | null {
   if (!Number.isFinite(autoSleepMinutes) || autoSleepMinutes <= 0) {
     return null;
   }
 
-  const baseDelayMs = Math.max(
-    STREAM_BOUNDS.autoSleepMinutes.minDelayMs,
-    Math.round(autoSleepMinutes * 60_000),
-  );
-
-  if (holdTriggerMs !== null && Number.isFinite(holdTriggerMs) && holdTriggerMs > 0) {
-    return Math.max(
-      baseDelayMs,
-      Math.round(holdTriggerMs) + BUFFER_HOLD_CONSTANTS.autoSleepHoldMarginMs,
-    );
-  }
-
-  return baseDelayMs;
+  return Math.max(STREAM_BOUNDS.autoSleepMinutes.minDelayMs, Math.round(autoSleepMinutes * 60_000));
 }

@@ -857,7 +857,7 @@ describe("server/domains/browser (Spec 06)", () => {
       { pid: chromePid + 2, ppid: chromePid + 1, command: "chrome-renderer" },
     ];
 
-    await power.enterBufferHold(10_000);
+    await power.enterBufferHold();
     expect(intRunner.signalCalls).toEqual([
       { pid: chromePid + 2, signal: "SIGSTOP" },
       { pid: chromePid + 1, signal: "SIGSTOP" },

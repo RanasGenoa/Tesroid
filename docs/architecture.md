@@ -149,7 +149,7 @@ flowchart LR
 7. **ストリーミング状態のカプセル化と単一遷移関数集約（Stub-First & No Boolean Soup）**:
    - `STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD` の配信・視聴状態を複数の独立 boolean フラグ（`isLive`, `isCatchup`, `isStandby`, `isInteractive`, `isHolding` 等）で表現することを禁止し、不正な組み合わせを型レベルで表現不能にする排他的判別ユニオン `StreamingState` へカプセル化する。
    - すべての状態遷移は `shared/src/state/streaming-fsm.ts` の **単一純粋遷移関数 `transitionStreamingState(state, event)`** に集約し、呼び出し元（`streaming-controller` / `playback-controller`）はイベント投入と返却された宣言的 `effects` の実行のみを担う。
-   - 実装時は Phase 1 で状態・イベント・副作用・`assertNever` 網羅性チェック付きスタブを先行作成し、状態依存の振る舞い（キュー選択、入力許可、HUD 表示）は散在 `if` 分岐ではなく純粋セレクタ経由でのみ参照する。
+   - 実装時は Phase 1 で状態・イベント・副作用・`assertNever` 網羅性チェック付きスタブを先行作成し、状態依存の振る舞い（キュー選択、入力許可、`shouldSuppressMediaSend` による `STANDBY` のみ送出抑止 vs `shouldPauseGeneration` による `STANDBY` / `BUFFER_HOLD` 生成停止分離、HUD 表示）は散在 `if` 分岐ではなく純粋セレクタ経由でのみ参照する。
 8. **小窓表示主対象 & DPR 非ハードコード境界 (`shared/geometry` / `client/input` / `client/ui` / `server/encoder`)**:
    - 実車利用の中心であるナビ等と並べた小窓表示（代表基準 `773×553 CSS / DPR 1.53`）を主対象として、UI 視認性およびエンコード解像度を最適化する（全画面表示にも追従）。
    - 将来のファームウェア更新で DPR が変化し得るため、`1.53` 等の特定 DPR 値を UI・CSS・設定・計算式へ直書きしてはならず、クライアントの実行時物理ピクセル（`devicePixelRatio`）および `shared/src/geometry` を単一正典とするサーバー側リサイズ計算で吸収する。
@@ -206,8 +206,8 @@ stateDiagram-v2
   STARTING --> ACTIVE: ブラウザ & V/A両エンコーダ稼働確認
   STARTING --> ERROR: 起動不能
 
-  ACTIVE --> BUFFER_HOLD: 未消費滞留>=閾値 or 85% (autoSleepTimer停止, holdExpireTimer武装)
-  BUFFER_HOLD --> ACTIVE: 閾値以下へ排水 / 新規プライマリ接続 / リセット / LIVE転落
+  ACTIVE --> BUFFER_HOLD: 未消費占有率 >= 85% (autoSleepTimer停止, holdExpireTimer武装)
+  BUFFER_HOLD --> ACTIVE: 未消費占有率 <= 10%へ排水 / 操作 / リセット / 別プライマリ奪取(4009) / LIVE転落
   BUFFER_HOLD --> SLEEP_PAUSED: 手動Sleep (再開せず直接遷移) / holdExpireTimer満了
 
   ACTIVE --> SLEEP_PAUSED: 手動Sleep / autoSleepTimer満了
@@ -245,7 +245,7 @@ export type StreamingState =
   | { kind: "INTERACTIVE"; streamEpoch: number; lastInteractionAtMs: number }
   | { kind: "LIVE"; streamEpoch: number }
   | { kind: "CATCHUP"; streamEpoch: number; targetBufferMs: number; resumePtsUs: number }
-  | { kind: "BUFFER_HOLD"; streamEpoch: number; holdSinceMs: number; targetBufferMs: number };
+  | { kind: "BUFFER_HOLD"; streamEpoch: number; holdSinceMs: number };
 
 export type StreamingEvent =
   | { type: "SESSION_ACTIVATED"; streamEpoch: number; resumeCatchup?: { targetBufferMs: number; resumePtsUs: number } }
@@ -254,7 +254,7 @@ export type StreamingEvent =
   | { type: "INTERACTION_TIMEOUT" } // 最終操作から 4,000 ms 経過
   | { type: "CATCHUP_DRAINED" }
   | { type: "SOCKET_CONGESTED" }
-  | { type: "HOLD_THRESHOLD_REACHED"; atMs: number; targetBufferMs: number }
+  | { type: "HOLD_THRESHOLD_REACHED"; atMs: number }
   | { type: "HOLD_DRAINED"; newStreamEpoch: number }
   | { type: "STREAM_RESET"; newStreamEpoch: number }
   | { type: "POWER_SLEEP" };
@@ -281,7 +281,8 @@ export function transitionStreamingState(state: StreamingState, event: Streaming
 // 純粋セレクタ群（周辺モジュールは boolean の組み合わせではなくこれのみを参照する）
 export const selectQueueKind = (state: StreamingState): "NONE" | "LIVE" | "CATCHUP" => ...;
 export const isInputAllowed = (state: StreamingState): boolean => state.kind !== "STANDBY";
-export const shouldSuppressMediaSend = (state: StreamingState): boolean =>
+export const shouldSuppressMediaSend = (state: StreamingState): boolean => state.kind === "STANDBY";
+export const shouldPauseGeneration = (state: StreamingState): boolean =>
   state.kind === "STANDBY" || state.kind === "BUFFER_HOLD";
 ```
 
@@ -294,10 +295,12 @@ export const shouldSuppressMediaSend = (state: StreamingState): boolean =>
 | **`INTERACTIVE`** | `USER_INTERACTION` | `INTERACTIVE` | `lastInteractionAtMs` 更新 + `ARM_INTERACTION_TIMER(4000)` |
 | **`LIVE`** | `SOCKET_CONGESTED` | **`LIVE`（不変）** | `ENTER_LIVE_HYSTERESIS` のみ。**絶対に `CATCHUP` へ遷移しない** |
 | **`LIVE`** | `USER_INTERACTION` | `INTERACTIVE` | `ARM_INTERACTION_TIMER(4000)` |
-| **`LIVE` / `CATCHUP`** | `HOLD_THRESHOLD_REACHED` | `BUFFER_HOLD` | `CANCEL_INTERACTION_TIMER` + `REQUEST_POWER_HOLD` + `BROADCAST_STATE` |
+| **`LIVE` / `CATCHUP`** | `HOLD_THRESHOLD_REACHED` (`>= 85%`) | `BUFFER_HOLD` | `CANCEL_INTERACTION_TIMER` + `REQUEST_POWER_HOLD` + `BROADCAST_STATE` |
 | **`CATCHUP`** | `CATCHUP_DRAINED` | `LIVE` | `BROADCAST_STATE` |
 | **`CATCHUP`** | `USER_INTERACTION` | `INTERACTIVE` | `FLUSH_CATCHUP_QUEUE` + `ADVANCE_EPOCH_AND_RESET` + `ARM_INTERACTION_TIMER(4000)` |
-| **`BUFFER_HOLD`** | `HOLD_DRAINED` / `STREAM_RESET` | `LIVE` | `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `BROADCAST_STATE` |
+| **`BUFFER_HOLD`** | `SESSION_ACTIVATED` (`resumeCatchup` あり) | **`BUFFER_HOLD`（維持）** | `BROADCAST_STATE`（生成停止を維持したまま既生成バッファを CATCHUP 送出） |
+| **`BUFFER_HOLD`** | `SESSION_ACTIVATED` (`resumeCatchup` なし / 4009 奪取) | `LIVE` | `FLUSH_CATCHUP_QUEUE` + `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `BROADCAST_STATE` |
+| **`BUFFER_HOLD`** | `HOLD_DRAINED` (`<= 10%`) / `STREAM_RESET` | `LIVE` | `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `BROADCAST_STATE` |
 | **`BUFFER_HOLD`** | `USER_INTERACTION` | `INTERACTIVE` | `FLUSH_CATCHUP_QUEUE` + `REQUEST_POWER_RESUME` + `ADVANCE_EPOCH_AND_RESET` + `ARM_INTERACTION_TIMER(4000)` |
 | **`BUFFER_HOLD`** | `POWER_SLEEP` / `ENTER_STANDBY` | `STANDBY` | 再開チャーンを経由せず直接 `STANDBY`（`FLUSH_CATCHUP_QUEUE`） |
 | **稼働中全状態** | `STREAM_RESET` | `LIVE` | `FLUSH_CATCHUP_QUEUE` + `ADVANCE_EPOCH_AND_RESET` + `CANCEL_INTERACTION_TIMER` |
@@ -316,8 +319,9 @@ stateDiagram-v2
 
   LIVE --> BUFFER_HOLD: HOLD_THRESHOLD_REACHED
   CATCHUP --> BUFFER_HOLD: HOLD_THRESHOLD_REACHED
-  BUFFER_HOLD --> LIVE: HOLD_DRAINED / STREAM_RESET
+  BUFFER_HOLD --> LIVE: HOLD_DRAINED(<=10%) / STREAM_RESET / 4009奪取
   BUFFER_HOLD --> INTERACTIVE: USER_INTERACTION
+  BUFFER_HOLD --> BUFFER_HOLD: SESSION_ACTIVATED(CATCHUP排水継続)
 
   INTERACTIVE --> STANDBY: POWER_SLEEP / ENTER_STANDBY
   LIVE --> STANDBY: POWER_SLEEP / ENTER_STANDBY

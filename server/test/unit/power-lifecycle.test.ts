@@ -242,7 +242,7 @@ describe("server/domains/power (Spec 10)", () => {
     await service.onPrimaryConnected();
     expect(service.getStatus().state).toBe("ACTIVE");
 
-    const holdRes = await service.enterBufferHold(10_000);
+    const holdRes = await service.enterBufferHold();
     expect(holdRes.ok).toBe(true);
     expect(holdRes.state).toBe("BUFFER_HOLD");
     expect(timers.getActiveTimerKind()).toBe("HOLD_EXPIRE");
@@ -271,12 +271,12 @@ describe("server/domains/power (Spec 10)", () => {
     service.dispose();
   });
 
-  it("AC-03: converts manual sleep during BUFFER_HOLD directly to SLEEP_PAUSED without encoder resume churn, and clears Hold on new primary or LIVE fallback", async () => {
+  it("AC-03: converts manual sleep during BUFFER_HOLD directly to SLEEP_PAUSED without encoder resume churn, preserves BUFFER_HOLD on same-primary catchup reconnect, and clears Hold on 4009 takeover or LIVE fallback", async () => {
     const { service, timers, fakes } = await createPowerHarness();
 
     fakes.setHasActiveSession(true);
     await service.onPrimaryConnected();
-    await service.enterBufferHold(10_000);
+    await service.enterBufferHold();
     expect(service.getStatus().state).toBe("BUFFER_HOLD");
 
     fakes.calls.length = 0;
@@ -290,8 +290,13 @@ describe("server/domains/power (Spec 10)", () => {
     expect(fakes.calls).toContain("streaming:clearBuffer");
 
     await service.resume();
-    await service.enterBufferHold(10_000);
+    await service.enterBufferHold();
     fakes.calls.length = 0;
+    await service.onPrimaryConnected({ preserveBufferHold: true });
+    expect(service.getStatus().state).toBe("BUFFER_HOLD");
+    expect(timers.getActiveTimerKind()).toBe("HOLD_EXPIRE");
+    expect(fakes.calls).not.toContain("browser:resume");
+
     await service.onPrimaryConnected();
     expect(service.getStatus().state).toBe("ACTIVE");
     expect(timers.getActiveTimerKind()).toBe("NONE");
@@ -299,7 +304,7 @@ describe("server/domains/power (Spec 10)", () => {
     expect(fakes.calls).toContain("browser:resume");
     expect(fakes.calls).toContain("encoder:ensureDualRunning");
 
-    await service.enterBufferHold(10_000);
+    await service.enterBufferHold();
     fakes.calls.length = 0;
     const fallbackRes = await service.exitBufferHold("LIVE_FALLBACK");
     expect(fallbackRes.ok).toBe(true);

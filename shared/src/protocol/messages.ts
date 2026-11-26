@@ -79,8 +79,6 @@ export type ServerControlMessage =
       readonly type: "BUFFER_HOLD";
       readonly active: boolean;
       readonly streamEpoch: number;
-      readonly triggerMs: number;
-      readonly resumeMs: number;
     }
   | {
       readonly type: "BROWSER_STATUS";

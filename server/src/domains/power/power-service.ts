@@ -1,7 +1,6 @@
 import {
   BUFFER_HOLD_CONSTANTS,
   calculateAutoSleepDelayMs,
-  calculateBufferHoldThresholds,
   type PowerActionResult,
   type PowerState,
   type PowerStatusSnapshot,
@@ -88,8 +87,8 @@ export class PowerService implements PowerControllerPort {
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.4
-  enterBufferHold(targetBufferMs: number): Promise<PowerActionResult> {
-    return this.enqueue(() => this.enterBufferHoldInternal(targetBufferMs));
+  enterBufferHold(): Promise<PowerActionResult> {
+    return this.enqueue(() => this.enterBufferHoldInternal());
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.4
@@ -99,9 +98,12 @@ export class PowerService implements PowerControllerPort {
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.3
-  async onPrimaryConnected(): Promise<void> {
-    this.deps.timers.cancelAll();
+  async onPrimaryConnected(options?: { readonly preserveBufferHold?: boolean }): Promise<void> {
     await this.enqueue(async () => {
+      if (this.state === "BUFFER_HOLD" && options?.preserveBufferHold === true) {
+        this.deps.session.promoteStandbyToStreaming(this.deps.encoder.getCurrentEpoch());
+        return;
+      }
       this.deps.timers.cancelAll();
       const result = await this.ensureActiveInternal();
       if (result.ok) {
@@ -122,11 +124,7 @@ export class PowerService implements PowerControllerPort {
     }
     if (this.state === "ACTIVE") {
       const stream = this.deps.settings.getCurrent().stream;
-      const holdThresholds = calculateBufferHoldThresholds(stream.targetBufferMs, true);
-      const delayMs = calculateAutoSleepDelayMs(
-        stream.autoSleepMinutes,
-        holdThresholds.enabled ? holdThresholds.triggerMs : null,
-      );
+      const delayMs = calculateAutoSleepDelayMs(stream.autoSleepMinutes);
       if (delayMs !== null) {
         this.deps.timers.armAutoSleep(delayMs);
       } else {
@@ -353,7 +351,7 @@ export class PowerService implements PowerControllerPort {
     }
   }
 
-  private async enterBufferHoldInternal(targetBufferMs: number): Promise<PowerActionResult> {
+  private async enterBufferHoldInternal(): Promise<PowerActionResult> {
     if (!this.applyFsm({ type: "HOLD_REQUESTED" })) {
       return {
         ok: false,
@@ -368,7 +366,7 @@ export class PowerService implements PowerControllerPort {
     this.deps.timers.armHoldExpire(this.holdExpireDelayMs);
 
     const epoch = this.deps.encoder.getCurrentEpoch();
-    this.deps.streaming.onPowerHoldEntered(this.updatedAtMs, targetBufferMs);
+    this.deps.streaming.onPowerHoldEntered(this.updatedAtMs);
     this.deps.streaming.broadcastPowerState(this.state, epoch);
     return { ok: true, state: this.state, streamEpoch: epoch };
   }

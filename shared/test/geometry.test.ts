@@ -1,8 +1,9 @@
 import {
   alignEncodeDimensions,
   alignLayoutDimensions,
+  BUFFER_HOLD_CONSTANTS,
   calculateAutoSleepDelayMs,
-  calculateBufferHoldThresholds,
+  calculateBufferHoldOccupancy,
   calculateCatchupFlowProfile,
   calculateLiveWatermarks,
   calculateServerRemainingBufferMs,
@@ -167,36 +168,24 @@ describe("shared/geometry (Spec 03, 05, 06, 10)", () => {
     expect(stalled.burstIntervalMs).toBe(10);
   });
 
-  it("Spec 03 AC-03: calculates Buffer-Hold trigger [10s, 30s] and resume thresholds preserving >= 7,200 ms hysteresis span for HW (2s) and SW (3s) encoders", () => {
-    expect(calculateBufferHoldThresholds(0, true)).toEqual({
-      enabled: false,
-      triggerMs: 0,
-      resumeMs: 0,
-      bufferUsageTriggerRatio: 0.85,
-    });
+  it("Spec 03 AC-03: calculates Buffer-Hold unconsumed occupancy max(time/60s, bytes/48MiB) against fixed 85% trigger and 10% resume thresholds", () => {
+    const maxBytes = 48 * 1024 * 1024;
+    expect(BUFFER_HOLD_CONSTANTS.triggerOccupancyRatio).toBe(0.85);
+    expect(BUFFER_HOLD_CONSTANTS.resumeOccupancyRatio).toBe(0.1);
 
-    const hwLow = calculateBufferHoldThresholds(2_000, true);
-    expect(hwLow).toEqual({
-      enabled: true,
-      triggerMs: 10_000,
-      resumeMs: 2_000,
-      bufferUsageTriggerRatio: 0.85,
-    });
-    expect(hwLow.triggerMs - hwLow.resumeMs).toBeGreaterThanOrEqual(7_200);
-
-    // Software encoder at 10s trigger clamps resumeMs to 2,800 ms so span >= 7,200 ms
-    const swLow = calculateBufferHoldThresholds(10_000, false);
-    expect(swLow.triggerMs).toBe(10_000);
-    expect(swLow.resumeMs).toBe(2_800);
-    expect(swLow.triggerMs - swLow.resumeMs).toBe(7_200);
-
-    // Software encoder at 20s trigger allows full 3,000 ms headroom
-    const swMid = calculateBufferHoldThresholds(20_000, false);
-    expect(swMid.triggerMs).toBe(20_000);
-    expect(swMid.resumeMs).toBe(3_000);
-
-    // Upper clamp 30s
-    expect(calculateBufferHoldThresholds(60_000, true).triggerMs).toBe(30_000);
+    // Time-driven >= 85% (51s / 60s)
+    expect(calculateBufferHoldOccupancy(51_000, 60, 1_024, maxBytes)).toBeCloseTo(0.85, 5);
+    // Byte-driven >= 85% (40.8 MiB / 48 MiB)
+    expect(
+      calculateBufferHoldOccupancy(5_000, 60, Math.ceil(maxBytes * 0.85), maxBytes),
+    ).toBeGreaterThanOrEqual(0.85);
+    // Drained <= 10% (6s / 60s and 4.8 MiB / 48 MiB)
+    expect(
+      calculateBufferHoldOccupancy(6_000, 60, Math.floor(maxBytes * 0.1), maxBytes),
+    ).toBeLessThanOrEqual(0.1);
+    // Guard against zero/non-finite inputs
+    expect(calculateBufferHoldOccupancy(-100, 60, Number.NaN, maxBytes)).toBe(0);
+    expect(calculateBufferHoldOccupancy(10_000, 0, 1_000, 0)).toBe(0);
   });
 
   it("Spec 03 AC-05: computes serverRemainingBufferMs accounting for max(clientVideoBufferedMs, clientAudioBufferedMs)", () => {
@@ -205,11 +194,10 @@ describe("shared/geometry (Spec 03, 05, 06, 10)", () => {
     expect(calculateServerRemainingBufferMs(500, 300, 800)).toBe(0);
   });
 
-  it("Spec 10 AC-02/04: computes auto-sleep delay with 15,000 ms floor, holdTriggerMs + 5,000 ms margin, and null when autoSleepMinutes = 0", () => {
-    expect(calculateAutoSleepDelayMs(0, 10_000)).toBeNull();
-    expect(calculateAutoSleepDelayMs(-1, null)).toBeNull();
-    expect(calculateAutoSleepDelayMs(0.1, null)).toBe(15_000);
-    expect(calculateAutoSleepDelayMs(3, 10_000)).toBe(180_000);
-    expect(calculateAutoSleepDelayMs(0.25, 30_000)).toBe(35_000);
+  it("Spec 10 AC-02/04: computes auto-sleep delay with 15,000 ms floor and null when autoSleepMinutes <= 0", () => {
+    expect(calculateAutoSleepDelayMs(0)).toBeNull();
+    expect(calculateAutoSleepDelayMs(-1)).toBeNull();
+    expect(calculateAutoSleepDelayMs(0.1)).toBe(15_000);
+    expect(calculateAutoSleepDelayMs(3)).toBe(180_000);
   });
 });
