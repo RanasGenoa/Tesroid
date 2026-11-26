@@ -710,7 +710,9 @@ export class FramePacer {
               );
               // 実 PTS 差分ベース (破棄前の旧先頭から新先頭までの経過時間)。公称間隔x個数より
               // VFR・フレーム欠落混在ストリームで正確に収束する。
-              const droppedSpanMs = (this.frameQueue[0].ptsUs - firstStalePtsUs) / 1000;
+              const newHeadPtsUs = this.frameQueue[0].ptsUs;
+              const droppedSpanMs =
+                newHeadPtsUs > firstStalePtsUs ? (newHeadPtsUs - firstStalePtsUs) / 1000 : 0;
               const dropShiftMs = Math.min(droppedSpanMs, maxBackwardMs);
               if (dropShiftMs > 0) {
                 totalShift -= dropShiftMs;
