@@ -105,6 +105,11 @@ export class VaapiEncoder extends EventEmitter {
   // 映像より先に届いた古い音声 (straggler) がクライアントの音声キューへ混入するのを防ぐ。
   private resumeGateActive = false;
   private resumeGateDeadlineMs = 0;
+  // Issue #111 F-4: 境界は PTS 基準が正典。復帰後最初の Video IDR の PTS を境界として記録し、
+  // それより古い音声パケットを IDR 到達待ちの時間ではなく PTS 比較で破棄する。
+  // (時間ゲートのみだと FFmpeg 再起動後の IDR がゲート期限を超えた分だけ音声が先行し、
+  //  実測 ±1s の A/V オフセット残留 (F-4) を生んだ。期限は「IDR が来ない」場合の安全弁に限定。)
+  private resumeBoundaryPtsUs: bigint | null = null;
 
   // Video state
   private videoPts: bigint = 0n;
@@ -440,10 +445,21 @@ export class VaapiEncoder extends EventEmitter {
     return this.holdPausedSinceUs !== null;
   }
 
-  /** 再開時 A/V 境界ゲート武装: 最初の Video KEYFRAME 送出まで到着する音声パケットを破棄する */
-  public armResumeGate(timeoutMs = 1500): void {
+  /**
+   * 再開時 A/V 境界ゲート武装: 最初の Video KEYFRAME 送出まで音声パケットを破棄する。
+   * timeoutMs は「再起動後に IDR が一度も来ない」場合の安全弁 (F-4 以降は PTS 境界が本体)。
+   */
+  public armResumeGate(timeoutMs = 8000): void {
     this.resumeGateActive = true;
     this.resumeGateDeadlineMs = performance.now() + Math.max(0, timeoutMs);
+    this.resumeBoundaryPtsUs = null;
+  }
+
+  /** Issue #111 F-4: JUMP_TO_LIVE など IDR 再送を伴わない境界移動では権威 PTS を直接境界に使う */
+  public setResumeBoundary(ptsUs: bigint): void {
+    if (ptsUs > 0n) {
+      this.resumeBoundaryPtsUs = ptsUs;
+    }
   }
 
   public getCurrentPts(): bigint {
@@ -922,6 +938,9 @@ export class VaapiEncoder extends EventEmitter {
     // Issue #111: 完全リスタートは新しい PTS エポックのため Hold 補償も初期化
     this.totalHoldPausedUs = 0n;
     this.holdPausedSinceUs = null;
+    // F-4 ガード: 旧エポックの破棄境界が残ると全音声が捨てられるため、新エポックでは必ず消す
+    this.resumeBoundaryPtsUs = null;
+    this.resumeGateActive = false;
 
     await this.restart(width, height, fps, bitrate);
     this.startAudio();
@@ -1216,8 +1235,9 @@ export class VaapiEncoder extends EventEmitter {
       if (this.currentAuHasKeyframe) {
         flags |= VIDEO_FLAGS.KEYFRAME;
         this.cachedKeyframe = { data: frameData, pts: this.videoPts };
-        // Issue #111: 再開後最初の IDR 到達で A/V 境界ゲートを解除する
+        // Issue #111: 再開後最初の IDR 到達で A/V 境界ゲートを解除し、その PTS を音声側の破棄境界として記録する (F-4)
         this.resumeGateActive = false;
+        this.resumeBoundaryPtsUs = this.videoPts;
       }
 
       this.lastVideoEmitTime = performance.now();
@@ -1314,16 +1334,24 @@ export class VaapiEncoder extends EventEmitter {
       return;
     }
 
-    // Issue #111 再開時 A/V 境界ゲート: Hold 復帰後、最初の Video IDR より先に到着した音声は破棄
+    // Issue #111 F-4: 復帰後 A/V 境界は PTS 基準。まず音声 PTS を確定させ、
+    // (1) 時間ゲート (IDR 到達待ち、安全弁付き) と (2) 最初の IDR PTS / 権威 PTS 未満の破棄を順に適用する。
+    const wallPts = this.computeWallClockPtsUs();
+    this.audioPts = wallPts !== null ? wallPts : this.audioPts + this.audioFrameDurationUs;
+
     if (this.resumeGateActive) {
       if (performance.now() <= this.resumeGateDeadlineMs) {
         return;
       }
       this.resumeGateActive = false;
     }
+    if (this.resumeBoundaryPtsUs !== null) {
+      if (this.audioPts < this.resumeBoundaryPtsUs) {
+        return;
+      }
+      this.resumeBoundaryPtsUs = null;
+    }
 
-    const wallPts = this.computeWallClockPtsUs();
-    this.audioPts = wallPts !== null ? wallPts : this.audioPts + this.audioFrameDurationUs;
     this.emit('audio', {
       flags: AUDIO_FLAGS.KEYFRAME,
       pts: this.audioPts,

@@ -1494,6 +1494,10 @@ export function renderStreamingView(
         typeof audioPlayer.setLiveEdgeBarrier === 'function'
       ) {
         audioPlayer.setLiveEdgeBarrier(msg.dropAudioBeforePts);
+      } else if (typeof audioPlayer.jumpToLive === 'function') {
+        // Issue #111 F-4: 権威 PTS が無い (旧サーバー/例外経路) 場合は音声側を強制再同期し、
+        // 古い実時間チェーン上の再生位置が映像ジャンプ後のオフセット残留として居座るのを防ぐ
+        audioPlayer.jumpToLive();
       }
       updateHudLiveStatus();
     } else if (msg.type === 'SESSION_ROLE_CHANGED') {

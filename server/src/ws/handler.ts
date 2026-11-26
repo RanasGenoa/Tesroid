@@ -75,7 +75,9 @@ export class WebSocketHandler {
   private static readonly HOLD_HEADROOM_VAAPI_MS = 2000;
   private static readonly HOLD_HEADROOM_SOFTWARE_MS = 3000;
   private static readonly HOLD_MIN_HYSTERESIS_MS = 7200;
-  private static readonly RESUME_GATE_MS = 1500;
+  // Issue #111 F-4: 復帰ゲートの時間項は安全弁 (再起動後に IDR が一度も来ない異常対策)。
+  // 本来の境界は PTS 比較 (ffmpeg.ts resumeBoundaryPtsUs) で決まるため、期限は長く取る。
+  private static readonly RESUME_GATE_MS = 8000;
   // targetBufferMs=0 (オフ) でも CATCHUP 送出ゲートが永久閉鎖しないための実効窓下限
   private static readonly MIN_CATCHUP_WINDOW_MS = 400;
 
@@ -309,6 +311,11 @@ export class WebSocketHandler {
   private sendLiveJumped(socket: WebSocket): void {
     const liveEdgePtsUs =
       typeof this.encoder.getCurrentPts === 'function' ? Number(this.encoder.getCurrentPts()) : 0;
+    // Issue #111 F-4: クライアントへ権威 PTS を返すだけでなく、サーバー側でも同一境界より古い
+    // 音声パケットの送出を破棄する (straggler 音声が A/V オフセットとして残留するのを防ぐ)。
+    if (liveEdgePtsUs > 0 && typeof this.encoder.setResumeBoundary === 'function') {
+      this.encoder.setResumeBoundary(BigInt(Math.round(liveEdgePtsUs)));
+    }
     this.sendControl(socket, {
       type: 'LIVE_JUMPED',
       timestamp: Date.now(),

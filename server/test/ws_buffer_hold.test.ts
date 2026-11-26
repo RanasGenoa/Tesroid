@@ -50,6 +50,9 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
       noteHoldResume: vi.fn(),
       isHoldPaused: vi.fn(() => false),
       armResumeGate: vi.fn(),
+      // Issue #111 F-4: JUMP 系の LIVE 境界で音声破棄境界を権威 PTS に設定する配線を検証する
+      getCurrentPts: vi.fn(() => 7_000_000n),
+      setResumeBoundary: vi.fn(),
       getCachedKeyframe: vi.fn(() => ({ data: Buffer.from([0, 0, 0, 1, 0x65]), pts: 5000000n })),
       isKeyframeStale: vi.fn(() => false),
       getCachedSpsPps: vi.fn(() => Buffer.from([0, 0, 0, 1, 0x67])),
@@ -179,7 +182,7 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
       vi.advanceTimersByTime(600);
 
       expect(mockEncoder.noteHoldResume).toHaveBeenCalledTimes(1);
-      expect(mockEncoder.armResumeGate).toHaveBeenCalledWith(1500);
+      expect(mockEncoder.armResumeGate).toHaveBeenCalledWith(8000);
       expect(mockEncoder.start).toHaveBeenCalled();
       expect(mockBrowser.resumeFromBufferHold).toHaveBeenCalledTimes(1);
       const holdOff = sentControls(socket).filter(
@@ -274,6 +277,8 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
     );
     expect(mockEncoder.noteHoldResume).toHaveBeenCalledTimes(1);
     expect(mockBrowser.resumeFromBufferHold).toHaveBeenCalledTimes(1);
+    // Issue #111 F-4: JUMP 解除でも音声破棄境界をライブエッジへ張り直す (straggler 音声の残留防止)
+    expect(mockEncoder.setResumeBoundary).toHaveBeenCalledWith(7000000n);
 
     handler.close();
   });
