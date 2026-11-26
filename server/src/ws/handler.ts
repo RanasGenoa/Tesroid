@@ -1355,33 +1355,6 @@ export class WebSocketHandler {
   }
 
   /**
-   * LIVE 配信中にソケット詰まり（通信悪化）を検知した際、フレームを破棄せず CATCHUP（サーバー蓄積）へ切り替える
-   */
-  private transitionLiveSessionToCatchup(session: ClientSession): void {
-    if (session.mode === 'CATCHUP') return;
-
-    session.mode = 'CATCHUP';
-    session.isFlowPaused = true;
-    session.lastAckProgressPts = undefined;
-    session.lastAckProgressAtMs = undefined;
-    session.catchupCongestionStreak = 0;
-
-    session.isBurstMode = this.isBurstCatchupEnabled();
-
-    // Issue #107: 通信悪化による LIVE→CATCHUP 遷移も実効窓・バースト設定を記録する
-    console.log(
-      `[WebSocketHandler] LIVE→CATCHUP transition (socket backpressure). targetBufferMs=${this.getBaseTargetBufferMs(session)}, effectiveWindowMs=${this.effectiveCatchupWindowMs(session)}, socketGuardKB=${Math.round(this.getEffectiveCatchupSocketGuardBytes(session) / 1024)}, burst=${session.isBurstMode}`,
-    );
-
-    if (!session.pacingTimer) {
-      session.pacingTimer = setTimeout(() => {
-        session.pacingTimer = null;
-        this.checkAndResumeCatchup(session);
-      }, 50);
-    }
-  }
-
-  /**
    * サーバー側キューが長くなりすぎた場合、最古のGOPを安全に間引いてメモリを保護
    */
   private pruneSessionQueue(session: ClientSession): void {
@@ -2230,23 +2203,15 @@ export class WebSocketHandler {
               continue;
             }
 
-            // 2. LIVE クライアントの通信悪化検知 (アイドル動画視聴中、ソケット詰まり発生時に CATCHUP へ切り替え):
-            const idleThresholdMs = (Number(process.env.IDLE_TO_BUFFER_SECONDS) || 5) * 1000;
-            const isIdle = Date.now() - this.lastInputAt > idleThresholdMs;
-            const wantsBuffer = (session.targetBufferMs ?? 0) > 0;
-
-            // アイドル視聴中かつバッファ有効時に、ソケット詰まり (buffered > 512KB) が発生した場合、
-            // 送信をストップして未送信フレームを CATCHUP キューへ安全に蓄積する
-            if (wantsBuffer && isIdle && !session.isInteractive && buffered > 512 * 1024) {
-              console.log(
-                `[WebSocketHandler] Network congestion detected (buffered=${Math.round(buffered / 1024)}KB). Switching session to CATCHUP buffer mode.`,
-              );
-              this.transitionLiveSessionToCatchup(session);
-              session.playbackQueue.push({ type: 'video', flags, pts, data });
-              continue;
-            }
-
-            // 3. LIVE 送信（ヒステリシスバックプレッシャー）
+            // 2. LIVE 送信（ヒステリシスバックプレッシャー）:
+            // Issue #109: 従来はここでアイドル視聴中のソケット詰まり (buffered > 512KB) を検知すると
+            // CATCHUP へ切り替えフレームを蓄積していたが、クライアントのジッターバッファが
+            // targetBufferMs で満杯の状態で CATCHUP 化すると送出ゲート
+            // (inFlight < effectiveCatchupWindowMs) が閉じたままとなり、backlog が永久に排水されない
+            // (通信回復後も配信遅延・A/Vオフセットが恒久化する)。リアルタイム配信ではリンクが生成速度を
+            // 運べずクライアントバッファも満杯なら余剰フレームはいずれどこかで必ず破棄されるため、
+            // 破棄は実証済みのヒステリシススキップへ一元化し、通信回復で即時に復帰させる。
+            // CATCHUP キューは「クライアントが後方になった場合」(再接続/resume、上記1.の経路) のみで使用する。
             if (buffered > HIGH_WATER_MARK) {
               (client as any)._droppingGop = true;
             }
