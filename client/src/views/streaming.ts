@@ -749,19 +749,20 @@ export function renderStreamingView(
   // 収束するため、同じ検知点からサーバーへ映像のみクローズド再起動 (ライブエッジ新規 IDR、
   // resize と同一の実証済み経路 / 音声完全不変) を要求する。セッション再接続でしか消えなかった
   // 滞留の自動化。クライアント 5s + サーバー 5s の二重レート制限。
-  let lastForcedIdrRequestAtMs = 0;
+  let lastForcedIdrRequestAtMs = -Infinity;
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
-    decoder.trimPendingBeforePts(playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US);
     const nowMs = performance.now();
-    if (nowMs - lastForcedIdrRequestAtMs < 5_000 || !wsClient.isConnected()) {
+    if (nowMs - lastForcedIdrRequestAtMs >= 5_000 && wsClient.isConnected()) {
+      lastForcedIdrRequestAtMs = nowMs;
+      // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
+      // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
+      // ライブエッジの新 IDR まで旧コンテンツのデコードを再開しない。全破棄が先行するため
+      // この経路では局所 trim を行わない (クールダウン間の検知のみ GOP 境界トリム)。
+      decoder.clearPendingPackets();
+      wsClient.send(ClientProtocol.packCommand({ type: 'FORCE_VIDEO_IDR' }));
       return;
     }
-    lastForcedIdrRequestAtMs = nowMs;
-    // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
-    // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
-    // ライブエッジの新 IDR まで旧コンテンツのデコードを再開しない。
-    decoder.clearPendingPackets();
-    wsClient.send(ClientProtocol.packCommand({ type: 'FORCE_VIDEO_IDR' }));
+    decoder.trimPendingBeforePts(playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US);
   };
 
   const syncTelemetryAttachment = (enabled: boolean) => {

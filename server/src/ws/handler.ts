@@ -2141,11 +2141,8 @@ export class WebSocketHandler {
           // 新規 IDR を要求する。セッション再接続でしか消えなかった pre-decode / in-flight
           // 滞留を、音声完全不変の映像のみクローズド再起動 (resize と同一の実証済み経路)
           // で自動解消する。
-          if (this.clientSessions.get(socket)?.isStandby) {
-            break;
-          }
           const session = this.clientSessions.get(socket);
-          if (!session) {
+          if (!session || session.isStandby) {
             break;
           }
           if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
