@@ -189,10 +189,11 @@ export class AudioPlayer {
       // Issue #111 音声冪等性: 前回と同一の OpusHead でデコーダが configured 済みなら、
       // 再初期化と resetJitterBuffer をスキップし、クライアント手元に再生待ちで保持済みの
       // 音声を保全する (CATCHUP CONFIG 再送・Hold 復帰時の無音ギャップ防止)。
+      const prevConfig = this.lastConfigData;
       const sameConfig =
-        this.lastConfigData !== null &&
-        data.length === this.lastConfigData.length &&
-        data.every((byte, i) => byte === (this.lastConfigData as Uint8Array)[i]);
+        prevConfig !== null &&
+        data.length === prevConfig.length &&
+        data.every((byte, i) => byte === prevConfig[i]);
       if (sameConfig && this.audioDecoder && this.audioDecoder.state === 'configured') {
         console.log(
           '[AudioPlayer] Identical audio CONFIG received while decoder is already configured. Skipping re-init to preserve buffered audio (Issue #111).',

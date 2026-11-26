@@ -432,4 +432,84 @@ describe('WebSocketHandler Buffer-Hold Pause (Issue #111)', () => {
 
     handler.close();
   });
+
+  it('should not invoke async encoder.restart() on manual PAUSE_BROWSER during hold + CATCHUP', async () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+    buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 0n, Buffer.from('v0'));
+
+    const { handler, emitVideo } = buildHandler(buffer);
+    const { socket, msgListener } = await connectAuthenticated(handler);
+
+    await sendAck(msgListener, 5_000_000);
+    buffer.addVideo(0, 5_000_000n, Buffer.from('a5'));
+    emitVideo({ flags: 0, pts: 20_033_000n, data: Buffer.from('v') });
+    expect((handler as any).pipelineHoldState).toBe('BUFFER_HOLD_PAUSED');
+
+    // Hold 中に CATCHUP セッションで手動 PAUSE_BROWSER (stale keyframe でも restart を呼ばない)
+    const session = handler.getClientSession(socket)!;
+    session.mode = 'CATCHUP';
+    session.playbackQueue = [{ type: 'video', flags: 0, pts: 6_000_000n, data: Buffer.from('x') }];
+    mockEncoder.isKeyframeStale.mockReturnValue(true);
+    mockEncoder.restart.mockClear();
+
+    await msgListener(
+      Buffer.concat([
+        Buffer.from([WSS_CHANNEL.COMMAND]),
+        Buffer.from(JSON.stringify({ type: 'PAUSE_BROWSER' })),
+      ]),
+    );
+
+    expect(mockEncoder.restart).not.toHaveBeenCalled();
+    expect(mockEncoder.stop).toHaveBeenCalled();
+    expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+    expect(session.mode).toBe('LIVE');
+    expect(session.playbackQueue).toHaveLength(0);
+
+    handler.close();
+  });
+
+  it('should re-arm holdExpireTimer on disconnect during hold even when autoSleepMinutes is 0', async () => {
+    vi.useFakeTimers();
+    try {
+      process.env.BUFFER_HOLD_EXPIRE_MINUTES = '1';
+      mockConfig.getConfig = () => ({
+        isSetupCompleted: true,
+        autoSleepMinutes: 0,
+        stream: { bitrate: 1000000 },
+      });
+      const buffer = new PlaybackBuffer({ bufferSeconds: 60 });
+      buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.from('v1'));
+
+      const { handler, emitVideo } = buildHandler(buffer);
+      const { socket, msgListener } = await connectAuthenticated(handler);
+      await sendAck(msgListener, 1_000_000);
+      const close1 = socket.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+      close1();
+      emitVideo({ flags: 0, pts: 16_000_000n, data: Buffer.from('v') });
+      expect((handler as any).pipelineHoldState).toBe('BUFFER_HOLD_PAUSED');
+      expect((handler as any).holdExpireTimer).not.toBeNull();
+
+      // Hold 中に再接続 (CATCHUP へ入り holdExpireTimer が解除される)
+      handler.setLastInputAt(Date.now() - 10_000);
+      const { socket: socket2 } = await connectAuthenticated(handler);
+      expect((handler as any).pipelineHoldState).toBe('BUFFER_HOLD_PAUSED');
+      expect((handler as any).holdExpireTimer).toBeNull();
+
+      // 排水完了前に再切断 → autoSleepMinutes=0 でも holdExpireTimer が再武装され、autoSleepTimer は未稼働
+      const close2 = socket2.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+      close2();
+      expect((handler as any).holdExpireTimer).not.toBeNull();
+      expect((handler as any).autoSleepTimer).toBeNull();
+
+      // 1 分経過で holdExpire → enterSleepPaused へ移行
+      vi.advanceTimersByTime(61_000);
+      expect((handler as any).pipelineHoldState).toBe('ACTIVE');
+      expect(mockBrowser.pause).toHaveBeenCalledTimes(1);
+
+      handler.close();
+    } finally {
+      delete process.env.BUFFER_HOLD_EXPIRE_MINUTES;
+      vi.useRealTimers();
+    }
+  });
 });

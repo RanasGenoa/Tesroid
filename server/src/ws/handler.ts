@@ -2281,10 +2281,16 @@ export class WebSocketHandler {
           if (this.clientSessions.get(socket)?.isStandby) {
             break;
           }
-          // Issue #111: 手動停止は Hold をスリープへ排他変換する。recordInputActivity より先に
-          // 変換しておき、Hold 解除→再生成 (SIGCONT + FFmpeg start) の無駄なチャーンを挟まない。
+          // Issue #111: 手動停止は Hold をスリープへ排他変換する。recordInputActivity() を呼ぶと
+          // CATCHUP セッションに対して非同期 encoder.restart() が発火し直後の encoder.stop() と
+          // 競合する恐れがあるため、入力時刻更新と CATCHUP キュー破棄 (skipEncoderRestart) のみ行う。
           this.convertHoldToSleep('manual_pause');
-          this.recordInputActivity(socket);
+          this.lastInputAt = Date.now();
+          for (const s of this.clientSessions.values()) {
+            if (s.mode === 'CATCHUP') {
+              this.abortCatchupAndSwitchToLive(s, { skipEncoderRestart: true });
+            }
+          }
           this.encoder.stop();
           this.browserManager.pause();
           this.broadcastControl({ type: 'BROWSER_STATUS', state: 'paused' });
@@ -2528,17 +2534,7 @@ export class WebSocketHandler {
     this.encoder.stop();
     this.browserManager.pauseForBufferHold();
 
-    const expireMin = Math.max(1, Number(process.env.BUFFER_HOLD_EXPIRE_MINUTES) || 10);
-    this.holdExpireTimer = setTimeout(() => {
-      this.holdExpireTimer = null;
-      if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
-        console.log(
-          '[WebSocketHandler] Buffer-Hold expired without reconnect or resume. Merging into auto-sleep common flow (SLEEP_PAUSED).',
-        );
-        this.enterSleepPaused('hold_expired');
-      }
-    }, expireMin * 60_000);
-    this.holdExpireTimer.unref();
+    this.armHoldExpireTimer();
 
     this.holdResumePollTimer = setInterval(() => {
       this.checkHoldResume();
@@ -2551,6 +2547,25 @@ export class WebSocketHandler {
       serverHeldMs: heldMs,
       holdTriggerMs: cfg.holdTriggerMs,
     });
+  }
+
+  /** Hold の期限タイマーを武装する (満了時は共通スリープフローへ合流) */
+  private armHoldExpireTimer(): void {
+    if (this.holdExpireTimer) {
+      clearTimeout(this.holdExpireTimer);
+      this.holdExpireTimer = null;
+    }
+    const expireMin = Math.max(1, Number(process.env.BUFFER_HOLD_EXPIRE_MINUTES) || 10);
+    this.holdExpireTimer = setTimeout(() => {
+      this.holdExpireTimer = null;
+      if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+        console.log(
+          '[WebSocketHandler] Buffer-Hold expired without reconnect or resume. Merging into auto-sleep common flow (SLEEP_PAUSED).',
+        );
+        this.enterSleepPaused('hold_expired');
+      }
+    }, expireMin * 60_000);
+    this.holdExpireTimer.unref();
   }
 
   /** Hold 中の再開判定。消費者 (実効プライマリ) が 1.0x で消費した ack 進捗のみが条件を進める */
@@ -2634,7 +2649,19 @@ export class WebSocketHandler {
   }
 
   private scheduleAutoSleep(): void {
-    if (this.autoSleepTimer) clearTimeout(this.autoSleepTimer);
+    if (this.autoSleepTimer) {
+      clearTimeout(this.autoSleepTimer);
+      this.autoSleepTimer = null;
+    }
+    // Issue #111: Hold 中は autoSleepTimer を起動せず、holdExpireTimer のみで排他管理する。
+    // Hold 中の再接続で一旦解除された後に排水前で再切断した場合も、autoSleepMinutes=0 環境を
+    // 含めて確実に holdExpireTimer を再武装し、永久 Hold 滞留を防ぐ。
+    if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+      if (!this.holdExpireTimer) {
+        this.armHoldExpireTimer();
+      }
+      return;
+    }
     const config = this.configStore.getConfig();
     const autoSleepMins = typeof config.autoSleepMinutes === 'number' ? config.autoSleepMinutes : 3;
     if (autoSleepMins === 0) {
