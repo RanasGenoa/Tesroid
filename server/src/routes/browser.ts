@@ -50,7 +50,12 @@ export function registerBrowserRoutes(
   // Resume browser
   app.post('/api/browser/resume', { preHandler: requireAuth }, async (req, reply) => {
     browserManager.resume();
-    if (encoder && !encoder.isRunning()) {
+    const isEncoderFullyRunning =
+      encoder &&
+      (typeof encoder.isFullyRunning === 'function'
+        ? encoder.isFullyRunning()
+        : encoder.isRunning());
+    if (encoder && !isEncoderFullyRunning) {
       encoder.start();
     }
     return { success: true, state: browserManager.getState() };
@@ -87,6 +92,16 @@ export function registerBrowserRoutes(
   app.post('/api/encoder/restart', { preHandler: requireAuth }, async (req, reply) => {
     if (!encoder && !wsHandler) {
       return reply.code(500).send({ error: 'Encoder not available' });
+    }
+    // Issue #112: HUD の LIVE タップはこのエンドポイントを呼ぶが、パイプラインが既に正常な LIVE で
+    // 滞留が無い場合に FFmpeg Video/Audio 全体を再起動すると ~1s の生成断と復帰バーストで FPS が低下する。
+    // 正常な LIVE 状態でのタップ時はスキップし、?force=1 や明示コマンド (RESTART_ENCODER / CLEAN_RESTART_STREAM) は常に再起動する。
+    const forceRestart = (req.query as { force?: string } | undefined)?.force === '1';
+    if (wsHandler && !forceRestart && wsHandler.canSkipFullRestart()) {
+      console.log(
+        '[EncoderRoutes] Live-tap full restart skipped: pipeline already LIVE with no backlog.',
+      );
+      return { success: true, restarted: false, skipped: true };
     }
     if (wsHandler) {
       await wsHandler.restartStream();

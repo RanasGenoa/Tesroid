@@ -22,7 +22,7 @@ export interface PlaybackBufferOptions {
  * - 高ビットレート設定 (API/環境変数で最大 10Mbps + 音声 320kbps):
  *   - 30秒間: (10,000,000 + 320,000) / 8 * 30 = 約 38.70 MB (約 36.91 MiB)
  * -> 30秒〜60秒の弱電波・瞬断リカバリとバースト時の安全係数を含め、
- *    メモリ上限ガード (maxBytes) は 48MB (48 * 1024 * 1024 bytes) を既定値とする。
+ *    メモリ上限ガード (maxBytes) は 48 MiB (48 * 1024 * 1024 bytes) を既定値とする。
  * 保持時間上限 (bufferSeconds, 既定60秒) または maxBytes を超過した場合は、
  * GOP(2秒)境界を維持しながら最古のGOP単位でフレームを破棄する。
  */
@@ -42,7 +42,7 @@ export class PlaybackBuffer {
     this.bufferSeconds = options.bufferSeconds || (envSec > 0 ? envSec : 60);
 
     const envBytes = Number(process.env.PLAYBACK_BUFFER_MAX_BYTES);
-    // 既定 48MB (48 * 1024 * 1024)
+    // 既定 48 MiB (48 * 1024 * 1024 bytes)
     this.maxBytes = options.maxBytes || (envBytes > 0 ? envBytes : 48 * 1024 * 1024);
   }
 
@@ -83,11 +83,23 @@ export class PlaybackBuffer {
   }
 
   /**
+   * バッファ内の最新映像 PTS (Issue #111: Buffer-Hold Pause の保持量評価・
+   * 再接続 resumeFromPts クランプ用)。映像フレームが1つもない場合は null。
+   */
+  public getLatestVideoPts(): bigint | null {
+    if (this.videoFrames.length === 0) return null;
+    return this.videoFrames[this.videoFrames.length - 1].pts;
+  }
+
+  /**
    * 映像 Access Unit (AU) をバッファへ追加
    */
   public addVideo(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & VIDEO_FLAGS.CONFIG) !== 0) {
+      // CONFIG パケット (pts: 0n) はメタキャッシュのみ更新し、フレーム配列へ混入させない
+      // (pts 0 の混入による getBufferedDurationMs() / GOP prune 破綻を防止, Issue #111)。
       this.cachedSpsPps = data;
+      return;
     }
 
     const frame: BufferedFrame = {
@@ -108,7 +120,10 @@ export class PlaybackBuffer {
    */
   public addAudio(flags: number, pts: bigint, data: Buffer): void {
     if ((flags & AUDIO_FLAGS.CONFIG) !== 0) {
+      // CONFIG (OpusHead, pts: 0n) はメタキャッシュのみ更新し、
+      // 音声フレーム配列へは混入させない (prune の PTS 比較を汚染しない, Issue #111)。
       this.cachedOpusHead = data;
+      return;
     }
 
     const frame: BufferedFrame = {

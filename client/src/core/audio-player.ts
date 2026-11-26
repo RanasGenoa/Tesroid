@@ -33,8 +33,8 @@ export class AudioPlayer {
   private needsDeclickFadeIn: boolean = true;
   private nextPlayTime: number = 0;
 
-  // Issue #103 (2026-11-25 インシデント): JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
-  // ソケット/リンク経路上を漂流中の古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
+  // Issue #103: JUMP_TO_LIVE 直後、ジャンプ前にサーバーが送信済みで
+  // 経路上に残っている古い音声フレーム（straggler）が到着し、ゼロギャップスケジューリングで
   // ライブ音声の後ろに ~2 秒分連結されると、音声マスタークロックが映像から永久に先行する。
   // ジャンプ直後の短期間だけバリア PTS 未満の古い音声を受信破棄して固定オフセットの発生を防ぐ。
   private liveBarrierPtsUs = 0;
@@ -44,6 +44,7 @@ export class AudioPlayer {
   private minAcceptedDecodedPtsUs = 0;
 
   public static readonly LIVE_BARRIER_TTL_MS = 5000;
+  private static readonly PTS_EPOCH_RESET_BACKWARD_US = 1_000_000;
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
@@ -54,7 +55,7 @@ export class AudioPlayer {
   private static readonly REBUFFER_CUSHION_SEC = 0.08;
   // Max WebAudio nodes scheduled ahead at once (0.50s) to keep a healthy hardware cushion against main-thread rendering hiccups
   private static readonly MAX_SCHEDULE_AHEAD_SEC = 0.5;
-  // Maximum catchup buffer before trimming oldest audio (45s, aligned with 30s video target + 43s max margin)
+  // Maximum catchup buffer before trimming oldest audio (45s, aligned with 30s video target / 43s max trim window)
   private static readonly MAX_CATCHUP_BUFFER_SEC = 45.0;
   // Hardware lookahead when starting playback from currentTime (25ms)
   private static readonly HARDWARE_LOOKAHEAD_SEC = 0.025;
@@ -186,6 +187,20 @@ export class AudioPlayer {
 
     // Check if this is an OpusHead / CONFIG packet
     if (flags & AUDIO_FLAGS.CONFIG) {
+      // Issue #111: 同一 OpusHead の CONFIG 再送時は冪等に扱い、デコーダが configured 済みなら
+      // 再初期化と resetJitterBuffer をスキップし、クライアント手元に再生待ちで保持済みの
+      // 音声を保全する (CATCHUP CONFIG 再送・Hold 復帰時の無音ギャップ防止)。
+      const prevConfig = this.lastConfigData;
+      const sameConfig =
+        prevConfig !== null &&
+        data.length === prevConfig.length &&
+        data.every((byte, i) => byte === prevConfig[i]);
+      if (sameConfig && this.audioDecoder && this.audioDecoder.state === 'configured') {
+        console.log(
+          '[AudioPlayer] Identical audio CONFIG received while decoder is already configured. Skipping re-init to preserve buffered audio (Issue #111).',
+        );
+        return;
+      }
       console.log(
         `[AudioPlayer] Received audio CONFIG packet (${data.length} bytes). Configuring decoder.`,
       );
@@ -230,11 +245,20 @@ export class AudioPlayer {
     }
 
     try {
-      this.audioDecoder = new (window as any).AudioDecoder({
+      const decoder = new (window as any).AudioDecoder({
         output: (audioData: any) => {
+          if (this.audioDecoder !== decoder) {
+            try {
+              audioData.close();
+            } catch {}
+            return;
+          }
           this.playAudioData(audioData);
         },
         error: (err: any) => {
+          if (this.audioDecoder !== decoder) {
+            return;
+          }
           console.warn('[AudioPlayer] AudioDecoder error:', err);
           // If description was used, reject it on next attempt
           if (!this.descriptionRejected && (configData || this.lastConfigData)) {
@@ -242,12 +266,13 @@ export class AudioPlayer {
             this.descriptionRejected = true;
           }
           try {
-            this.audioDecoder.close();
+            decoder.close();
           } catch {}
           this.audioDecoder = null;
           this.resetJitterBuffer();
         },
       });
+      this.audioDecoder = decoder;
 
       const config: any = {
         codec: 'opus',
@@ -261,7 +286,7 @@ export class AudioPlayer {
       }
 
       try {
-        this.audioDecoder.configure(config);
+        decoder.configure(config);
         console.log(
           `[AudioPlayer] AudioDecoder configured (Stereo 48kHz Opus${config.description ? ' with OpusHead' : ''})`,
         );
@@ -272,7 +297,7 @@ export class AudioPlayer {
         );
         this.descriptionRejected = true;
         delete config.description;
-        this.audioDecoder.configure(config);
+        decoder.configure(config);
         console.log(
           '[AudioPlayer] AudioDecoder configured (fallback: Stereo 48kHz Opus without description)',
         );
@@ -294,6 +319,24 @@ export class AudioPlayer {
     // Issue #103: ジャンプ後の straggler 音声はデコード前に破棄する
     if (this.isStaleByLiveBarrier(ptsUs)) {
       return;
+    }
+
+    // Issue #112: STREAM_RESET 等で音声 PTS が大きく巻き戻った（エポックリセット）場合、
+    // 既存の WebCodecs AudioDecoder は内部 AudioTimestampHelper に旧エポックを保持し続けるため
+    // デコーダを再初期化して新エポックへ追従させる。
+    if (
+      this.lastChunkPtsUs > 0 &&
+      ptsUs > 0 &&
+      this.lastChunkPtsUs - ptsUs > AudioPlayer.PTS_EPOCH_RESET_BACKWARD_US
+    ) {
+      console.warn(
+        `[AudioPlayer] Detected audio PTS epoch reset (${Math.round(this.lastChunkPtsUs)} -> ${Math.round(ptsUs)}). Reinitializing AudioDecoder & jitter buffer.`,
+      );
+      this.resetDecoder();
+      this.initDecoder();
+      if (!this.audioDecoder || this.audioDecoder.state !== 'configured') {
+        return;
+      }
     }
 
     this.lastChunkPtsUs = ptsUs;
@@ -578,7 +621,7 @@ export class AudioPlayer {
     }
 
     let startAt = this.nextPlayTime;
-    // Guard against slight sub-millisecond precision drift
+    // Guard against timing drift when startAt falls within 5ms of currentTime
     if (startAt < now + 0.005) {
       startAt = now + AudioPlayer.HARDWARE_LOOKAHEAD_SEC;
     }
@@ -749,6 +792,23 @@ export class AudioPlayer {
       } catch {}
     }
     this.scheduledSources.clear();
+  }
+
+  /**
+   * Close and clear AudioDecoder alongside jitter buffer for full PTS epoch resets (e.g. STREAM_RESET).
+   * Unlike resetJitterBuffer(), this ensures Chromium's WebCodecs AudioDecoder resets its internal
+   * timestamp tracker cleanly when a new stream epoch starts with identical OpusHead config.
+   */
+  public resetDecoder(): void {
+    if (this.audioDecoder) {
+      if (this.audioDecoder.state !== 'closed') {
+        try {
+          this.audioDecoder.close();
+        } catch {}
+      }
+      this.audioDecoder = null;
+    }
+    this.resetJitterBuffer();
   }
 
   public resetJitterBuffer(): void {

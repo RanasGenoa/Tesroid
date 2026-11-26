@@ -318,7 +318,7 @@ async function showSettingsModal(
       statusPanel.textContent = describeEncoderStatus(encoderStatus);
     }
 
-    // VAAPI依存3項目のグレーアウト（backend === 'software' のときのみ明確に無効化）
+    // VAAPI依存3項目のグレーアウト（backend === 'software' / 'nvenc' のときに無効化）
     const vaapiEnabled = vaapiControlsEnabled(encoderStatus);
     for (const selector of [
       '#cfg-vaapi-compression',
@@ -359,7 +359,7 @@ async function showSettingsModal(
       ) {
         // 未操作時は常に保存値から再評価する。/api/settings が /api/health より先に
         // 完了すると、ステータス未取得（=GPU前提一覧）で 'custom' に書き換わった後、
-        // health 再適用時に 'custom' が可視値のため元へ戻らないレースがある (Issue #90 review)。
+        // health 再適用時に 'custom' が可視値のため元へ戻らないレースがある (Issue #90)。
         const targetPreset =
           !presetTouched && savedPerformancePreset
             ? resolveDisplayPreset(savedPerformancePreset, encoderStatus)
@@ -380,7 +380,7 @@ async function showSettingsModal(
   };
 
   const fetchEncoderStatus = async () => {
-    // 5秒間隔のポーリングが多重実行されても、進行中の1本だけ通す (Issue #90 review)
+    // 5秒間隔のポーリングが重なっても、進行中の1本だけ実行する (Issue #90)
     if (encoderStatusInFlight) return;
     encoderStatusInFlight = true;
     try {
@@ -394,7 +394,7 @@ async function showSettingsModal(
     } finally {
       encoderStatusInFlight = false;
     }
-    // クローズ後のdetached DOMへの適用を避ける (Issue #90 review)
+    // モーダルを閉じた後の detached DOM への適用を避ける (Issue #90)
     if (encoderModalClosed) return;
     applyEncoderBackendUi();
   };
@@ -1302,10 +1302,10 @@ async function showSettingsModal(
     }
   });
 
-  // 詳細値を直接編集したら、プリセット選択も即座に 'custom' へ切り替える。
-  // プリセット名だけ balanced のまま値だけ乖離する曖昧状態を防ぐ (Issue #90 review)。
-  // ※ 表示上の 'custom' 展開を触っただけ（未編集）の場合は presetTouched が立たないため、
-  //   保存時に保存済みプリセット名がそのまま送信され、誤った custom 永続化は起きない。
+  // 詳細値を直接編集したら、プリセット選択も即座に 'custom' へ切り替える (Issue #90)。
+  // プリセット名だけ balanced のまま詳細値と乖離する曖昧状態を防ぐ。
+  // ※ バックエンド非対応で表示上のみ 'custom' に自動展開された状態（ユーザー未操作）では
+  //   presetTouched が立たないため、保存時は元の保存済みプリセット名がそのまま維持される。
   const markCustomTouched = () => {
     const presetSelectEl = overlay.querySelector('#cfg-perf-preset') as HTMLSelectElement | null;
     if (presetSelectEl && presetSelectEl.value !== 'custom') {

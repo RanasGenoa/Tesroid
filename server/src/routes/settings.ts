@@ -248,8 +248,8 @@ export function registerSettingsRoutes(
       // Issue #11: クライアント負荷プロファイルの実効値 (ブロードキャストと再適用判定に使用)
       let clientProfileChanged = false;
       let resolvedClientProfileEffective = resolveClientProfile(configStore.getConfig().stream);
-      // PR #94 レビュー (High): エンコーダへ渡すのは常に検証・スナップ・連動済みの updates.stream 側のみ。
-      // 明示指定が無くなっても連動値 (D1 bitrate / D4 fps) は current と比較して差分があれば適用する。
+      // エンコーダへ渡すのは常に検証・クランプ・連動済みの updates.stream 側のみ。
+      // リクエストに明示指定がない場合でも、プロファイル連動で bitrate / maxFps が変化していれば差分適用する。
       let streamUpdateForEncoder:
         | {
             fps?: number;
@@ -289,7 +289,7 @@ export function registerSettingsRoutes(
           stream.audioBitrate = normalizedBitrate;
         }
         const currentStream = configStore.getConfig().stream;
-        // 定義は config.ts の GPU/CPU プリセット一覧を単一ソースとする (Issue #90 review)
+        // 定義は config.ts の GPU/CPU プリセット一覧を参照する (Issue #90)
         const allowedPresets: PerformancePreset[] = [
           ...GPU_PERFORMANCE_PRESETS,
           ...CPU_PERFORMANCE_PRESETS,
@@ -305,7 +305,7 @@ export function registerSettingsRoutes(
             : undefined;
 
         // Issue #11: クライアント負荷プロファイル (standard / lightweight / custom) の検証と保存。
-        // プリセット時は規定値を resolveClientProfile が展開するため profile 名のみ保存する。
+        // プリセット時は既定値を resolveClientProfile が展開するため profile 名のみ保存する。
         const allowedClientProfiles: ClientPerformanceProfile[] = [
           'standard',
           'lightweight',
@@ -360,13 +360,13 @@ export function registerSettingsRoutes(
           stream.bitrate !== undefined && Number.isFinite(Number(stream.bitrate))
             ? Math.max(250000, Math.min(10000000, Math.round(Number(stream.bitrate))))
             : clientProfileChanged && resolvedClientProfileEffective.bitrateDefault !== undefined
-              ? resolvedClientProfileEffective.bitrateDefault // プロファイル切替時のビットレート連動 (D1 裁定)
+              ? resolvedClientProfileEffective.bitrateDefault // プロファイル切替時はプロファイル既定ビットレートへ連動
               : currentStream.bitrate;
         let nextMaxFps =
           stream.maxFps !== undefined && Number.isFinite(Number(stream.maxFps))
-            ? Math.max(24, Math.min(60, Math.round(Number(stream.maxFps)))) // D2 裁定: 24fps 未満は不可
+            ? Math.max(24, Math.min(60, Math.round(Number(stream.maxFps)))) // 24〜60fps にクランプ
             : currentStream.maxFps;
-        // FPS 選択肢はプロファイルが制御 (D4 裁定): 範囲外値は最も近い下位許可値へ寄せる
+        // プロファイルの許可 FPS 選択肢にない値は最も近い下位許可値（下回る場合は最小許可値）へ寄せる
         const allowedFpsOptions = resolvedClientProfileEffective.fpsOptions;
         if (allowedFpsOptions.length > 0 && !allowedFpsOptions.includes(nextMaxFps)) {
           const lowerOrEqual = [...allowedFpsOptions]
@@ -416,8 +416,8 @@ export function registerSettingsRoutes(
           clientProfile: nextClientProfile,
         };
 
-        // PR #94 レビュー (High): 明示有無に関わらず、エンコーダへ渡す値は常に正規化済み (next*) とする。
-        // 連動・スナップで保存値が変わった場合 (D1 bitrate / D4 fps) も差分として encoder に適用する。
+        // 明示指定の有無に関わらず、エンコーダへ渡す値は常に正規化済み (next*) とする。
+        // プロファイル連動やスナップで bitrate / maxFps が変化した場合も差分としてエンコーダへ適用する。
         const applyCompression =
           stream.vaapiCompressionLevel !== undefined || stream.performancePreset !== undefined;
         const applyLowPower =
@@ -455,10 +455,10 @@ export function registerSettingsRoutes(
       }
 
       if (stream && updates.stream) {
-        // PR #94 レビュー (Medium): プロファイル変更時はここで再起動せず reapplyClientProfile へ
-        // 委譲し、ビットレート・FPS 連動と新しいエンコード寸法を 1 回の再起動へ統合する
+        // プロファイル変更時はここで再起動せず reapplyClientProfile へ委譲し、
+        // ビットレート・FPS 連動と新しいエンコード寸法を 1 回の再起動へ統合する
         const deferEncoderToProfile = clientProfileChanged && wsHandler !== undefined;
-        // PR #94 レビュー (High): エンコーダへ渡すのは正規化済み値のみ (未指定フィールドは非適用)
+        // 正規化済み値のうち変更対象フィールドのみをエンコーダへ適用する
         const streamUpdate = streamUpdateForEncoder;
         const hasStreamChanges =
           streamUpdate !== undefined && Object.values(streamUpdate).some((v) => v !== undefined);

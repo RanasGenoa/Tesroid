@@ -31,12 +31,12 @@ export interface EncoderOptions {
   width?: number; // 1280
   height?: number; // 720
   fps?: number; // 30
-  bitrate?: string; // '4M'
+  bitrate?: string; // '1000k'
   audioBitrate?: string | number; // e.g. '128k', 128000, '320k' (128k - 320k)
   vaapiDevice?: string; // '/dev/dri/renderD128'
   libvaDriverName?: string; // e.g. 'iHD', 'i965', 'radeonsi', 'd3d12'
-  encoderMode?: EncoderMode; // 'auto' | 'vaapi' | 'software'
-  initialBackend?: EncoderBackend; // 'vaapi' | 'software'
+  encoderMode?: EncoderMode; // 'auto' | 'vaapi' | 'nvenc' | 'software'
+  initialBackend?: EncoderBackend; // 'vaapi' | 'nvenc' | 'software'
   audioSink?: string; // 'virtual_sink.monitor'
   compressionLevel?: number; // 1 (best quality) - 7 (fastest/lightest)
   lowPower?: boolean; // Enable Intel VDEnc (-low_power 1)
@@ -62,8 +62,8 @@ export class VaapiEncoder extends EventEmitter {
   private displayNum: string;
   private width: number;
   private height: number;
-  // Issue #11: レイアウト(キャプチャ)寸法と独立したエンコード出力寸法。
-  // encodeWidth/Height == width/height のときは現行と完全に同一の FFmpeg 引数になる。
+  // レイアウト (キャプチャ) 寸法と独立したエンコード出力寸法 (Issue #11)。
+  // encodeWidth/Height === width/height のときはスケーリングフィルタを追加しない。
   private encodeWidth: number;
   private encodeHeight: number;
   private fps: number;
@@ -93,6 +93,22 @@ export class VaapiEncoder extends EventEmitter {
 
   // Stream timing baseline
   private streamStartTimeUs: bigint = 0n;
+
+  // Issue #111 Buffer-Hold Pause: 停止区間の PTS 補償。
+  // Hold 中は FFmpeg が停止するため、壁時計の経過をそのまま PTS に含めると再生タイムラインに
+  // 停止時間分の空白ギャップが発生する。totalHoldPausedUs に停止時間の合計を蓄積し、
+  // 全 PTS 算出点 (映像 AU / 音声パケット / getCurrentPts) から差し引いて単調連続を保つ。
+  private holdPausedSinceUs: bigint | null = null;
+  private totalHoldPausedUs: bigint = 0n;
+
+  // Issue #111 再開時 A/V 境界ゲート: Hold 復帰後、最初の Video IDR 送出まで先行音声パケットを破棄し、
+  // 映像より先に届いた古い音声 (straggler) がクライアントの音声キューへ混入するのを防ぐ。
+  private resumeGateActive = false;
+  private resumeGateDeadlineMs = 0;
+  // 復帰後の音声破棄境界 PTS (Issue #111)。最初の Video IDR 送出時 (または setResumeBoundary) に
+  // 境界 PTS を記録し、これより古い音声パケットを PTS 比較で破棄して復帰直後の A/V ずれを防ぐ。
+  // resumeGateDeadlineMs は IDR が届かない場合のタイムアウト安全弁として併用する。
+  private resumeBoundaryPtsUs: bigint | null = null;
 
   // Video state
   private videoPts: bigint = 0n;
@@ -289,8 +305,8 @@ export class VaapiEncoder extends EventEmitter {
     ];
 
     const codecArgs: string[] = [];
-    // Issue #11: クライアント負荷プロファイルによるエンコード寸法縮小 (レイアウトは変更しない)。
-    // 標準 (scale=1.0) では encode* == capture* となり、生成フィルタは従来と完全に一致する。
+    // クライアント負荷プロファイルによるエンコード寸法縮小 (Issue #11、レイアウト寸法は変更しない)。
+    // encodeWidth/Height === width/height のときはスケーリングフィルタを省略する。
     const encodeScaled = this.encodeWidth !== this.width || this.encodeHeight !== this.height;
     const encW = Math.max(320, this.encodeWidth & ~7);
     const encH = Math.max(240, this.encodeHeight & ~1);
@@ -306,8 +322,8 @@ export class VaapiEncoder extends EventEmitter {
         'zerolatency',
       );
     } else if (this.activeBackend === 'nvenc') {
-      // NVENC (Issue #36 Phase 3): x11grab の CPU フレームを yuv420p 変換後 h264_nvenc で
-      // エンコード。Annex B + AUD 挿出は既存 NAL パーサ / AVCC パッキングと共通 (出力側共有引数)。
+      // NVENC (Issue #36): x11grab のフレームを yuv420p 変換後 h264_nvenc でエンコード。
+      // Annex B 出力および AUD 挿入は outputArgs で他バックエンドと共通。
       codecArgs.push(
         '-vf',
         'format=yuv420p',
@@ -399,11 +415,68 @@ export class VaapiEncoder extends EventEmitter {
     return this.cachedOpusHead;
   }
 
-  public getCurrentPts(): bigint {
+  /**
+   * Issue #111: 壁時計基準 PTS の単一算出点。Hold 停止時間 (totalHoldPausedUs) を補償し、
+   * ベースライン未設定時は null を返す。
+   */
+  private computeWallClockPtsUs(): bigint | null {
     const nowUs = BigInt(Math.round(performance.now() * 1000));
-    return this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-      ? nowUs - this.streamStartTimeUs
-      : this.videoPts;
+    if (this.streamStartTimeUs === 0n || nowUs < this.streamStartTimeUs) return null;
+    const pts = nowUs - this.streamStartTimeUs - this.totalHoldPausedUs;
+    return pts >= 0n ? pts : 0n;
+  }
+
+  /** Hold 停止開始の記録 (FFmpeg 停止前に呼ぶ)。停止中は getCurrentPts() がアンカーで凍結する */
+  public noteHoldPause(): void {
+    if (this.holdPausedSinceUs !== null) return;
+    this.holdPausedSinceUs = BigInt(Math.round(performance.now() * 1000));
+  }
+
+  /** Hold 停止解除。停止時間を補償合計へ加算してから再開する (FFmpeg 起動前に呼ぶ) */
+  public noteHoldResume(): void {
+    if (this.holdPausedSinceUs === null) return;
+    const nowUs = BigInt(Math.round(performance.now() * 1000));
+    this.totalHoldPausedUs += nowUs - this.holdPausedSinceUs;
+    this.holdPausedSinceUs = null;
+  }
+
+  /**
+   * Hold → スリープ遷移や新セッション切替時に、残留した holdPausedSinceUs / 停止時間補償 /
+   * 音声破棄境界をクリアし、次回復帰時の PTS 巻き戻りや誤破棄を防止する。
+   */
+  public resetHoldCompensation(): void {
+    this.holdPausedSinceUs = null;
+    this.totalHoldPausedUs = 0n;
+    this.resumeGateActive = false;
+    this.resumeBoundaryPtsUs = null;
+  }
+
+  public isHoldPaused(): boolean {
+    return this.holdPausedSinceUs !== null;
+  }
+
+  /**
+   * 再開時 A/V 境界ゲートを有効化する: 最初の Video KEYFRAME 送出まで音声パケットを破棄する。
+   * timeoutMs は再起動後に IDR が届かない場合のタイムアウト安全弁（通常は最初の IDR PTS を境界とする）。
+   */
+  public armResumeGate(timeoutMs = 8000): void {
+    this.resumeGateActive = true;
+    this.resumeGateDeadlineMs = performance.now() + Math.max(0, timeoutMs);
+    this.resumeBoundaryPtsUs = null;
+  }
+
+  /** JUMP_TO_LIVE など IDR 再送を伴わない復帰境界移動時に、基準 PTS を音声破棄境界として直接設定する (Issue #111) */
+  public setResumeBoundary(ptsUs: bigint): void {
+    if (ptsUs > 0n) {
+      this.resumeBoundaryPtsUs = ptsUs;
+    }
+  }
+
+  public getCurrentPts(): bigint {
+    // Issue #111: Hold 停止中は生成タイムラインをアンカー (最終映像 PTS) で凍結する
+    if (this.holdPausedSinceUs !== null) return this.videoPts;
+    const wallPts = this.computeWallClockPtsUs();
+    return wallPts !== null ? wallPts : this.videoPts;
   }
 
   public isKeyframeStale(thresholdUs: bigint = 2000000n): boolean {
@@ -414,6 +487,11 @@ export class VaapiEncoder extends EventEmitter {
 
   public isRunning(): boolean {
     return this.isVideoRunning || this.isAudioRunning;
+  }
+
+  /** Video / Audio 両方の FFmpeg プロセスが稼働しているか（片肺 Audio 停止の検知用） */
+  public isFullyRunning(): boolean {
+    return this.isVideoRunning && this.isAudioRunning;
   }
 
   public start(): void {
@@ -504,7 +582,8 @@ export class VaapiEncoder extends EventEmitter {
       const failedAbnormally = !intentional && ((code !== 0 && code !== null) || signal !== null);
       if (failedAbnormally) {
         const elapsedMs = performance.now() - this.videoStartTimeMs;
-        // Allow up to 5s for cold-boot driver/FFmpeg init on low-spec CPUs (e.g. Celeron N4000) before triggering fallback
+        // Treat abnormal exit with 0 frames within 5s as an immediate startup failure
+        // (5s window accounts for slow cold-boot driver/FFmpeg init on low-spec CPUs such as Celeron N4000)
         const failedImmediately = this.framesInCurrentProcess === 0 && elapsedMs < 5000;
         if (this.activeBackend === 'vaapi' && failedImmediately) {
           if (this.lowPower) {
@@ -771,8 +850,8 @@ export class VaapiEncoder extends EventEmitter {
       this.width = width & ~1;
       this.height = height & ~1;
     }
-    // Issue #11: エンコード出力寸法 (レイアウト=キャプチャ寸法とは独立)。
-    // 明示指定が無く解像度変更があればエンコード寸法も追随 (標準動作=従来と同一)。
+    // エンコード出力寸法 (レイアウト寸法とは独立、Issue #11)。
+    // 明示指定がなく解像度変更があればエンコード寸法もキャプチャ寸法へ追随する。
     if (encodeDimensions !== undefined) {
       if (encodeDimensions) {
         this.encodeWidth = encodeDimensions.width & ~7;
@@ -872,6 +951,12 @@ export class VaapiEncoder extends EventEmitter {
     this.streamStartTimeUs = BigInt(Math.round(performance.now() * 1000));
     this.videoPts = 0n;
     this.audioPts = 0n;
+    // Issue #111: 完全リスタートは新しい PTS エポックのため Hold 補償も初期化
+    this.totalHoldPausedUs = 0n;
+    this.holdPausedSinceUs = null;
+    // 旧エポックの音声破棄境界が残ると新エポックの音声が全破棄されるため必ずクリアする
+    this.resumeBoundaryPtsUs = null;
+    this.resumeGateActive = false;
 
     await this.restart(width, height, fps, bitrate);
     this.startAudio();
@@ -893,13 +978,11 @@ export class VaapiEncoder extends EventEmitter {
     lowPower?: boolean;
     gpuColorConversion?: boolean;
     x264Preset?: string;
-    // PR #94 レビュー (Medium): プロファイル切替時の連動変更を 1 回の再起動でまとめるため、
-    // エンコード出力寸法を同時指定できる。未指定時は従来と完全に同一の restart 呼び出し形。
+    // プロファイル切替時の連動変更を 1 回の再起動で適用するためのエンコード出力寸法指定
     encodeDimensions?: EncodeDimensions | null;
   }): Promise<void> {
-    // libx264 speed preset: only restart when the validated value actually changes,
-    // and only while the software backend is active (x264 args are unused under VAAPI),
-    // avoiding needless stream interruptions (Issue #90 review).
+    // libx264 speed preset: only restart when the validated value actually changes
+    // and the software backend is active (x264 args are unused under hardware backends VAAPI/NVENC).
     const nextX264Preset = normalizeX264Preset(config.x264Preset);
     const x264PresetChanged = nextX264Preset !== undefined && nextX264Preset !== this.x264Preset;
     if (x264PresetChanged) {
@@ -976,9 +1059,8 @@ export class VaapiEncoder extends EventEmitter {
   }
 
   /**
-   * Issue #11: クライアント負荷プロファイル変更時のみ呼ぶ。キャプチャ(レイアウト)寸法・fps・
-   * ビットレートは変更せず、エンコード出力寸法だけを更新して映像エンコーダを再構成する。
-   * null で従来動作 (エンコード=キャプチャ寸法) へ復帰する。
+   * キャプチャ (レイアウト) 寸法・fps・ビットレートを維持したまま、エンコード出力寸法のみを
+   * 更新して映像エンコーダを再構成する (Issue #11)。null でスケーリング解除 (エンコード=キャプチャ寸法)。
    */
   public async setEncodeDimensions(encodeDimensions: EncodeDimensions | null): Promise<void> {
     await this.restart(
@@ -1112,11 +1194,8 @@ export class VaapiEncoder extends EventEmitter {
       return;
     }
 
-    const nowUs = BigInt(Math.round(performance.now() * 1000));
-    const candidatePts =
-      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-        ? nowUs - this.streamStartTimeUs
-        : this.videoPts + this.videoFrameDurationUs;
+    const wallPts = this.computeWallClockPtsUs();
+    const candidatePts = wallPts !== null ? wallPts : this.videoPts + this.videoFrameDurationUs;
     // Keep PTS strictly monotonic when multiple AUs are parsed within the same microsecond
     this.videoPts =
       this.framesInCurrentProcess > 0 && candidatePts <= this.videoPts
@@ -1169,6 +1248,13 @@ export class VaapiEncoder extends EventEmitter {
       if (this.currentAuHasKeyframe) {
         flags |= VIDEO_FLAGS.KEYFRAME;
         this.cachedKeyframe = { data: frameData, pts: this.videoPts };
+        // 復帰ゲート有効時の最初の IDR 到達時のみゲートを解除し、
+        // その PTS を音声破棄境界として記録する (Issue #111)。
+        // 定常キーフレーム毎の上書きは正常音声の欠落・境界後退を招くため行わない。
+        if (this.resumeGateActive) {
+          this.resumeGateActive = false;
+          this.resumeBoundaryPtsUs = this.videoPts;
+        }
       }
 
       this.lastVideoEmitTime = performance.now();
@@ -1265,11 +1351,24 @@ export class VaapiEncoder extends EventEmitter {
       return;
     }
 
-    const nowUs = BigInt(Math.round(performance.now() * 1000));
-    this.audioPts =
-      this.streamStartTimeUs > 0n && nowUs >= this.streamStartTimeUs
-        ? nowUs - this.streamStartTimeUs
-        : this.audioPts + this.audioFrameDurationUs;
+    // 復帰後 A/V 境界処理 (Issue #111): 音声 PTS を確定した上で、
+    // (1) IDR 到達待ちゲート (タイムアウト安全弁付き) と (2) 境界 PTS 未満の音声破棄を順に適用する。
+    const wallPts = this.computeWallClockPtsUs();
+    this.audioPts = wallPts !== null ? wallPts : this.audioPts + this.audioFrameDurationUs;
+
+    if (this.resumeGateActive) {
+      if (performance.now() <= this.resumeGateDeadlineMs) {
+        return;
+      }
+      this.resumeGateActive = false;
+    }
+    if (this.resumeBoundaryPtsUs !== null) {
+      if (this.audioPts < this.resumeBoundaryPtsUs) {
+        return;
+      }
+      this.resumeBoundaryPtsUs = null;
+    }
+
     this.emit('audio', {
       flags: AUDIO_FLAGS.KEYFRAME,
       pts: this.audioPts,

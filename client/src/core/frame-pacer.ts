@@ -54,6 +54,7 @@ export class FramePacer {
   private pllNudgeSuppressedCount: number = 0;
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
+  private lastStaleDropLogTimeMs: number = -Infinity;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
   private computePllShift(
     currentScheduleMs: number,
@@ -105,10 +106,19 @@ export class FramePacer {
   // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
   private static readonly AV_SYNC_KP =
     FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
+  // Issue #112: 音声先行 (再生中音声PTS > 映像スケジュール) は負方向シフトが 1x 間隔クランプ
+  // (maxNegativeShiftAllowed) で構造的に吸収不能な場合がある。backlog (キュー滞留 > 8 フレーム) かつ
+  // 150ms 超の音声先行時に限り、再生中音声より古い映像フレームを破棄して映像側で吸収する。
+  // 許容 40ms (デッドバンド 45ms 未満) と 1 tick あたり上限 4 フレームで可視ジャンプを抑え、
+  // 正常な 1x 到着 (スケジュールに余裕があり PLL が機能する状態) には一切干渉しない。
+  private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 40_000;
+  private static readonly AV_SYNC_MAX_STALE_DROPS_PER_TICK = 4;
+  private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
+  private static readonly AV_SYNC_MAX_STALE_DROP_LEAD_MS = 60_000;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
-  // Issue #11 (D5): 1フレームの canvas 描画所要時間(ms)。MCU2 側の処理負荷比較に使う。
+  // Issue #11: 1フレームの canvas 描画所要時間 (ms)。クライアント側の描画負荷計測に使用
   public onFrameRenderTimed?: (durationMs: number) => void;
   public onBufferingChange?: (isBuffering: boolean) => void;
 
@@ -152,7 +162,7 @@ export class FramePacer {
     if (mode === 'ACTIVE_INTERACTION') {
       this.flushQueue();
     } else if (prevMode === 'ACTIVE_INTERACTION' && mode === 'PASSIVE_STREAMING') {
-      // DirectLive から通常再生へ復帰した瞬間:
+      // ACTIVE_INTERACTION から PASSIVE_STREAMING へ復帰した瞬間:
       // 次のフレームをスピーカー再生中の音声PTSに正しくアンカーさせるため基準をリセット
       this.lastScheduledTimeMs = 0;
       this.lastScheduledPtsUs = -1;
@@ -278,7 +288,7 @@ export class FramePacer {
     }
 
     // Detect network stall (packet clogging followed by delayed arrival):
-    // If wall-clock arrival gap is large (> stallThresholdMs), AND the stream PTS gap is significantly smaller
+    // If wall-clock arrival gap is large (>= stallThresholdMs), AND the stream PTS gap is significantly smaller
     // than the wall-clock arrival gap (meaning the frame was generated earlier on the server and got stuck in transit,
     // NOT a static screen or slow browser render where PTS also advances by arrivalGapMs!),
     // then packets were genuinely clogged in transit.
@@ -387,7 +397,7 @@ export class FramePacer {
       ) {
         this.renderFrameInternal(frame, ptsUs, now);
         // Preserve accumulated PLL shift on earliestNextSlot even when rendered immediately at `now`,
-        // bounded to (now - deltaMs * 0.5) to avoid excessive historical slip while allowing true phase accumulation!
+        // bounded to (now - minIntervalMs) to avoid excessive historical slip while allowing true phase accumulation!
         this.lastScheduledTimeMs = Math.max(now - minIntervalMs, earliestNextSlot);
         this.lastScheduledPtsUs = ptsUs;
         return;
@@ -503,12 +513,13 @@ export class FramePacer {
           ? this.avSync.getCurrentPlayingAudioPtsUs()
           : null;
 
-      // Only drop truly stale video on major timeline discontinuity (> 1500ms behind)
+      // Only drop truly stale video on major timeline discontinuity (1500ms..60000ms behind)
       if (playingAudioPts !== null && playingAudioPts > 0) {
-        while (
-          this.frameQueue.length > 1 &&
-          (playingAudioPts - this.frameQueue[0].ptsUs) / 1000 > 1500
-        ) {
+        while (this.frameQueue.length > 1) {
+          const leadMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
+          if (leadMs <= 1500 || leadMs >= FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS) {
+            break;
+          }
           const stale = this.frameQueue.shift();
           if (stale) {
             try {
@@ -570,13 +581,14 @@ export class FramePacer {
         ? this.avSync.getCurrentPlayingAudioPtsUs()
         : null;
 
-    // If playback queue is severely behind master clock (> 2000ms), drop oldest stale frames to catch up smoothly
+    // If playback queue is severely behind master clock (2000ms..60000ms), drop oldest stale frames to catch up smoothly
     if (playingMasterPts !== null && playingMasterPts > 0 && this.frameQueue.length > 1) {
       let droppedAny = false;
-      while (
-        this.frameQueue.length > 1 &&
-        (playingMasterPts - this.frameQueue[0].ptsUs) / 1000 > 2000
-      ) {
+      while (this.frameQueue.length > 1) {
+        const leadMs = (playingMasterPts - this.frameQueue[0].ptsUs) / 1000;
+        if (leadMs <= 2000 || leadMs >= FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS) {
+          break;
+        }
         const stale = this.frameQueue.shift();
         if (stale) {
           droppedAny = true;
@@ -642,6 +654,43 @@ export class FramePacer {
         if (typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function') {
           const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
           if (playingAudioPts !== null && playingAudioPts > 0) {
+            // Issue #112: 音声先行 (映像遅れ) は負方向シフトが 1x 間隔クランプで構造的に
+            // 吸収できないため、再生中音声より古いフレームを映像側で上限付き破棄する。
+            const staleDropTargetUs = playingAudioPts - FramePacer.AV_SYNC_STALE_DROP_TOLERANCE_US;
+            let staleDropped = 0;
+            // 真の backlog (キュー滞留 > 8 フレーム) かつ 150ms 超のズレのみ対象。
+            // 到着 1x ペースで常に先頭が now に張り付く場合のみ PLL 負方向クランプが発動するため、
+            // 正常な 1x 到着 (スケジュールに余裕がある状態) では従来どおり PLL 圧縮に任せる。
+            const backlogLagMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
+            while (
+              this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
+              staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
+              backlogLagMs > FramePacer.AV_SYNC_MAX_ERROR_MS &&
+              backlogLagMs < FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS
+            ) {
+              const head = this.frameQueue[0];
+              if (head.ptsUs > 0 && head.ptsUs < staleDropTargetUs) {
+                this.frameQueue.shift();
+                try {
+                  head.frame.close();
+                } catch {}
+                this.onFrameProcessed?.();
+                staleDropped++;
+              } else {
+                break;
+              }
+            }
+            if (staleDropped > 0 && this.telemetry?.isEnabled()) {
+              if (now - this.lastStaleDropLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
+                this.telemetry.recordAvSync('stale_video_drop', {
+                  droppedCount: staleDropped,
+                  playingAudioPts,
+                  queueLength: this.frameQueue.length,
+                });
+                this.lastStaleDropLogTimeMs = now;
+              }
+            }
+
             const nextVideoPts = this.frameQueue[0].ptsUs;
             const currentHeadSchedule = this.frameQueue[0].scheduledRenderTime + totalShift;
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
@@ -653,7 +702,7 @@ export class FramePacer {
             const maxNegativeShiftAllowed = Math.min(0, earliestHeadTime - currentHeadSchedule);
 
             if (Math.abs(syncErrorMs) > FramePacer.AV_SYNC_MAX_ERROR_MS) {
-              // 150ms以上の顕著なズレ:
+              // 150ms超の顕著なズレ:
               // 重要: プラス/マイナス両方向のスルーレートを ±2.0ms/frame に厳格にクランプすることで、
               // 描画間隔（約31.3ms〜35.3ms）を維持し、画面フリーズや急激な前倒しによる激しいカクつき（スタッター）を
               // 完全に防ぎながら、音声へスムーズに吸着・同期させる。
@@ -781,9 +830,13 @@ export class FramePacer {
 
   /**
    * Explicitly discard catchup buffer and jump to real-time live stream.
+   * preserveCushion=true はサーバー起因の早送り用: 自動適応クッション (autoCushionMs) を
+   * ゼロにせず維持し、直後の微小ジッタでバッファリング状態 (WAIT) に落ちるのを防ぐ (Issue #112)。
    */
-  public jumpToLive(): void {
-    this.autoCushionMs = 0;
+  public jumpToLive(preserveCushion = false): void {
+    if (!preserveCushion) {
+      this.autoCushionMs = 0;
+    }
     this.quietFramesCount = 0;
     this.flushQueue();
   }
@@ -826,6 +879,7 @@ export class FramePacer {
     this.pllNudgeSuppressedCount = 0;
     this.lastLargeShiftLogTimeMs = -Infinity;
     this.largeShiftSuppressedCount = 0;
+    this.lastStaleDropLogTimeMs = -Infinity;
   }
 
   public resetFirstFrame(): void {

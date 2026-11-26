@@ -82,13 +82,28 @@ describe('power-actions REST functions & error handling', () => {
     expect(createdToasts.some((t) => t.innerHTML.includes('Network offline'))).toBe(true);
   });
 
-  it('encoderRestart dispatches tesroid:stream-reset on 200 OK and suppresses it on HTTP failure', async () => {
+  it('encoderRestart dispatches tesroid:stream-reset on 200 OK and suppresses it on skipped or HTTP failure', async () => {
     await encoderRestart(token);
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/encoder/restart', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(dispatchedEvents).toEqual(['tesroid:stream-reset']);
+
+    // Issue #112 F-6: サーバーが健康な LIVE 状態のため全体再起動をスキップした場合、
+    // クライアント側で tesroid:stream-reset (decoder.reset) を発火してはならない
+    dispatchedEvents = [];
+    createdToasts = [];
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ success: true, restarted: false, skipped: true }),
+    });
+    await encoderRestart(token);
+    expect(dispatchedEvents).toEqual([]);
+    expect(createdToasts.some((t) => t.innerHTML.includes('最新LIVE映像へ同期しました'))).toBe(
+      true,
+    );
 
     dispatchedEvents = [];
     createdToasts = [];

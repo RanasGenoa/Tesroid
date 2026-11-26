@@ -21,7 +21,7 @@ export interface ClientQualityMetrics {
   // AV Sync
   avDriftMs: number;
 
-  // Issue #11 (D5): 1フレーム描画処理時間の中央値/95パーセンタイル (ms)
+  // Issue #11: 1フレーム描画処理時間の中央値/95パーセンタイル (ms)
   frameProcessP50Ms?: number;
   frameProcessP95Ms?: number;
 

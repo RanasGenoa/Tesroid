@@ -17,7 +17,7 @@ export interface ClientQualityMetrics {
 
   avDriftMs: number;
 
-  // Issue #11 (D5): 1フレーム描画処理時間の中央値/95パーセンタイル (ms)。0 = 計測サンプルなし
+  // Issue #11: 1フレーム描画処理時間の中央値/95パーセンタイル (ms)。0 = 計測サンプルなし
   frameProcessP50Ms?: number;
   frameProcessP95Ms?: number;
 
@@ -38,7 +38,7 @@ export class MetricsCollector {
   private windowAudioPackets = 0;
   private windowMinFps = 999;
   private windowMaxFps = 0;
-  // Issue #11 (D5): ウィンドウ内の 1 フレーム描画所要時間サンプル (ms)
+  // Issue #11: ウィンドウ内の 1 フレーム描画所要時間サンプル (ms)
   private windowFrameRenderTimes: number[] = [];
   private static readonly MAX_FRAME_TIME_SAMPLES = 1200;
   private lastReportTime: number;
@@ -71,7 +71,7 @@ export class MetricsCollector {
     this.droppedFrames++;
   }
 
-  /** Issue #11 (D5): 1フレームの canvas 描画所要時間をサンプル収集する。 */
+  /** Issue #11: 1フレームの canvas 描画所要時間をサンプル収集する。 */
   public recordFrameProcessed(durationMs: number): void {
     if (!Number.isFinite(durationMs) || durationMs < 0) return;
     if (this.windowFrameRenderTimes.length < MetricsCollector.MAX_FRAME_TIME_SAMPLES) {
@@ -123,7 +123,7 @@ export class MetricsCollector {
 
       const renderFps = Math.round((this.windowFrames / elapsedSec) * 10) / 10;
       const bitrateKbps = Math.round((this.windowVideoBytes * 8) / elapsedSec / 1000);
-      // Issue #11 (D5): 描画処理時間のパーセンタイル (サンプル 0 の場合は 0)
+      // Issue #11: 描画処理時間のパーセンタイル (サンプル 0 の場合は 0)
       const sortedFrameTimes = [...this.windowFrameRenderTimes].sort((a, b) => a - b);
 
       const metrics: ClientQualityMetrics = {

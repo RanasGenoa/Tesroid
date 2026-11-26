@@ -3,7 +3,7 @@ import { PlaybackBuffer } from '../src/encoder/playback-buffer.js';
 import { AUDIO_FLAGS, VIDEO_FLAGS } from '../src/ws/protocol.js';
 
 describe('PlaybackBuffer Ring Buffer Tests', () => {
-  it('should store video and audio frames and record configs', () => {
+  it('should cache configs without buffering them as frames (Issue #111 F-1b)', () => {
     const buffer = new PlaybackBuffer({ bufferSeconds: 10, maxBytes: 1024 * 1024 });
 
     const spsPps = Buffer.from([0, 0, 0, 1, 0x67, 0x42, 0, 0]);
@@ -18,11 +18,39 @@ describe('PlaybackBuffer Ring Buffer Tests', () => {
 
     expect(buffer.getCachedSpsPps()).toEqual(spsPps);
     expect(buffer.getCachedOpusHead()).toEqual(opusHead);
-    expect(buffer.getVideoCount()).toBe(2);
-    expect(buffer.getAudioCount()).toBe(2);
-    expect(buffer.getCurrentBytes()).toBe(
-      spsPps.length + keyframe.length + opusHead.length + audioData.length,
-    );
+    // Issue #111 (F-1b 根因): CONFIG (pts: 0n) はフレーム配列へ混入させない。
+    // 混入すると getBufferedDurationMs() と GOP prune の PTS エポックが汚染された。
+    expect(buffer.getVideoCount()).toBe(1);
+    expect(buffer.getAudioCount()).toBe(1);
+    expect(buffer.getCurrentBytes()).toBe(keyframe.length + audioData.length);
+
+    // 再接続時に config は frames ではなく configVideo/configAudio で再送される
+    const catchup = buffer.getFramesToCatchup(0n);
+    expect(catchup).not.toBeNull();
+    expect(catchup!.configVideo).toEqual(spsPps);
+    expect(catchup!.configAudio).toEqual(opusHead);
+    expect(catchup!.frames.every((f) => (f.flags & VIDEO_FLAGS.CONFIG) === 0)).toBe(true);
+    expect(catchup!.frames.every((f) => (f.flags & AUDIO_FLAGS.CONFIG) === 0)).toBe(true);
+  });
+
+  it('should expose latest video pts and keep duration immune to CONFIG packets (Issue #111)', () => {
+    const buffer = new PlaybackBuffer({ bufferSeconds: 60, maxBytes: 1024 * 1024 });
+
+    expect(buffer.getLatestVideoPts()).toBeNull();
+
+    buffer.addVideo(VIDEO_FLAGS.KEYFRAME, 1_000_000n, Buffer.alloc(50));
+    buffer.addAudio(AUDIO_FLAGS.CONFIG, 0n, Buffer.from('OpusHead12345678'));
+    buffer.addVideo(VIDEO_FLAGS.CONFIG, 0n, Buffer.alloc(10));
+    buffer.addVideo(0, 2_000_000n, Buffer.alloc(50));
+    buffer.addAudio(AUDIO_FLAGS.KEYFRAME, 1_500_000n, Buffer.alloc(20));
+
+    expect(buffer.getLatestVideoPts()).toBe(2_000_000n);
+    // F-1b 非回帰: backlog ms 表記がフレーム数と無関係な桁異常 (pts:0n 混入) を起こさない
+    expect(buffer.getBufferedDurationMs()).toBe(1000);
+
+    // clear() は latest もリセット
+    buffer.clear();
+    expect(buffer.getLatestVideoPts()).toBeNull();
   });
 
   it('should prune oldest GOP when duration limit is exceeded while never pruning the only active GOP', () => {

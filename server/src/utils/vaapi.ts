@@ -81,8 +81,8 @@ export function resolveEncoderMode(override?: string): EncoderMode {
 }
 
 /**
- * Selects the initial encoder backend from capability-gate results (Issue #36 Phase 3).
- * `auto` prefers VAAPI (Intel/AMD), then NVENC (NVIDIA), and finally libx264 software.
+ * Selects the initial encoder backend from capability-gate results (Issue #36).
+ * `auto` prefers VAAPI (Intel/AMD/D3D12), then NVENC (NVIDIA), and finally libx264 software.
  */
 export function selectInitialEncoderBackend(
   encoderMode: EncoderMode,

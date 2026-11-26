@@ -41,7 +41,7 @@ export class AdaptiveJitterController {
 
   /**
    * AU（映像フレーム）到着を記録し、直近到着間隔からジッタを更新
-   * ※ 静止画明け等の正常な間隔（例: > 350ms）は回線ジッタではないためフィルタリング
+   * ※ 静止画明け等の大きな間隔（> 850ms）は回線ジッタではないため除外
    */
   public recordVideoArrival(timestamp?: number): void {
     if (this.isCatchup) return;
@@ -110,7 +110,7 @@ export class AdaptiveJitterController {
     const estimatedJitter = Math.max(arrivalJitter, rttJitter);
 
     if (estimatedJitter >= this.jitterThresholdMs) {
-      // 閾値超過時: 80〜400ms で段階的に適用
+      // 閾値以上時: minDelayMs〜maxDelayMs（デフォルト 60〜240ms）の範囲で適用
       const clamped = Math.min(
         this.maxDelayMs,
         Math.max(this.minDelayMs, Math.round(estimatedJitter)),
@@ -123,7 +123,7 @@ export class AdaptiveJitterController {
   }
 
   /**
-   * 急峻な段差を避け、緩やかなランプ（ランプアップ: 1フレームずつ、ランプダウン: 30秒以内）で遅延を調整
+   * 急峻な段差を避け、緩やかなランプ（ランプアップ: 1フレーム相当あたり最大 maxRampUpPerFrameMs、ランプダウン: quietRecoveryTimeSec 以内）で遅延を調整
    */
   public stepRamp(now?: number): void {
     const currentTime = now ?? performance.now();
@@ -148,8 +148,8 @@ export class AdaptiveJitterController {
       const maxIncrease = this.maxRampUpPerFrameMs * frameEquivalent;
       this.currentDelayMs = Math.min(this.targetDelayMs, this.currentDelayMs + maxIncrease);
     } else if (this.currentDelayMs > this.targetDelayMs) {
-      // ランプダウン（静穏時: 30秒以内で 400ms -> 0ms へ復帰）
-      const drainRateMsPerSec = this.maxDelayMs / this.quietRecoveryTimeSec; // 例: 400 / 25 = 16ms/sec
+      // ランプダウン（静穏時: quietRecoveryTimeSec 以内で maxDelayMs -> 0ms へ復帰）
+      const drainRateMsPerSec = this.maxDelayMs / this.quietRecoveryTimeSec; // デフォルト例: 240 / 12 = 20ms/sec
       const maxDecrease = (drainRateMsPerSec * elapsedMs) / 1000;
       this.currentDelayMs = Math.max(this.targetDelayMs, this.currentDelayMs - maxDecrease);
     }
@@ -195,7 +195,7 @@ export class AdaptiveJitterController {
   }
 
   /**
-   * 再接続時やストリーム切断時の深さリセット
+   * 再接続時やストリーム切断時の遅延状態・計測履歴のリセット
    */
   public reset(): void {
     this.arrivalIntervals = [];

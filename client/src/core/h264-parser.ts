@@ -50,7 +50,7 @@ export class H264Parser {
 
   /**
    * Convert Annex-B NAL units to AVCC format (4-byte length prefix)
-   * Parameter sets (SPS/PPS) are filtered out since they are passed via AVCDecoderConfigurationRecord.
+   * Parameter sets (SPS/PPS) and AUD are filtered out since SPS/PPS are passed via AVCDecoderConfigurationRecord.
    * Optimized single-pass parser with zero intermediate object allocations.
    */
   public static annexBToAvcc(data: Uint8Array): Uint8Array {

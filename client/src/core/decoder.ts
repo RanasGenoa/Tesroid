@@ -183,7 +183,7 @@ export class VideoStreamDecoder {
   }
 
   /**
-   * Trim oldest frames up to the next available KEYFRAME if buffer exceeds duration or byte limits
+   * Trim oldest frames up to the next available KEYFRAME if buffer exceeds packet count, duration, or byte limits
    */
   private trimPendingPackets(): void {
     while (this.pendingPackets.length > 1) {
@@ -334,7 +334,9 @@ export class VideoStreamDecoder {
 
   /**
    * Discard older buffered packets when jumping to LIVE.
-   * If a recent KEYFRAME exists in pendingPackets, skip directly to it; otherwise clear pending and wait for next KEYFRAME.
+   * If a recent KEYFRAME exists in pendingPackets, skip directly to it.
+   * If no KEYFRAME exists and pending backlog is small (< 300ms and < 10 packets), keep decoding
+   * seamlessly rather than setting waitingForKeyframe=true (which stalls up to a full 2s GOP).
    */
   public flushPendingForLiveJump(): void {
     if (this.pendingPackets.length === 0) return;
@@ -350,7 +352,7 @@ export class VideoStreamDecoder {
     if (latestKeyframeIdx >= 0) {
       this.pendingPackets = this.pendingPackets.slice(latestKeyframeIdx);
       this.pendingBytes = this.pendingPackets.reduce((acc, p) => acc + p.data.length, 0);
-    } else {
+    } else if (this.pendingPackets.length >= 10 || this.getPendingBufferedMs() >= 300) {
       this.pendingPackets = [];
       this.pendingBytes = 0;
       this.waitingForKeyframe = true;

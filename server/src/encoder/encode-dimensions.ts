@@ -9,9 +9,9 @@ export interface EncodeDimensions {
 
 /**
  * レイアウト (キャプチャ) 寸法と resolutionScale からエンコード出力寸法を計算する。
- * scale >= 1 または元寸法と同等になる場合は null (= 現行と同一パス、フィルタ追加なし)。
- * H.264 マクロブロック整合のため幅は 8 の倍数・高さは 2 の倍数へ切り下げ、
- * 実用下限 (320x240) を下限とする。
+ * scale が非有限値・1.0 以上、または丸め後が元寸法以上の場合は null（スケーリングなし・フィルタ追加なし）を返す。
+ * コーデック / YUV420p アライメントのため幅は 8 の倍数・高さは 2 の倍数へ切り下げ、
+ * 実用下限を 320x240 とする。
  */
 export function computeEncodeDimensions(
   layoutWidth: number,

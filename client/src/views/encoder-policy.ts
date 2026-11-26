@@ -48,13 +48,13 @@ export function visiblePresetIds(status: EncoderStatusPayload | null): PresetId[
   if (backend === 'software') {
     return [...CPU_PRESET_IDS, 'custom'];
   }
-  // vaapi および不明時はGPUプリセット（既存の既定挙動）
+  // vaapi / nvenc および不明時はGPUプリセット（既存の既定挙動）
   return [...GPU_PRESET_IDS, 'custom'];
 }
 
 /**
  * 保存済みプリセットが現在のバックエンドで無効な場合、表示上は 'custom' 相当として開く。
- * （サーバー側の保存値自体は変更しない — 保存時に performancePreset を送信しないことで維持する）
+ * （サーバー側の保存値自体は変更しない — 未編集のまま保存する際は元の保存値をそのまま送信して維持する）
  */
 export function resolveDisplayPreset(
   savedPreset: string | undefined,
@@ -82,7 +82,7 @@ const ENCODER_MODE_LABELS: Record<string, string> = {
 
 /**
  * 使用中エンコーダー情報の日本語表示文字列を生成する。
- * 機密（IP・パス等）は含まず、バックエンド種別とモードのみを表示する。
+ * 機密（IP・パス等）は含まず、バックエンド種別・モード・出力解像度・フォールバック状態を表示する。
  */
 export function describeEncoderStatus(status: EncoderStatusPayload | null): string {
   if (!status || typeof status.backend !== 'string') {
@@ -112,7 +112,7 @@ export function describeEncoderStatus(status: EncoderStatusPayload | null): stri
     const reason = FALLBACK_REASON_LABELS[status.lastFallback.option] || status.lastFallback.option;
     fallback = ` ⚠ ${reason}`;
   }
-  // Issue #11: 実エンコード出力寸法を併記 (レイアウト縮小と異なる場合のみ縮小表示)
+  // Issue #11: 実エンコード出力寸法を併記（レイアウト寸法と異なる場合は縮小元も表示）
   let dims = '';
   if (
     typeof status.encodeWidth === 'number' &&

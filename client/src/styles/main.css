@@ -420,6 +420,14 @@ canvas#stream-canvas {
   color: #7dd3fc;
 }
 
+/* Issue #111 Buffer-Hold Pause: サーバー生成停止中 (琥珀色で HOLD を明示) */
+.hud-live-btn.is-hold {
+  background: rgba(250, 204, 21, 0.18);
+  border-color: #facc15;
+  color: #fde047;
+  box-shadow: 0 0 8px rgba(250, 204, 21, 0.3);
+}
+
 .hud-live-btn:active {
   transform: scale(0.97);
 }

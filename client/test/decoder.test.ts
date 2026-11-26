@@ -513,4 +513,35 @@ describe('VideoStreamDecoder - Reconnection & Keyframe Gate', () => {
     expect(downstreamQueueSize).toBe(18);
     expect(decoder.getPendingPacketsCount()).toBe(1);
   });
+
+  it('flushPendingForLiveJump preserves tiny delta-only pending queue to avoid 2s GOP stall, but drops large backlog', async () => {
+    const decoder = new VideoStreamDecoder(mockTarget);
+    const spsPpsKey = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x88, 0x84, 0x00,
+    ]);
+    const avccDelta = new Uint8Array([0, 0, 0, 4, 0x41, 0x9a, 0x12, 0x34]);
+
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 1_000_000n, spsPpsKey);
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Saturate downstream so packets queue in pendingPackets
+    decoder.setDownstreamQueueLengthProvider(() => 20);
+    await decoder.handlePacket(VIDEO_FLAGS.AVCC, 1_016_667n, avccDelta);
+    await decoder.handlePacket(VIDEO_FLAGS.AVCC, 1_033_333n, avccDelta);
+    expect(decoder.getPendingPacketsCount()).toBe(2);
+
+    // Tiny backlog (< 10 packets & < 300ms) with no keyframe: keep decoding seamlessly
+    decoder.flushPendingForLiveJump();
+    expect(decoder.getPendingPacketsCount()).toBe(2);
+    expect((decoder as any).waitingForKeyframe).toBe(false);
+
+    // Large backlog (>= 300ms): drop pending and wait for next keyframe
+    for (let i = 3; i <= 25; i++) {
+      await decoder.handlePacket(VIDEO_FLAGS.AVCC, BigInt(1_000_000 + i * 16_667), avccDelta);
+    }
+    decoder.flushPendingForLiveJump();
+    expect(decoder.getPendingPacketsCount()).toBe(0);
+    expect((decoder as any).waitingForKeyframe).toBe(true);
+  });
 });

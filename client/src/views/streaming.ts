@@ -255,8 +255,7 @@ export function renderStreamingView(
   let lastPacketReceivedTime = performance.now();
   let pingId = 0;
   // Issue #105: RTT サンプルの鮮度管理。CATCHUP バーストやリンク輻輳で PONG が長時間届かない場合、
-  // 最後の instantRtt をリアルタイム計測値として表示・報告し続ける（凍結）のを防ぐ
-  // （2026-11-25 実測: 531ms が 4 メトリクス窓にわたり凍結表示された）。
+  // 最後の instantRtt をリアルタイム計測値として表示・報告し続ける（凍結）のを防ぐ。
   let lastPongAtMs = 0;
   // 鮮度切れで破棄した後、汚染 PONG だけの状態で minRtt から自動的に復活させないためのフラグ
   // （Issue #24 の CATCHUP 初期化分岐が古い凍結値を再導入するのを防ぎ、真に有効なサンプルが
@@ -267,8 +266,8 @@ export function renderStreamingView(
   /**
    * Issue #105: RTT 鮮度切れ判定。PONG の鮮度タイムスタンプが閾値超過なら最後の計測値を
    * 破棄し、HUD・メトリクスとも未計測として扱う（HUD 表示は呼び出し側の updateHudConnStatus で更新）。
-   * PONG ハンドラと ackTimer の両方から呼ぶことで、汚染 PONG が届き続ける状態でも
-   * 古い値の余分な報告・凍結表示を発生させない。
+   * PONG ハンドラと定期更新（updateHudConnStatus）の両方から呼ぶことで、汚染 PONG が
+   * 届き続ける状態でも古い値の余分な報告・凍結表示を発生させない。
    */
   function clearStaleRttIfExpired(now: number): void {
     if (instantRtt > 0 && now - lastPongAtMs > RTT_STALE_MS) {
@@ -284,14 +283,14 @@ export function renderStreamingView(
   let currentFps = 30;
   let currentBitrate = 1000000;
 
-  // Issue #11 (D4): 標準の既定選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
+  // Issue #11: 標準の既定 FPS 選択肢。サーバーの clientProfile 実効値 (fpsOptions) で実行時に更新される
   let fpsOptions = [24, 30, 60];
   // 500k は lightweight プロファイルの bitrateDefault と一致させる (HUD 循環で段階飛ばし防止)
   const bitrateOptions = [250000, 500000, 750000, 1000000, 1500000, 2000000];
 
   const applyFpsOptionsFromServer = (raw: unknown): void => {
     if (!Array.isArray(raw)) return;
-    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 24 && n <= 60); // D2 下限
+    const opts = raw.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 24 && n <= 60); // 許容範囲: 24〜60 FPS
     if (opts.length > 0) {
       fpsOptions = [...new Set(opts)].sort((a, b) => a - b);
     }
@@ -366,6 +365,9 @@ export function renderStreamingView(
   };
 
   const renderer = new CanvasRenderer(canvas);
+  renderer.onFrameDrawn = (fps: number) => {
+    metricsCollector.recordFrameRendered(fps > 0 ? fps : undefined);
+  };
   const framePacer = new FramePacer(renderer, targetFps, avSync);
   let activeDecoder: VideoStreamDecoder | null = null;
   const applyTargetFps = (fps: number) => {
@@ -554,7 +556,7 @@ export function renderStreamingView(
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
-        // Issue #11: HUD の FPS 選択肢をクライアント負荷プロファイルの実効値へ (D4 裁定)
+        // Issue #11: HUD の FPS 選択肢をクライアント負荷プロファイルの実効値へ同期
         applyFpsOptionsFromServer(data?.clientProfileResolved?.fpsOptions);
         if (data?.stream?.maxFps) {
           applyTargetFps(Number(data.stream.maxFps));
@@ -639,7 +641,7 @@ export function renderStreamingView(
   bitrateToggleBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     let idx = bitrateOptions.indexOf(currentBitrate);
-    if (idx === -1) idx = bitrateOptions.indexOf(1_000_000); // 保存値がグリッド外なら 1.0M から循環再開
+    if (idx === -1) idx = bitrateOptions.indexOf(1_000_000); // 保存値が候補外なら 1.0M を起点に次段階 (1.5M) へ循環
     const nextIdx = (idx + 1) % bitrateOptions.length;
     currentBitrate = bitrateOptions[nextIdx];
     updateToggleButtons();
@@ -718,10 +720,11 @@ export function renderStreamingView(
   let serverCatchupQueueMs = 0;
   let serverBufferMs = 0;
   let serverMode: 'LIVE' | 'CATCHUP' = 'LIVE';
+  // Issue #111 Buffer-Hold Pause: サーバーが自動一時停止中の状態 (PONG/BUFFER_HOLD で同期)
+  let serverHoldPaused = false;
 
   const decoder = new VideoStreamDecoder(
     (frame: VideoFrame) => {
-      metricsCollector.recordFrameRendered();
       framePacer.queueFrame(frame);
       hideOverlay();
     },
@@ -756,9 +759,16 @@ export function renderStreamingView(
     );
   }
 
-  // Issue #11 (D5): クライアント処理負荷のベースライン比較用 (描画所要時間 p50/p95)
+  // Issue #11: クライアント処理負荷計測用（描画所要時間 p50/p95）
   framePacer.onFrameRenderTimed = (durationMs: number) => {
     metricsCollector.recordFrameProcessed(durationMs);
+  };
+
+  // Issue #112: FramePacer 内での破棄フレーム数を ClientMetrics へ計上する
+  framePacer.onFrameDropped = () => {
+    if (typeof metricsCollector.recordFrameDropped === 'function') {
+      metricsCollector.recordFrameDropped();
+    }
   };
 
   framePacer.onFrameProcessed = () => {
@@ -780,8 +790,9 @@ export function renderStreamingView(
     }
   };
 
-  // Issue #106: 映像経路のバッファ集計の単一正典関数。HUD 表示 (getTotalBufferedBehindMs) と
-  // サーバーへの BUFFER_FEEDBACK 報告 (sendBufferFeedback / handleOpen) の二重定義を解消する。
+  // Issue #106: 映像経路のバッファ残量を集計する共通関数。
+  // HUD 表示 (updateHudLiveStatus)、遅延判定 (getTotalBufferedBehindMs)、
+  // BUFFER_FEEDBACK 報告 (sendBufferFeedback)、再接続/切断処理 (handleOpen / handleClose) で定義を統一する。
   const getVideoPathBufferedMs = (): number => {
     const pendingBufferedMs =
       typeof decoder.getPendingBufferedMs === 'function' ? decoder.getPendingBufferedMs() : 0;
@@ -872,7 +883,7 @@ export function renderStreamingView(
     setTitleIfChanged(hudConn, targetTitle);
   };
 
-  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'live' | '' = '';
+  let lastHudLiveState: 'interactive' | 'buffering' | 'catchup' | 'hold' | 'live' | '' = '';
 
   const updateHudLiveStatus = () => {
     if (!hudLiveBtn || !hudLiveText || !hudLiveDot) return;
@@ -888,21 +899,24 @@ export function renderStreamingView(
     const localSec = (localMs / 1000).toFixed(1);
     const serverSec = (serverMs / 1000).toFixed(1);
 
-    const currentState = isInteractive
-      ? 'interactive'
-      : isBuffering
-        ? 'buffering'
-        : localMs >= 800 || serverMs >= 600
-          ? 'catchup'
-          : 'live';
+    // Issue #111: サーバーが Buffer-Hold Pause 中は最優先で HOLD を表示（タップで即 LIVE 同期）
+    const currentState = serverHoldPaused
+      ? 'hold'
+      : isInteractive
+        ? 'interactive'
+        : isBuffering
+          ? 'buffering'
+          : localMs >= 800 || serverMs >= 600
+            ? 'catchup'
+            : 'live';
 
     if (currentState !== lastHudLiveState) {
       lastHudLiveState = currentState;
-      hudLiveBtn.classList.remove('is-catchup', 'is-buffering');
+      hudLiveBtn.classList.remove('is-catchup', 'is-buffering', 'is-hold');
       if (currentState === 'buffering') {
         hudLiveBtn.classList.add('is-buffering');
-      } else if (currentState === 'catchup') {
-        hudLiveBtn.classList.add('is-catchup');
+      } else if (currentState === 'catchup' || currentState === 'hold') {
+        hudLiveBtn.classList.add(currentState === 'hold' ? 'is-hold' : 'is-catchup');
       }
 
       const targetDotClass =
@@ -913,7 +927,11 @@ export function renderStreamingView(
     let targetText = 'LIVE';
     let targetTitle = 'リアルタイム再生中 (タップで最新LIVE同期・再エンコード)';
 
-    if (currentState === 'interactive') {
+    if (currentState === 'hold') {
+      // Issue #111: サーバー自動一時停止中。生成を止め、クライアント側の再生消費による追い上げを待っている状態
+      targetText = `HOLD L:${localSec}s S:${serverSec}s`;
+      targetTitle = `サーバーが回線途絶・輻輳で生成を一時停止中 (ローカル: ${localSec}秒, サーバー残余: ${serverSec}秒) — 再生の追い上げで自動再開、タップで最新LIVE同期`;
+    } else if (currentState === 'interactive') {
       targetText = 'DIRECT LIVE';
       targetTitle =
         '操作優先: バッファゼロ・超低遅延モードで動作中 (タップで最新LIVE同期・再エンコード)';
@@ -969,9 +987,9 @@ export function renderStreamingView(
     } else if (typeof audioPlayer.resetJitterBuffer === 'function') {
       audioPlayer.resetJitterBuffer();
     }
-    // Issue #103: ローカルキューを空にしても、ジャンプ前にサーバーが送信済みで経路上を漂流する
+    // Issue #103: ローカルキューを空にしても、ジャンプ前にサーバーが送信済みで経路上に残っている
     // 古い音声（straggler）が到着して ~2 秒分の固定 A/V オフセットを作る。ライブエッジ基準の
-    // 暫定バリアを設定し、LIVE_JUMPED の dropAudioBeforePts で権威値へ更新する。
+    // 暫定バリアを設定し、LIVE_JUMPED の dropAudioBeforePts でサーバー基準値へ更新する。
     if (typeof audioPlayer.setLiveEdgeBarrier === 'function') {
       const nowMs = performance.now();
       let barrierUs = 0;
@@ -992,6 +1010,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    serverHoldPaused = false;
     lastHudLiveState = '';
     if (notifyServer && wsClient.isConnected()) {
       wsClient.send(ClientProtocol.packCommand({ type: 'JUMP_TO_LIVE' }));
@@ -999,6 +1018,19 @@ export function renderStreamingView(
     updateHudLiveStatus();
     if (!silent) {
       showToast('未再生バッファを破棄し、最新LIVE映像へ同期しました', 'info');
+    }
+  };
+
+  // Issue #112: サーバー起因の LIVE 復帰 (LIVE_JUMPED / CATCHUP→LIVE) で音声側のみ PTS バリアにより
+  // 古いパケットを破棄すると、映像側 (decoder pendingPackets + framePacer queue) に古いフレームが残り
+  // 音声先行の A/V ズレが固定化する。executeJumpToLive と同様に映像側もライブエッジへ早送りする。
+  // サーバー起因のため自動適応クッションは維持 (preserveCushion=true) し、直後の不要な WAIT 遷移を防ぐ。
+  const fastForwardVideoToLiveEdge = () => {
+    if (typeof decoder.flushPendingForLiveJump === 'function') {
+      decoder.flushPendingForLiveJump();
+    }
+    if (typeof framePacer.jumpToLive === 'function') {
+      framePacer.jumpToLive(true);
     }
   };
 
@@ -1072,7 +1104,7 @@ export function renderStreamingView(
   canvas.addEventListener('pointerdown', autoUnlockAudio);
   window.addEventListener('pointerdown', autoUnlockAudio, { capture: true });
 
-  // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport above bottom HUD)
+  // 4. Dynamic Resolution Fit (Zero-Black-Bar, dedicated viewport below top HUD)
   let resizeTimer: any = null;
   const sendResize = (immediate: boolean = false) => {
     if (!isEffectivelyPrimary()) return;
@@ -1197,10 +1229,20 @@ export function renderStreamingView(
     }, 50);
   };
 
+  // Full pipeline teardown paths (STREAM_RESET / PAUSE_BROWSER / standby / disconnect) must close AudioDecoder
+  // alongside the jitter buffer so new PTS epochs do not inherit Chromium's prior AudioTimestampHelper offset.
+  const resetAudioForStreamReset = () => {
+    if (typeof audioPlayer.resetDecoder === 'function') {
+      audioPlayer.resetDecoder();
+    } else {
+      audioPlayer.resetJitterBuffer();
+    }
+  };
+
   // Immediate Stop Action
   const triggerStop = () => {
     wsClient.send(ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));
-    audioPlayer.resetJitterBuffer();
+    resetAudioForStreamReset();
     if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
       audioPlayer.clearLiveEdgeBarrier();
     }
@@ -1321,7 +1363,7 @@ export function renderStreamingView(
     } else {
       framePacer.resetFirstFrame();
     }
-    audioPlayer.resetJitterBuffer();
+    resetAudioForStreamReset();
     if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
       // Issue #103: ストリーム再構築では PTS が再基準化されるため、旧ストリーム基準のバリアは無効化する
       audioPlayer.clearLiveEdgeBarrier();
@@ -1337,6 +1379,7 @@ export function renderStreamingView(
     serverCatchupQueueMs = 0;
     serverBufferMs = 0;
     serverMode = 'LIVE';
+    serverHoldPaused = false;
     updateHudLiveStatus();
     if (isSecondarySession && !isPrimarySessionActive) {
       showRearStandbyScreen();
@@ -1375,7 +1418,17 @@ export function renderStreamingView(
         serverBufferMs = Math.max(0, msg.serverBufferMs);
       }
       if (msg.serverMode === 'CATCHUP' || msg.serverMode === 'LIVE') {
+        const prevServerMode = serverMode;
         serverMode = msg.serverMode;
+        // Issue #112: サーバー起因の CATCHUP→LIVE 完了時は映像側も同一境界へ早送りし、
+        // 古い映像キューの残存による音声先行ドリフトを防ぐ
+        if (prevServerMode === 'CATCHUP' && serverMode === 'LIVE') {
+          fastForwardVideoToLiveEdge();
+        }
+      }
+      // Issue #111: Buffer-Hold Pause 中フラグを PONG 毎に同期（旧サーバーでは未定義=false）
+      if (typeof msg.holdPaused === 'boolean') {
+        serverHoldPaused = msg.holdPaused;
       }
 
       // 瞬間ネットワーク往復時間（Instantaneous RTT）の測定と表示 (Issue 24):
@@ -1435,7 +1488,7 @@ export function renderStreamingView(
       updateHudLiveStatus();
     } else if (msg.type === 'PRIMARY_JUMP_TO_LIVE') {
       executeJumpToLive(true, false);
-      // Issue #103: セカンダリ側も、サーバーが送る権威値で暫定バリアを上書きできる
+      // Issue #103: セカンダリ側も、サーバーが送る基準 PTS で暫定バリアを上書きする
       if (
         typeof msg.dropAudioBeforePts === 'number' &&
         Number.isFinite(msg.dropAudioBeforePts) &&
@@ -1444,7 +1497,7 @@ export function renderStreamingView(
         audioPlayer.setLiveEdgeBarrier(msg.dropAudioBeforePts);
       }
     } else if (msg.type === 'STREAM_SETTINGS_UPDATED') {
-      // Issue #11: プロファイル変更で HUD の FPS 選択肢もライブ更新 (D4 裁定)
+      // Issue #11: プロファイル変更時に HUD の FPS 選択肢をライブ更新
       applyFpsOptionsFromServer(msg.stream?.fpsOptions);
       let streamSettingsChanged = false;
       if (typeof msg.stream?.maxFps === 'number' && Number.isFinite(msg.stream.maxFps)) {
@@ -1470,14 +1523,23 @@ export function renderStreamingView(
       serverCatchupQueueMs = 0;
       serverBufferMs = 0;
       serverMode = 'LIVE';
-      // Issue #103: サーバーが知るライブエッジ PTS を権威的な音声 straggler バリアとして適用する
+      // Issue #111: LIVE ジャンプでサーバー Hold も解除されるためバッジを即時戻す
+      serverHoldPaused = false;
+      // Issue #103: サーバーから受け取ったライブエッジ PTS を音声 straggler バリアとして適用する
       if (
         typeof msg.dropAudioBeforePts === 'number' &&
         Number.isFinite(msg.dropAudioBeforePts) &&
         typeof audioPlayer.setLiveEdgeBarrier === 'function'
       ) {
         audioPlayer.setLiveEdgeBarrier(msg.dropAudioBeforePts);
+      } else if (typeof audioPlayer.jumpToLive === 'function') {
+        // Issue #111: dropAudioBeforePts が無い場合（旧サーバー・例外経路）は音声側を強制再同期し、
+        // 映像ジャンプ後に旧再生位置が残って固定の A/V オフセットが生じるのを防ぐ
+        audioPlayer.jumpToLive();
       }
+      // Issue #112: 音声バリアと同一境界で映像側 (decoder pending + pacer queue) も早送りし、
+      // 破棄済み音声に対する古い映像再生による音声先行ドリフトを防ぐ
+      fastForwardVideoToLiveEdge();
       updateHudLiveStatus();
     } else if (msg.type === 'SESSION_ROLE_CHANGED') {
       if (!isSecondarySession) return;
@@ -1524,7 +1586,7 @@ export function renderStreamingView(
         jitterController.reset();
         renderer.resetFirstFrame();
         avSync.reset();
-        audioPlayer.resetJitterBuffer();
+        resetAudioForStreamReset();
         if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
           audioPlayer.clearLiveEdgeBarrier();
         }
@@ -1554,6 +1616,10 @@ export function renderStreamingView(
         '配信プロセスを再起動中...',
         'エンコーダとバッファをクリーンに再初期化しています...',
       );
+    } else if (msg.type === 'BUFFER_HOLD') {
+      // Issue #111: Hold 発動/解除の即時通知（PONG 同期の主経路に加え UX 応答を速める）
+      serverHoldPaused = msg.paused === true;
+      updateHudLiveStatus();
     } else if (msg.type === 'BROWSER_STATUS') {
       if (isSecondarySession && !isPrimarySessionActive) {
         if (msg.state === 'running') {
@@ -1599,7 +1665,7 @@ export function renderStreamingView(
   const sendBufferFeedback = (force = false) => {
     if (!wsClient.isConnected()) return;
 
-    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: HUD と同一の正典集計関数を使用
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: HUD と同じ共通集計関数を使用
     // Issue #106: 音声キュー滞留を別フィールドで報告する。サーバー側のスライディングウィンドウ
     // (getClientInFlightBufferMs) が映像経路だけを見て実滞留を過小評価する問題の解消。
     const audioBufferedMs = getAudioPathBufferedMs();
@@ -1638,7 +1704,7 @@ export function renderStreamingView(
       disconnectSurvivalTimer = null;
     }
 
-    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 正典集計関数へ統一
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 共通集計関数へ統一
 
     if (totalBufferedMs <= 0) {
       decoder.reset();
@@ -1680,7 +1746,7 @@ export function renderStreamingView(
     if (connDot) connDot.className = 'status-dot status-warning';
     if (hudConn) hudConn.title = '接続状態: 一時切断';
 
-    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 正典集計関数へ統一
+    const totalBufferedMs = getVideoPathBufferedMs(); // Issue #106: 共通集計関数へ統一
 
     if (totalBufferedMs > 250) {
       // Survive temporary network drops by playing through local prefetch buffer
@@ -1696,6 +1762,10 @@ export function renderStreamingView(
           renderer.resetFirstFrame();
           framePacer.resetFirstFrame();
           avSync.reset();
+          resetAudioForStreamReset();
+          if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+            audioPlayer.clearLiveEdgeBarrier();
+          }
           if (connText) connText.textContent = '切断';
           if (connDot) connDot.className = 'status-dot status-offline';
           if (hudConn) hudConn.title = '接続状態: 切断';
@@ -1708,6 +1778,10 @@ export function renderStreamingView(
       renderer.resetFirstFrame();
       framePacer.resetFirstFrame();
       avSync.reset();
+      resetAudioForStreamReset();
+      if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+        audioPlayer.clearLiveEdgeBarrier();
+      }
       if (connText) connText.textContent = '切断';
       if (connDot) connDot.className = 'status-dot status-offline';
       if (hudConn) hudConn.title = '接続状態: 切断';
