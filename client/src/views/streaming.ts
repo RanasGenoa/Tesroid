@@ -3,6 +3,7 @@ import type { AudioPlayer } from '../core/audio-player.js';
 import type { AvSyncController } from '../core/av-sync.js';
 import { CanvasRenderer } from '../core/canvas-renderer.js';
 import { VideoStreamDecoder } from '../core/decoder.js';
+import { ForcedIdrEscalation } from '../core/forced-idr-escalation.js';
 import { FramePacer } from '../core/frame-pacer.js';
 import { DynamicLatencyController, type LatencyMode } from '../core/latency.js';
 import { MetricsCollector } from '../core/metrics.js';
@@ -749,35 +750,18 @@ export function renderStreamingView(
   // 収束するため、同じ検知点からサーバーへ映像のみクローズド再起動 (ライブエッジ新規 IDR、
   // resize と同一の実証済み経路 / 音声完全不変) を要求する。セッション再接続でしか消えなかった
   // 滞留の自動化。クライアント 5s + サーバー 5s の二重レート制限。
-  const FORCED_IDR_COOLDOWN_MS = 5_000;
-  let lastForcedIdrRequestAtMs = -Infinity;
-  // no-op 連続カウント: GOP 格子ロックは「trim が切れない状態の持続」でのみ確定させる。
-  // ペーサーの検知は 1 回/秒上限なので、2 回連続 no-op = 最低 1 秒持続した証拠となる
-  // (単発ジッター/GC による 1 tick の空 queue 検知でエンコーダを再起動しない)。
-  const ESCALATE_NOOP_STREAK = 2;
-  let trimNoOpStreak = 0;
+  // エスカレーション判定 (no-op 連続・時間窓・クールダウン) は純粋状態機械として
+  // core/forced-idr-escalation.ts に抽出、単体テストで回帰固定している。
+  const forcedIdrEscalation = new ForcedIdrEscalation();
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
-    // 局所 GOP 境界トリムを常に先に試行し、実際に破棄が発生 (>0) したなら局所機構が
-    // 機能している証拠なのでカウントを戻してエンコーダは再起動しない。
+    // 局所 GOP 境界トリムを常に先に試行し、no-op が約 1 秒以上連続した場合のみ
+    // GOP 格子ロックとみなして映像限定のライブエッジ再起動へエスカレートする。
     const dropped = decoder.trimPendingBeforePts(
       playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US,
     );
-    if (dropped > 0) {
-      trimNoOpStreak = 0;
+    if (!forcedIdrEscalation.shouldRequest(dropped, performance.now(), wsClient.isConnected())) {
       return;
     }
-    // trim が no-op を ESCALATE_NOOP_STREAK 回連続で初めて、GOP 格子ロックとみなし
-    // 映像限定のライブエッジ再起動へエスカレートする (5s に 1回まで)。
-    trimNoOpStreak += 1;
-    if (trimNoOpStreak < ESCALATE_NOOP_STREAK) {
-      return;
-    }
-    const nowMs = performance.now();
-    if (nowMs - lastForcedIdrRequestAtMs < FORCED_IDR_COOLDOWN_MS || !wsClient.isConnected()) {
-      return;
-    }
-    lastForcedIdrRequestAtMs = nowMs;
-    trimNoOpStreak = 0;
     if (telemetryCollector.isEnabled()) {
       telemetryCollector.recordAvSync('force_video_idr_request', {
         playingAudioPtsUs: Math.round(playingAudioPtsUs),
