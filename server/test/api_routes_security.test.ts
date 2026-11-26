@@ -53,6 +53,7 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
 
     mockWsHandler = {
       restartStream: vi.fn(async () => {}),
+      canSkipFullRestart: vi.fn(() => false),
       hasActiveClients: vi.fn(() => false),
       broadcastStreamSettings: vi.fn(),
     };
@@ -236,6 +237,27 @@ describe('REST API Routes & Security Boundaries (setup, health, metrics, browser
     });
     expect(restartRes.statusCode).toBe(200);
     expect(mockWsHandler.restartStream).toHaveBeenCalledTimes(1);
+
+    // Issue #112 F-6: 健康な LIVE 状態の LIVE tap は全体再起動をスキップする
+    mockWsHandler.canSkipFullRestart.mockReturnValue(true);
+    const skipRes = await app.inject({
+      method: 'POST',
+      url: '/api/encoder/restart',
+      headers: authHeaders,
+    });
+    expect(skipRes.statusCode).toBe(200);
+    expect(skipRes.json()).toMatchObject({ success: true, restarted: false, skipped: true });
+    expect(mockWsHandler.restartStream).toHaveBeenCalledTimes(1);
+
+    // ?force=1 は判定を通さず常に全体再起動 (明示再同期の意図を尊重)
+    const forceRes = await app.inject({
+      method: 'POST',
+      url: '/api/encoder/restart?force=1',
+      headers: authHeaders,
+    });
+    expect(forceRes.statusCode).toBe(200);
+    expect(forceRes.json()).toMatchObject({ success: true, restarted: true });
+    expect(mockWsHandler.restartStream).toHaveBeenCalledTimes(2);
   });
 
   it('Settings & System Power routes verify PIN, clamp displayScale [50..250], reject unsafe browserUrl, and control power', async () => {

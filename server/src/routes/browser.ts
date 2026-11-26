@@ -88,6 +88,16 @@ export function registerBrowserRoutes(
     if (!encoder && !wsHandler) {
       return reply.code(500).send({ error: 'Encoder not available' });
     }
+    // Issue #112 F-6: HUD LIVE tap は常にこの endpoint を呼ぶが、パイプラインが既に LIVE で
+    // 滞留が無い場合に FFmpeg Video/Audio 全体を再起動すると ~1s の生成断→復帰バーストで
+    // FPS が落ちる (スロットル無しでも再現)。健康な LIVE tap ではスキップし、明示的な
+    // ?force=1 / 明示コマンド (RESTART_ENCODER / CLEAN_RESTART_STREAM) は常に再起動する。
+    if (wsHandler && !req.url.includes('force=1') && wsHandler.canSkipFullRestart()) {
+      console.log(
+        '[EncoderRoutes] Live-tap full restart skipped: pipeline already LIVE with no backlog.',
+      );
+      return { success: true, restarted: false, skipped: true };
+    }
     if (wsHandler) {
       await wsHandler.restartStream();
     } else if (encoder) {

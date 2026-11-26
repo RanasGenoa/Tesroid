@@ -54,6 +54,7 @@ export class FramePacer {
   private pllNudgeSuppressedCount: number = 0;
   private lastLargeShiftLogTimeMs: number = -Infinity;
   private largeShiftSuppressedCount: number = 0;
+  private lastStaleDropLogTimeMs: number = -Infinity;
   private static readonly PLL_NUDGE_LOG_INTERVAL_MS = 500;
   private computePllShift(
     currentScheduleMs: number,
@@ -105,6 +106,14 @@ export class FramePacer {
   // Proportional gain Kp for smoothing A/V sync error: (0.75 / 150 = 0.005 ms/ms)
   private static readonly AV_SYNC_KP =
     FramePacer.AV_SYNC_MAX_NUDGE_MS / FramePacer.AV_SYNC_MAX_ERROR_MS;
+  // Issue #112 F-5: 音声先行 (再生中音声PTS > 映像スケジュール) は負方向シフトが 1x 間隔クランプ
+  // (maxNegativeShiftAllowed) で構造的に吸収不能な場合がある。backlog (キュー滞留 > 8 フレーム) かつ
+  // 150ms 超の音声先行時に限り、再生中音声より古い映像フレームを破棄して映像側で吸収する。
+  // 許容 40ms (デッドバンド 45ms 未満) と 1 tick あたり上限 4 フレームで可視ジャンプを抑え、
+  // 正常な 1x 到着 (スケジュールに余裕があり PLL が機能する状態) には一切干渉しない。
+  private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 40_000;
+  private static readonly AV_SYNC_MAX_STALE_DROPS_PER_TICK = 4;
+  private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -642,6 +651,42 @@ export class FramePacer {
         if (typeof this.avSync?.getCurrentPlayingAudioPtsUs === 'function') {
           const playingAudioPts = this.avSync.getCurrentPlayingAudioPtsUs();
           if (playingAudioPts !== null && playingAudioPts > 0) {
+            // Issue #112 F-5: 音声先行 (映像遅れ) は負方向シフトが 1x 間隔クランプで構造的に
+            // 吸収できないため、再生中音声より古いフレームを映像側で上限付き破棄する。
+            const staleDropTargetUs = playingAudioPts - FramePacer.AV_SYNC_STALE_DROP_TOLERANCE_US;
+            let staleDropped = 0;
+            // 真の backlog (キュー滞留 >= 8 フレーム) かつ 150ms 超のズレのみ対象。
+            // 到着 1x ペースで常に先頭が now に張り付く場合のみ PLL 負方向クランプが発動するため、
+            // 正常な 1x 到着 (スケジュールに余裕がある状態) では従来どおり PLL 圧縮に任せる。
+            const backlogLagMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
+            while (
+              this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
+              staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
+              backlogLagMs > FramePacer.AV_SYNC_MAX_ERROR_MS
+            ) {
+              const head = this.frameQueue[0];
+              if (head.ptsUs > 0 && head.ptsUs < staleDropTargetUs) {
+                this.frameQueue.shift();
+                try {
+                  head.frame.close();
+                } catch {}
+                this.onFrameProcessed?.();
+                staleDropped++;
+              } else {
+                break;
+              }
+            }
+            if (staleDropped > 0 && this.telemetry?.isEnabled()) {
+              if (now - this.lastStaleDropLogTimeMs >= FramePacer.PLL_NUDGE_LOG_INTERVAL_MS) {
+                this.telemetry.recordAvSync('stale_video_drop', {
+                  droppedCount: staleDropped,
+                  playingAudioPts,
+                  queueLength: this.frameQueue.length,
+                });
+                this.lastStaleDropLogTimeMs = now;
+              }
+            }
+
             const nextVideoPts = this.frameQueue[0].ptsUs;
             const currentHeadSchedule = this.frameQueue[0].scheduledRenderTime + totalShift;
             const targetRenderTime = now + (nextVideoPts - playingAudioPts) / 1000;
@@ -830,6 +875,7 @@ export class FramePacer {
     this.pllNudgeSuppressedCount = 0;
     this.lastLargeShiftLogTimeMs = -Infinity;
     this.largeShiftSuppressedCount = 0;
+    this.lastStaleDropLogTimeMs = -Infinity;
   }
 
   public resetFirstFrame(): void {

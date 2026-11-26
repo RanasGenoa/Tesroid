@@ -78,6 +78,8 @@ export class WebSocketHandler {
   // Issue #111 F-4: 復帰ゲートの時間項は安全弁 (再起動後に IDR が一度も来ない異常対策)。
   // 本来の境界は PTS 比較 (ffmpeg.ts resumeBoundaryPtsUs) で決まるため、期限は長く取る。
   private static readonly RESUME_GATE_MS = 8000;
+  // Issue #112 F-6: 健康な LIVE 状態の LIVE tap で全体再起動をスキップする滞留上限 (ms)
+  private static readonly LIVE_TAP_SKIP_MAX_HELD_MS = 500;
   // targetBufferMs=0 (オフ) でも CATCHUP 送出ゲートが永久閉鎖しないための実効窓下限
   private static readonly MIN_CATCHUP_WINDOW_MS = 400;
 
@@ -576,6 +578,29 @@ export class WebSocketHandler {
         }
       }
     }
+  }
+
+  /**
+   * Issue #112 F-6: LIVE tap 由来の全体再起動を安全にスキップできるかを判定する。
+   * パイプラインが既に健康な LIVE 状態 (Hold 非発動・CATCHUP セッション無し・エンコーダ稼働・
+   * サーバー保持量が小さい) の場合のみ true。明示再起動 (?force=1 / RESTART_ENCODER 等) は
+   * この判定を通さず常に restartStream() を実行する。
+   */
+  public canSkipFullRestart(): boolean {
+    if (this.pipelineHoldState !== 'ACTIVE') return false;
+    if (!this.encoder.isRunning()) return false;
+    for (const session of this.clientSessions.values()) {
+      if (session.mode === 'CATCHUP') return false;
+    }
+    // クライアント再生位置よりサーバーが先に保持している時間 (Hold 判定と同じ実効プライマリ基準)
+    if (this.serverHeldMs() > WebSocketHandler.LIVE_TAP_SKIP_MAX_HELD_MS) return false;
+    // リングバッファ自体の滞留も小さいこと (直近GOP断なく再生継続できる状態)
+    if (
+      this.playbackBuffer.getBufferedDurationMs() >
+      WebSocketHandler.LIVE_TAP_SKIP_MAX_HELD_MS * 4
+    )
+      return false;
+    return true;
   }
 
   /**
