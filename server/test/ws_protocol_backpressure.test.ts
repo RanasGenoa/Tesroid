@@ -303,6 +303,48 @@ describe('WebSocket Binary Protocol Round-Trip, Hysteresis Backpressure & Auto-S
     expect(client.sentPackets).toHaveLength(0);
   });
 
+  it('Issue #109: socket congestion while idle never switches to CATCHUP (hysteresis skip only, instant recovery after link heals)', async () => {
+    // Issue #109 回帰ガード: 旧実装はアイドル視聴中 + buffered > 512KB で LIVE→CATCHUP へ切り替え
+    // フレームを playbackQueue に蓄積していたが、クライアントバッファが targetBufferMs で満杯の
+    // 状態で CATCHUP 化すると送出ゲートが閉じたままになり backlog が永久滞留した（A/Vオフセット恒久化）。
+    // 現在は同一条件でも LIVE を維持し、ヒステリシススキップのみで通信回復時に即時復帰する。
+    const HIGH = 512 * 1024;
+
+    const client = new MockSocket();
+    wsHandler.handleConnection(client as any);
+    await sendClientMsg(client, ClientProtocol.packAuth('1234'));
+    client.sentPackets = [];
+
+    const session: any = (wsHandler as any).clientSessions.get(client);
+    expect(session).toBeTruthy();
+    expect(session.mode).toBe('LIVE');
+
+    // 旧実装のトリガ条件を再現: アイドル超過 (IDLE_TO_BUFFER_SECONDS=5s) + バッファ有効 + 輻輳
+    session.targetBufferMs = 10_000;
+    (wsHandler as any).lastInputAt = Date.now() - 10_000;
+
+    const logSpy = vi.spyOn(console, 'log');
+    client.bufferedAmount = HIGH + 10_000;
+    mockEncoder.emit('video', { flags: 0, pts: 33_000n, data: Buffer.alloc(64) });
+
+    expect(session.mode).toBe('LIVE'); // CATCHUP 化しない
+    expect(session.playbackQueue).toHaveLength(0); // サーバー蓄積しない
+    expect(client.sentPackets).toHaveLength(0); // ヒステリシススキップで破棄
+    const logs = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logs).not.toMatch(/Switching session to CATCHUP|LIVE→CATCHUP transition/);
+    logSpy.mockRestore();
+
+    // 通信回復 → 次のクリーン IDR で即座に再開（backlog ゼロ、遅延・オフセット残存経路なし）
+    client.bufferedAmount = 0;
+    mockEncoder.emit('video', {
+      flags: VIDEO_FLAGS.KEYFRAME,
+      pts: 66_000n,
+      data: Buffer.alloc(64),
+    });
+    expect(client.sentPackets).toHaveLength(1);
+    expect(session.mode).toBe('LIVE');
+  });
+
   it('aligns dynamic RESIZE dimensions to 8-pixel swscaler boundaries (& ~7) after 400ms debounce', async () => {
     vi.useFakeTimers();
     configStore.updateConfig({

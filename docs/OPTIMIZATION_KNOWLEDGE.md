@@ -452,8 +452,13 @@ Tesroid は **「特定の Linux カーネルバージョンやディストリ�
 - 従来 `BUFFER_FEEDBACK.bufferedMs` は映像経路（デコーダ pending + frame-pacer）のみで、音声キュー滞留がサーバーの in-flight 計算から欠落していた。HUD 遅延表示側には音声を含む集計があり**二重定義**になっていた。
 - 現在: クライアントは `getVideoPathBufferedMs()` / `getAudioPathBufferedMs()` の正典関数で HUD 表示・報告を統一し、`audioBufferedMs` を別フィールドで報告（旧サーバーは無視 = 後方互換）。サーバーの `getClientInFlightBufferMs()` は `max(pts in-flight, 映像報告, 音声報告)` を採用。
 
+### 背圧由来 CATCHUP の永久滞留 (Issue #109)
+- 旧実装はアイドル視聴中の LIVE 配信で `bufferedAmount > 512KB` を検知するとフレームを破棄せず CATCHUP キューへ蓄積する経路（`transitionLiveSessionToCatchup`）を持っていたが、TrueNAS 実機リグレッション（2026-11-26、PR #108 断面）で**この経路が二度と LIVE へ復帰しない**ことを確定した。移行時点でクライアントのジッターバッファは `targetBufferMs` で満杯のため、送出ゲート `getClientInFlightBufferMs() < effectiveCatchupWindowMs` が閉じたままとなり、送信はライブ等速ぶんだけ再開する定常状態に落ちる（キュー排水速度 ≈ 0）。backlog cap（GOP 3フレーム/2秒）は追いつかず churn 化し、配信遅延 ~1分と A/Vオフセット ~2秒が恒久化する（インシデント 2026-11-25 の「通信回復でも直らない」症状の真因。実測: `queue empty. Transitioning to LIVE` 全期間 0件、Pruned 3,205件）。
+- 削除は #104 の導入回帰ではなくそれ以前の構造問題。対照に**再接続/resume 由来の CATCHUP は正常**（クライアントバッファ空から開始するため排水が完了し、cap 内で間引かれながら drift 70ms まで収束。25秒トンネルで Pruned 0件の追随を実証済み）。
+- 現在: LIVE 中のソケット詰まりは高低ヒステリシス（HIGH/LOW 水位 GOP スキップ）へ一元化し、通信回復で即時復帰する。CATCHUP キューは「クライアントが後方になった場合」（再接続/resume）専用。リアルタイム配信ではリンクが生成速度を運べずクライアントバッファも満杯なら余剰フレームはどこかで必ず破棄される — 破棄地点をサーバーキュー蓄積に移すと「破らない」ことはできず、遅延として現れるだけになる。
+
 ### 診断ログ (Issue #107)
-- CATCHUP 開始（再接続経路・通信悪化遷移の両方）で `targetBufferMs=` と `burst=` をログ出力。実効ウィンドウはクライアント localStorage 由来でサーバーには永続化されないため、**インシデント解析ではこのログが唯一の実効値証拠**になる。
+- CATCHUP 開始（再接続/resume 経路）で `targetBufferMs=` と `burst=` をログ出力。実効ウィンドウはクライアント localStorage 由来でサーバーには永続化されないため、**インシデント解析ではこのログが唯一の実効値証拠**になる。
 
 ---
 
