@@ -457,6 +457,14 @@ Tesroid は **「特定の Linux カーネルバージョンやディストリ�
 - 削除は #104 の導入回帰ではなくそれ以前の構造問題。対照に**再接続/resume 由来の CATCHUP は正常**（クライアントバッファ空から開始するため排水が完了し、cap 内で間引かれながら drift 70ms まで収束。25秒トンネルで Pruned 0件の追随を実証済み）。
 - 現在: LIVE 中のソケット詰まりは高低ヒステリシス（HIGH/LOW 水位 GOP スキップ）へ一元化し、通信回復で即時復帰する。CATCHUP キューは「クライアントが後方になった場合」（再接続/resume）専用。リアルタイム配信ではリンクが生成速度を運べずクライアントバッファも満杯なら余剰フレームはどこかで必ず破棄される — 破棄地点をサーバーキュー蓄積に移すと「破らない」ことはできず、遅延として現れるだけになる。
 
+### 極端輻輳後の遅延恒久化と Buffer-Hold Pause (Issue #111)
+- Issue #109 の修正後も、TrueNAS f1check ラン（2026-11-26）で**極端輻輳（HTB 500kbit 12分）直後の再接続時に backlog 2,476フレーム ≈ 98秒を抱えた CATCHUP が 14分間横ばい**（`queue empty. Transitioning to LIVE` ゼロ、GOP prune churn のみ）を観測した（F-3）。原因は「生成 1.0x > 送信 1.0x」の均衡で、CATCHUP の送出ゲートだけでは残余を縮められない構造問題だった。
+- **Buffer-Hold Pause (Phase 1)**: サーバーがクライアント再生位置より先に保持する時間 `serverHeldMs = playbackBuffer最新映像PTS − lastKnownAckPts` が `holdTriggerMs = clamp(targetBufferMs, 10s, 30s)`（target=0 は無効）以上で**生成側を 0.0x に止める**（Chrome ツリー SIGSTOP + FFmpeg 停止。BROWSER_STATUS は `running` を維持しスリープ `paused` とは独立状態）。消費 1.0x の ack 追い上げで `resumeTriggerServerMs = target ≥ HEADROOM ? 500ms : max(1000, HEADROOM − target)`（HEADROOM: VAAPI 2s / software 3s）以下へ収まると自動再開（SIGCONT + FFmpeg restart、PTS は停止時間分を減算して単調連続、最初の Video IDR まで先行音声をサーバー側で破る A/V 境界ゲート 1500ms）。
+- **守るべき不変条件**: `holdTrigger − resume ≥ 7.2s`（ヒステリシス幅。`computeHoldConfig()` が機械的に保証）/ `PLAYBACK_BUFFER(60s) ≥ backlog cap > holdTrigger` / autoSleepTimer と holdExpireTimer（既定10分、満了で SLEEP_PAUSED 共通フローへ合流）の同時稼働ゼロ / Hold 中の背景 CDP ポーリング停止（凍結 renderer へのタイムアウト防止）。
+- **再接続 resumeFromPts クランプ**: 高RTT で陳腐化した `lastAckPts` のまま CATCHUP を開始すると backlog が cap に収まらないため、再開位置を `max(lastAckPts, latestBuffered − holdTriggerMs)`（直前 KEYFRAME スナップ）へクランプする。F-3 の ~98 秒 backlog はこの補正で holdTrigger 以下に収まる。
+- **割り込み意味**: タッチ/JUMP_TO_LIVE/NAVIGATE 系は `recordInputActivity` 経由で即時解除（LIVE_JUMPED の音声バリアは既存経路）、手動 PAUSE_BROWSER は Hold→スリープの排他変換（SIGCONT + restart のチャーンを経由しない）。HUD は PONG の `holdPaused` と `BUFFER_HOLD` 制御で `HOLD L:…s S:…s` を表示し、タップで即 LIVE 同期。
+- **F-1b（backlog ms 桁異常）の根因修正**: `PlaybackBuffer.addVideo/addAudio` が CONFIG パケット（pts: 0n）をフレーム配列へ混入させ、`getBufferedDurationMs()` と GOP prune の PTS エポックを汚染していた（実測 `2,353,603ms` 表記 vs 実 ~1,570フレーム）。CONFIG はメタキャッシュ（cachedSpsPps/cachedOpusHead）のみ更新し、再接続時は `getFramesToCatchup()` の `configVideo/configAudio` で再送する。クライアント側も同一 OpusHead の再送で音声ジッターバッファを捨てない（冪等スキップ）。
+
 ### 診断ログ (Issue #107)
 - CATCHUP 開始（再接続/resume 経路）で `targetBufferMs=` と `burst=` をログ出力。実効ウィンドウはクライアント localStorage 由来でサーバーには永続化されないため、**インシデント解析ではこのログが唯一の実効値証拠**になる。
 
