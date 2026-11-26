@@ -78,6 +78,9 @@ export class WebSocketHandler {
   // Issue #111: 復帰ゲートのタイムアウト安全弁 (再起動後に IDR が一度も来ない異常対策)。
   // 本来の境界は PTS 比較 (ffmpeg.ts の resumeBoundaryPtsUs) で決まるため、期限は長めに取る。
   private static readonly RESUME_GATE_MS = 8000;
+  // Issue #115: FORCE_VIDEO_IDR のサーバー側レート制限。ペーサー側の 1回/秒と二重に、
+  // 映像エンコーダ再起動 (ライブエッジ新規 IDR) は 5s に 1回までとする。
+  public static readonly FORCED_IDR_COOLDOWN_MS = 5_000;
   // Issue #112: 正常な LIVE 状態での LIVE タップ時に全体再起動をスキップする滞留上限 (ms)。
   // 250ms の BUFFER_FEEDBACK 周期・クライアント側ペーサークッション・RTT を考慮し 1000ms を許容する。
   private static readonly LIVE_TAP_SKIP_MAX_HELD_MS = 1000;
@@ -99,6 +102,8 @@ export class WebSocketHandler {
   private holdResumePollTimer: NodeJS.Timeout | null = null;
   private lastHoldEvalAtMs = 0;
   private holdStartedAtMs = 0;
+  // Issue #115: 直近の FORCE_VIDEO_IDR 実行時刻 (FORCED_IDR_COOLDOWN_MS の基準)
+  private lastForcedVideoIdrAtMs = 0;
   private actingPrimaryGraceTimer: NodeJS.Timeout | null = null;
   private pendingIntentionalPrimaryToken: string | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
@@ -2128,6 +2133,44 @@ export class WebSocketHandler {
           // Issue #103: 破棄基準となる確定ライブエッジ PTS をクライアントへ返し、
           // 経路上に滞留している古い音声（straggler）を受信側で確実に破棄できるようにする
           this.sendLiveJumped(socket);
+          break;
+        }
+
+        case 'FORCE_VIDEO_IDR': {
+          // Issue #115: クライアント検知 (音声先行 ≥800ms 持続) 起点で、ライブエッジでの
+          // 新規 IDR を要求する。セッション再接続でしか消えなかった pre-decode / in-flight
+          // 滞留を、音声完全不変の映像のみクローズド再起動 (resize と同一の実証済み経路)
+          // で自動解消する。
+          if (this.clientSessions.get(socket)?.isStandby) {
+            break;
+          }
+          const session = this.clientSessions.get(socket);
+          if (!session) {
+            break;
+          }
+          if (this.pipelineHoldState === 'BUFFER_HOLD_PAUSED') {
+            // Hold 解除自体が FFmpeg 両系統の新規起動 (= ライブエッジ IDR + 音声境界ゲート)
+            // を伴うため、重ねて再起動はしない。
+            this.exitBufferHold('force_video_idr');
+            break;
+          }
+          const forcedNowMs = Date.now();
+          if (forcedNowMs - this.lastForcedVideoIdrAtMs < WebSocketHandler.FORCED_IDR_COOLDOWN_MS) {
+            break;
+          }
+          this.lastForcedVideoIdrAtMs = forcedNowMs;
+          console.log(
+            '[WebSocketHandler] FORCE_VIDEO_IDR (Issue #115): sustained audio lead detected. Restarting video encoder only with a fresh IDR at the live edge (audio process untouched)...',
+          );
+          if (session.pacingTimer) {
+            clearTimeout(session.pacingTimer);
+            session.pacingTimer = null;
+          }
+          session.playbackQueue = [];
+          session.isFlowPaused = false;
+          // 新 IDR より古い音声 straggler をサーバー側で破棄 (Hold 復帰と同じ保護機構)
+          this.encoder.armResumeGate(WebSocketHandler.RESUME_GATE_MS);
+          await this.encoder.restart();
           break;
         }
 

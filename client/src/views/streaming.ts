@@ -745,8 +745,23 @@ export function renderStreamingView(
   // Issue #115: ペーサーが音声先行 ≥800ms の継続を検知した時、デコーダ手前キューを
   // 音声エッジ直前の GOP 境界まで破棄する。ペーサーの 4/tick 破棄は供給速率 (60fps) に
   // 勝てないため、滞留の供給元 (pre-decode) を上流で断つのが本修正の本体。
+  // 実機続報: 局所 trim だけでは GOP 格子 (2.0s) 手前の平衡 (lead≈1965ms・no-op率98%) に
+  // 収束するため、同じ検知点からサーバーへ映像のみクローズド再起動 (ライブエッジ新規 IDR、
+  // resize と同一の実証済み経路 / 音声完全不変) を要求する。セッション再接続でしか消えなかった
+  // 滞留の自動化。クライアント 5s + サーバー 5s の二重レート制限。
+  let lastForcedIdrRequestAtMs = 0;
   framePacer.onSustainedAudioLead = (playingAudioPtsUs: number) => {
     decoder.trimPendingBeforePts(playingAudioPtsUs - PREDECODE_TRIM_AUDIO_CUSHION_US);
+    const nowMs = performance.now();
+    if (nowMs - lastForcedIdrRequestAtMs < 5_000 || !wsClient.isConnected()) {
+      return;
+    }
+    lastForcedIdrRequestAtMs = nowMs;
+    // clearPendingPackets = pre-decode 全破棄 + waitingForKeyframe=true。flushPendingForLiveJump
+    // と違い「直近 KF 保持」をしない — 直近 KF は GOP 格子により最大 2s 古いため、
+    // ライブエッジの新 IDR まで旧コンテンツのデコードを再開しない。
+    decoder.clearPendingPackets();
+    wsClient.send(ClientProtocol.packCommand({ type: 'FORCE_VIDEO_IDR' }));
   };
 
   const syncTelemetryAttachment = (enabled: boolean) => {

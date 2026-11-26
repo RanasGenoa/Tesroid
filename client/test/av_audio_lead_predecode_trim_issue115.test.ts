@@ -194,4 +194,58 @@ describe('pre-decode GOP trim driven by A/V lead (Issue #115)', () => {
     // 目標より古い要求も無害 (no-op)
     expect(decoder.trimPendingBeforePts(1_000_000)).toBe(0);
   });
+
+  it('clearPendingPackets + FORCE_VIDEO_IDR flow: no old deltas decoded until the new keyframe', async () => {
+    // Issue #115 実機続報: 局所 trim は GOP 格子手前までしか切れない (平衡 1965ms・no-op 率98%)。
+    // サーバーへ FORCE_VIDEO_IDR を要求する同時点で pre-decode を全破棄し、ライブエッジの
+    // 新 IDR が届くまで旧コンテンツ (delta) をデコーダへ一切供給しない。
+    const mockDecoderInstance: any = {
+      configure: vi.fn(),
+      decode: vi.fn(),
+      reset: vi.fn(),
+      close: vi.fn(),
+      decodeQueueSize: 0,
+      state: 'configured',
+    };
+    const mockConstructor: any = function (this: any, init: any) {
+      mockDecoderInstance._init = init;
+      return mockDecoderInstance;
+    };
+    mockConstructor.isConfigSupported = vi.fn().mockResolvedValue({ supported: true });
+    vi.stubGlobal('VideoDecoder', mockConstructor);
+    vi.stubGlobal('EncodedVideoChunk', function (this: any, init: any) {
+      return init;
+    } as any);
+
+    const decoder = new VideoStreamDecoder(vi.fn());
+    // 下流に余裕がある状態 (実測平衡ではなく、ゲート自体の挙動を検証する)
+    (decoder as any).getDownstreamQueueLength = () => 0;
+
+    const decodeCalls = () => mockDecoderInstance.decode.mock.calls.length;
+    // decoder.test.ts と同一の実 SPS/PPS フィクスチャ
+    const kfData = new Uint8Array([
+      0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+      0x01, 0x02, 0x03,
+    ]);
+    const pFrame = new Uint8Array([0, 0, 0, 1, 0x41, 0x01, 0x02, 0x03]);
+
+    await decoder.handlePacket(VIDEO_FLAGS.CONFIG | VIDEO_FLAGS.KEYFRAME, 0n, kfData);
+    await decoder.handlePacket(0, BigInt(FRAME_INTERVAL_MS * 1000), pFrame);
+    expect(decodeCalls()).toBe(2);
+
+    // FORCE_VIDEO_IDR 要求と同時点で pre-decode 全破棄 (既存 clearPendingPackets を再利用)
+    decoder.clearPendingPackets();
+    expect(decoder.getPendingPacketsCount()).toBe(0);
+    expect((decoder as any).waitingForKeyframe).toBe(true);
+
+    // サーバー再起動の間に届く古い delta (経路上の straggler) はデコーダへ供給されない
+    await decoder.handlePacket(0, BigInt(2 * FRAME_INTERVAL_MS * 1000), pFrame);
+    await decoder.handlePacket(0, BigInt(3 * FRAME_INTERVAL_MS * 1000), pFrame);
+    expect(decodeCalls()).toBe(2);
+
+    // ライブエッジの新 IDR からデコードが再開される
+    await decoder.handlePacket(VIDEO_FLAGS.KEYFRAME, BigInt(4 * FRAME_INTERVAL_MS * 1000), kfData);
+    expect(decodeCalls()).toBe(3);
+    expect((decoder as any).waitingForKeyframe).toBe(false);
+  });
 });
