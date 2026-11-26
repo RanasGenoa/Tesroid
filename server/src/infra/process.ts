@@ -113,6 +113,6 @@ export class NodeProcessTreeController implements ProcessTreeController {
 export class NodeProcessExit implements ProcessExitPort {
   // Spec: docs/specs/01-auth-security.md#2.2
   exit(code: number): never {
-    throw new Error("NOT_IMPLEMENTED");
+    process.exit(code);
   }
 }

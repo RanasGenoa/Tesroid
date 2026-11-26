@@ -38,6 +38,7 @@ export type PinVerifyResult =
 export interface AuthServicePort {
   assertNotLockedAtStartup(): Promise<void>;
   getLockoutStatus(): AuthLockoutStatus;
+  hashPin(pin: string): Promise<string>;
   verifyPin(
     pin: string,
     role?: Extract<SessionRole, "PRIMARY" | "SECONDARY_STREAMING">,

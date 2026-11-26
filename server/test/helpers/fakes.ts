@@ -29,72 +29,150 @@ import type {
   TimerHandle,
 } from "../../src/infra/index.js";
 
+interface ScheduledTimer {
+  readonly id: number;
+  readonly callback: () => void;
+  nextRunAtMs: number;
+  readonly intervalMs: number | null;
+}
+
 export class FakeClock implements Clock {
+  private currentNowMs: number;
+  private currentMonotonicMs = 0;
+  private nextId = 1;
+  private readonly timers = new Map<TimerHandle, ScheduledTimer>();
+
   // Spec: docs/architecture.md#4.2
-  constructor(initialNowMs?: number) {
-    throw new Error("NOT_IMPLEMENTED");
+  constructor(initialNowMs = 1_700_000_000_000) {
+    this.currentNowMs = initialNowMs;
   }
 
   // Spec: docs/architecture.md#4.2
   nowMs(): number {
-    throw new Error("NOT_IMPLEMENTED");
+    return this.currentNowMs;
   }
 
   // Spec: docs/architecture.md#4.2
   monotonicMs(): number {
-    throw new Error("NOT_IMPLEMENTED");
+    return this.currentMonotonicMs;
   }
 
   // Spec: docs/architecture.md#4.2
   setTimeout(callback: () => void, delayMs: number): TimerHandle {
-    throw new Error("NOT_IMPLEMENTED");
+    const handle: TimerHandle = { __brand: "TimerHandle" };
+    this.timers.set(handle, {
+      id: this.nextId++,
+      callback,
+      nextRunAtMs: this.currentNowMs + Math.max(0, delayMs),
+      intervalMs: null,
+    });
+    return handle;
   }
 
   // Spec: docs/architecture.md#4.2
   clearTimeout(handle: TimerHandle): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.timers.delete(handle);
   }
 
   // Spec: docs/architecture.md#4.2
   setInterval(callback: () => void, intervalMs: number): TimerHandle {
-    throw new Error("NOT_IMPLEMENTED");
+    const handle: TimerHandle = { __brand: "TimerHandle" };
+    const safeInterval = Math.max(1, intervalMs);
+    this.timers.set(handle, {
+      id: this.nextId++,
+      callback,
+      nextRunAtMs: this.currentNowMs + safeInterval,
+      intervalMs: safeInterval,
+    });
+    return handle;
   }
 
   // Spec: docs/architecture.md#4.2
   clearInterval(handle: TimerHandle): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.timers.delete(handle);
   }
 
   // Spec: docs/architecture.md#4.2
   advanceByMs(deltaMs: number): void {
-    throw new Error("NOT_IMPLEMENTED");
+    const step = Math.max(0, deltaMs);
+    const targetNowMs = this.currentNowMs + step;
+
+    while (true) {
+      let nextHandle: TimerHandle | null = null;
+      let nextEntry: ScheduledTimer | null = null;
+      for (const [handle, entry] of this.timers) {
+        if (entry.nextRunAtMs <= targetNowMs) {
+          if (
+            nextEntry === null ||
+            entry.nextRunAtMs < nextEntry.nextRunAtMs ||
+            (entry.nextRunAtMs === nextEntry.nextRunAtMs && entry.id < nextEntry.id)
+          ) {
+            nextHandle = handle;
+            nextEntry = entry;
+          }
+        }
+      }
+
+      if (nextHandle === null || nextEntry === null) {
+        break;
+      }
+
+      const elapsed = Math.max(0, nextEntry.nextRunAtMs - this.currentNowMs);
+      this.currentNowMs = nextEntry.nextRunAtMs;
+      this.currentMonotonicMs += elapsed;
+
+      if (nextEntry.intervalMs === null) {
+        this.timers.delete(nextHandle);
+      } else {
+        nextEntry.nextRunAtMs += nextEntry.intervalMs;
+      }
+      nextEntry.callback();
+    }
+
+    const remaining = Math.max(0, targetNowMs - this.currentNowMs);
+    this.currentNowMs = targetNowMs;
+    this.currentMonotonicMs += remaining;
   }
 
   // Spec: docs/architecture.md#4.2
   setNowMs(nowMs: number): void {
-    throw new Error("NOT_IMPLEMENTED");
+    this.currentNowMs = nowMs;
   }
 }
 
 export class FakeAtomicJsonStore implements AtomicJsonStore {
+  private readonly files = new Map<string, string>();
+
   // Spec: docs/architecture.md#4.2
-  readJson<T>(filePath: string): Promise<T | null> {
-    throw new Error("NOT_IMPLEMENTED");
+  async readJson<T>(filePath: string): Promise<T | null> {
+    const raw = this.files.get(filePath);
+    if (raw === undefined) {
+      return null;
+    }
+    return JSON.parse(raw) as T;
   }
 
   // Spec: docs/architecture.md#4.2
-  writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+    this.files.set(filePath, JSON.stringify(data, null, 2));
   }
 
   // Spec: docs/architecture.md#4.2
-  exists(filePath: string): Promise<boolean> {
-    throw new Error("NOT_IMPLEMENTED");
+  async exists(filePath: string): Promise<boolean> {
+    return this.files.has(filePath);
   }
 
   // Spec: docs/architecture.md#4.2
-  remove(filePath: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async remove(filePath: string): Promise<void> {
+    this.files.delete(filePath);
+  }
+
+  setRawText(filePath: string, raw: string): void {
+    this.files.set(filePath, raw);
+  }
+
+  getRawText(filePath: string): string | null {
+    return this.files.get(filePath) ?? null;
   }
 }
 
@@ -183,10 +261,23 @@ export class FakeProcessTreeController implements ProcessTreeController {
   }
 }
 
+export class FakeProcessExitError extends Error {
+  readonly code: number;
+
+  constructor(code: number) {
+    super(`Process exited with code ${code}`);
+    this.name = "FakeProcessExitError";
+    this.code = code;
+  }
+}
+
 export class FakeProcessExit implements ProcessExitPort {
+  readonly exitCodes: number[] = [];
+
   // Spec: docs/architecture.md#4.2
   exit(code: number): never {
-    throw new Error("NOT_IMPLEMENTED");
+    this.exitCodes.push(code);
+    throw new FakeProcessExitError(code);
   }
 }
 

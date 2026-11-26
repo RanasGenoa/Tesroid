@@ -2,6 +2,9 @@ import { describe, it } from "vitest";
 
 describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
   it.todo(
+    "Spec 01 AC-02: allows valid initial PIN over WS /ws when setup is incomplete and establishes PRIMARY session",
+  );
+  it.todo(
     "Spec 02 AC-01: displaces existing PRIMARY with WS 4009 on new raw PIN login and rejects competing token reconnect with WS 4009",
   );
   it.todo(
