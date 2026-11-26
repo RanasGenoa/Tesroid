@@ -318,6 +318,23 @@ Tesroid は特定の Linux カーネルバージョンに依存せず、Linux / 
 4. **デコーダ極小滞留の継続保護 (`decoder.ts`)**:
    - `flushPendingForLiveJump()` で `pendingPackets` 内にキーフレームが存在しない場合でも、滞留がごく小さい（10 パケット未満かつ 300ms 未満）なら破棄して `waitingForKeyframe = true`（最大 2 秒待ち）へ遷移せず、そのまま継続デコードします。
 
+### 10.7 `STREAM_RESET` 後の `AudioDecoder` PTS エポック残留対策と `FramePacer` 多層防御・メトリクス計測整合 (Issue #112)
+実機検証で「サーバー（FFmpeg / 有線 LAN）が 30.0 FPS を等間隔で送出しているにもかかわらず、ネットワークスロットリング解除後もクライアント側の FPS 不安定（`buffering:enter` / `exit` の無限ループとコマ飛び）が継続する」事象が再現し、テレメトリ・`tcpdump`・コード突合により以下の複合メカニズムと対策を確立しました。
+
+1. **現象とメカニズム（`AudioDecoder` PTS エポック不整合 × 無限 WAIT ループ）**:
+   - `restartStream()` → `VaapiEncoder.restartAll()` でサーバーが `STREAM_RESET` を送出して PTS エポックを `0` へ再基準化する際、クライアントの `resetClientStreamPipeline()` が `VideoDecoder` のみリセットし、`AudioPlayer` は `resetJitterBuffer()` のみ呼んで `AudioDecoder` インスタンスを残存させていました。
+   - 続く再起動後に同一の `OpusHead` (`AUDIO_FLAGS.CONFIG`) が届くと、Issue #111 の冪等ガード（`sameConfig && audioDecoder.state === 'configured'`）により `initDecoder()` がスキップされます。Chromium WebCodecs `AudioDecoder`（内部 `AudioTimestampHelper`）は過去の大きな PTS 巻き戻りに追従せず旧エポックのまま加算し続けるため、`playingAudioPts` が映像 PTS より旧セッション長分（例: `+2,324,000ms`）先行して固定化しました。
+   - この状態で Wi-Fi（macOS AWDL の 524.288ms 周期オフチャネル等）の軽微な ~90ms ジッタにより `arrivalGapMs >= 120ms`（`network_stall`）が起きると、`FramePacer.exitBufferingAndResume()`（`> 1500ms`）および `processQueue()`（`> 2000ms` / `stale_video_drop > 150ms`）の stale 破棄判定が無制限に発火し、**74〜348ms 停止して溜めた 6〜14 フレームを復帰の瞬間に全破棄（キュー空 `0` へ逆戻り）する無限ループ**に陥りました。
+
+2. **多層防御アーキテクチャ**:
+   - **主因対策 (`AudioPlayer.resetDecoder()` + `streaming.ts`)**: `STREAM_RESET` / `PAUSE_BROWSER` / セカンダリ待機切替 / 切断確定などのフルパイプラインリセット時は `audioPlayer.resetDecoder()` で `AudioDecoder` を明示的に `close()` / 破棄し、続く同一 `OpusHead` 受信時に新デコーダを確実に生成して `AudioTimestampHelper` をゼロ初期化します（通常の `OpusHead` 再送・Hold 復帰時の冪等性は維持）。
+   - **デコーダ世代ガード & 自動エポック追従 (`audio-player.ts`)**: `initDecoder()` 時の `output` / `error` コールバックで `this.audioDecoder !== decoder` の遅延出力を破棄し、旧世代デコーダからの汚染を遮断します。さらに `decodeAndPlayChunk()` で前回受信 PTS から `> 1,000,000μs`（1 秒超）の逆行を検知した場合も自動的に `resetDecoder()` + `initDecoder()` を実行します。
+   - **stale 破棄の上限ガード (`frame-pacer.ts`)**: `AudioPlayer.isAudioAheadOfVideo()`（`> 8s && < 60s`）と対称に、`FramePacer` の `exitBufferingAndResume()`・`processQueue()`・`stale_video_drop` すべてに **`< 60,000ms`（`AV_SYNC_MAX_STALE_DROP_LEAD_MS`）の上限ガード**を設け、万一のタイムライン・エポック乖離時にもバッファ連続全破棄ループを防止します。
+
+3. **観測精度の盲点と解消**:
+   - **A/V ドリフト隠蔽の罠**: `AvSyncController.getDriftMs()` は `|realDriftMs| > 5000ms` を範囲外として相対ベースライン計算へフォールバックするため、エポック乖離（200万 ms 超）がサーバーログ `AV-Drift` 上では `+100〜+171ms` と正常風に見えてしまいます。
+   - **実描画 FPS / ドロップ計測の統一**: `metricsCollector.recordFrameRendered()` を `VideoStreamDecoder` 出力側ではなく `CanvasRenderer.onFrameDrawn` へ配置し、`framePacer.onFrameDropped` を `metricsCollector.recordFrameDropped()` へ接続することで、サーバー側 `[ClientMetrics]` と車載 HUD FPS の乖離をなくしています。
+
 ---
 
 ## 11. アンチパターン集（厳禁事項）
@@ -356,6 +373,8 @@ Tesroid は特定の Linux カーネルバージョンに依存せず、Linux / 
     - `PlaybackBuffer` は過去 60 秒の履歴リングバッファであり、配信開始 2 秒後には常に `> 2000ms` になります。未消費滞留には `serverHeldMs()` を使用してください。また、Video と Audio の両方稼働を保証すべき復帰経路では必ず `isFullyRunning()`（AND）を使用してください。
 16. ❌ **サーバーが再起動をスキップした応答でクライアント側 `decoder.reset()` を発火すること、および定常キーフレームで `resumeBoundaryPtsUs` を上書きすること (Issues #111, #112)**
     - サーバーが新 SPS/PPS・IDR を送らない状態でクライアントだけ `decoder.reset()` すると最大 2 秒フリーズします。また `resumeBoundaryPtsUs` の更新は `resumeGateActive` 武装中の最初の IDR のみに限定してください。
+17. ❌ **`STREAM_RESET`（PTS エポックリセット）時に `AudioDecoder` インスタンスを使い回すこと、および `FramePacer` の stale 破棄に上限なしの差分条件を書くこと (Issue #112)**
+    - 同一 `OpusHead` 冪等スキップと Chromium `AudioDecoder` の旧エポック維持が噛み合うと `playingAudioPts` が旧セッション時刻に固定され、`FramePacer` が復帰のたびにキューを全破棄して無限 `WAIT` ループを起こします。フルリセット時は必ず `audioPlayer.resetDecoder()` を呼び、`FramePacer` の stale 破棄にはエポック逸脱上限（`< 60,000ms`）を設けてください。
 
 ---
 
@@ -394,7 +413,7 @@ ssh "${SERVER_USER}@${SERVER_HOST}" \
           process.exit(0);
         }
       });
-      ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'JSON.stringify(document.querySelector(\\\"video\\\").getVideoPlaybackQuality())' } }));
+      ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '(() => { const q = document.querySelector(\\\"video\\\")?.getVideoPlaybackQuality(); return q ? JSON.stringify({ totalVideoFrames: q.totalVideoFrames, droppedVideoFrames: q.droppedVideoFrames, corruptedVideoFrames: q.corruptedVideoFrames }) : null; })()' } }));
     })();
   \""
 

@@ -44,6 +44,7 @@ export class AudioPlayer {
   private minAcceptedDecodedPtsUs = 0;
 
   public static readonly LIVE_BARRIER_TTL_MS = 5000;
+  private static readonly PTS_EPOCH_RESET_BACKWARD_US = 1_000_000;
   private lastChunkPtsUs: number = 0;
 
   // Jitter buffer constants:
@@ -244,11 +245,20 @@ export class AudioPlayer {
     }
 
     try {
-      this.audioDecoder = new (window as any).AudioDecoder({
+      const decoder = new (window as any).AudioDecoder({
         output: (audioData: any) => {
+          if (this.audioDecoder !== decoder) {
+            try {
+              audioData.close();
+            } catch {}
+            return;
+          }
           this.playAudioData(audioData);
         },
         error: (err: any) => {
+          if (this.audioDecoder !== decoder) {
+            return;
+          }
           console.warn('[AudioPlayer] AudioDecoder error:', err);
           // If description was used, reject it on next attempt
           if (!this.descriptionRejected && (configData || this.lastConfigData)) {
@@ -256,12 +266,13 @@ export class AudioPlayer {
             this.descriptionRejected = true;
           }
           try {
-            this.audioDecoder.close();
+            decoder.close();
           } catch {}
           this.audioDecoder = null;
           this.resetJitterBuffer();
         },
       });
+      this.audioDecoder = decoder;
 
       const config: any = {
         codec: 'opus',
@@ -275,7 +286,7 @@ export class AudioPlayer {
       }
 
       try {
-        this.audioDecoder.configure(config);
+        decoder.configure(config);
         console.log(
           `[AudioPlayer] AudioDecoder configured (Stereo 48kHz Opus${config.description ? ' with OpusHead' : ''})`,
         );
@@ -286,7 +297,7 @@ export class AudioPlayer {
         );
         this.descriptionRejected = true;
         delete config.description;
-        this.audioDecoder.configure(config);
+        decoder.configure(config);
         console.log(
           '[AudioPlayer] AudioDecoder configured (fallback: Stereo 48kHz Opus without description)',
         );
@@ -308,6 +319,24 @@ export class AudioPlayer {
     // Issue #103: ジャンプ後の straggler 音声はデコード前に破棄する
     if (this.isStaleByLiveBarrier(ptsUs)) {
       return;
+    }
+
+    // Issue #112: STREAM_RESET 等で音声 PTS が大きく巻き戻った（エポックリセット）場合、
+    // 既存の WebCodecs AudioDecoder は内部 AudioTimestampHelper に旧エポックを保持し続けるため
+    // デコーダを再初期化して新エポックへ追従させる。
+    if (
+      this.lastChunkPtsUs > 0 &&
+      ptsUs > 0 &&
+      this.lastChunkPtsUs - ptsUs > AudioPlayer.PTS_EPOCH_RESET_BACKWARD_US
+    ) {
+      console.warn(
+        `[AudioPlayer] Detected audio PTS epoch reset (${Math.round(this.lastChunkPtsUs)} -> ${Math.round(ptsUs)}). Reinitializing AudioDecoder & jitter buffer.`,
+      );
+      this.resetDecoder();
+      this.initDecoder();
+      if (!this.audioDecoder || this.audioDecoder.state !== 'configured') {
+        return;
+      }
     }
 
     this.lastChunkPtsUs = ptsUs;
@@ -763,6 +792,23 @@ export class AudioPlayer {
       } catch {}
     }
     this.scheduledSources.clear();
+  }
+
+  /**
+   * Close and clear AudioDecoder alongside jitter buffer for full PTS epoch resets (e.g. STREAM_RESET).
+   * Unlike resetJitterBuffer(), this ensures Chromium's WebCodecs AudioDecoder resets its internal
+   * timestamp tracker cleanly when a new stream epoch starts with identical OpusHead config.
+   */
+  public resetDecoder(): void {
+    if (this.audioDecoder) {
+      if (this.audioDecoder.state !== 'closed') {
+        try {
+          this.audioDecoder.close();
+        } catch {}
+      }
+      this.audioDecoder = null;
+    }
+    this.resetJitterBuffer();
   }
 
   public resetJitterBuffer(): void {

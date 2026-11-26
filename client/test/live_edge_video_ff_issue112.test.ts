@@ -6,20 +6,24 @@ import { renderStreamingView } from '../src/views/streaming.js';
 // が対称に発火することを検証する。実測ではバリアが音声側にだけ適用され、古い映像キュー
 // (decodeQueueSize 86〜98 / drift −2.0〜−2.4s) が残り「音声先行」が恒常化していた。
 
-vi.mock('../src/core/canvas-renderer.js', () => {
-  return {
-    CanvasRenderer: function (this: any) {
-      this.resetFirstFrame = vi.fn();
-      this.getFps = vi.fn(() => 30);
-      this.getLastRenderTime = vi.fn(() => performance.now());
-    },
-  };
-});
-
 const captured = vi.hoisted(() => ({
   pacerInstances: [] as any[],
   decoderInstances: [] as any[],
+  rendererInstances: [] as any[],
+  metricsInstances: [] as any[],
 }));
+
+vi.mock('../src/core/canvas-renderer.js', () => {
+  return {
+    CanvasRenderer: function (this: any) {
+      captured.rendererInstances.push(this);
+      this.resetFirstFrame = vi.fn();
+      this.getFps = vi.fn(() => 30);
+      this.getLastRenderTime = vi.fn(() => performance.now());
+      this.onFrameDrawn = null;
+    },
+  };
+});
 
 vi.mock('../src/core/frame-pacer.js', () => {
   return {
@@ -35,6 +39,7 @@ vi.mock('../src/core/frame-pacer.js', () => {
       this.getMode = vi.fn(() => 'PASSIVE_STREAMING');
       this.getAutoCushionMs = vi.fn(() => 0);
       this.jumpToLive = vi.fn();
+      this.onFrameDropped = null;
     },
   };
 });
@@ -65,9 +70,11 @@ vi.mock('../src/input/touch-mapper.js', () => {
 vi.mock('../src/core/metrics.js', () => {
   return {
     MetricsCollector: function (this: any) {
+      captured.metricsInstances.push(this);
       this.onReport = null;
       this.updateRtt = vi.fn();
       this.recordFrameRendered = vi.fn();
+      this.recordFrameDropped = vi.fn();
       this.recordDecoderError = vi.fn();
       this.recordVideoPacket = vi.fn();
       this.recordAudioPacket = vi.fn();
@@ -175,6 +182,8 @@ describe('Issue #112 F-4b: サーバー起因 LIVE 復帰時の映像側対称�
   beforeEach(() => {
     captured.pacerInstances.length = 0;
     captured.decoderInstances.length = 0;
+    captured.rendererInstances.length = 0;
+    captured.metricsInstances.length = 0;
     elementRegistry = new Map<string, any>();
     eventListeners = {};
 
@@ -222,6 +231,7 @@ describe('Issue #112 F-4b: サーバー起因 LIVE 復帰時の映像側対称�
       isConnected: vi.fn(() => true),
     };
     mockAudioPlayer = {
+      resetDecoder: vi.fn(),
       resetJitterBuffer: vi.fn(),
       jumpToLive: vi.fn(),
       unlock: vi.fn().mockResolvedValue(undefined),
@@ -321,5 +331,24 @@ describe('Issue #112 F-4b: サーバー起因 LIVE 復帰時の映像側対称�
     expect(mockAudioPlayer.jumpToLive).toHaveBeenCalledTimes(1);
     expect(decoder.flushPendingForLiveJump).toHaveBeenCalledTimes(1);
     expect(pacer.jumpToLive).toHaveBeenCalledWith(true);
+  });
+
+  it('STREAM_RESET で audioPlayer.resetDecoder() が呼ばれ、実描画 FPS / FramePacer 破棄が MetricsCollector へ接続される', () => {
+    const control = startStreaming();
+    const pacer = captured.pacerInstances[0];
+    const renderer = captured.rendererInstances[0];
+    const metrics = captured.metricsInstances[0];
+
+    control({ type: 'STREAM_RESET', timestamp: Date.now() });
+    expect(mockAudioPlayer.resetDecoder).toHaveBeenCalledTimes(1);
+
+    // 描画 FPS は VideoDecoder 出力ではなく CanvasRenderer 実描画で計測する
+    expect(metrics.recordFrameRendered).not.toHaveBeenCalled();
+    renderer.onFrameDrawn?.(29);
+    expect(metrics.recordFrameRendered).toHaveBeenCalledWith(29);
+
+    // FramePacer のドロップ通知は MetricsCollector へ伝搬する
+    pacer.onFrameDropped?.();
+    expect(metrics.recordFrameDropped).toHaveBeenCalledTimes(1);
   });
 });

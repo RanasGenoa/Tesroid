@@ -114,6 +114,7 @@ export class FramePacer {
   private static readonly AV_SYNC_STALE_DROP_TOLERANCE_US = 40_000;
   private static readonly AV_SYNC_MAX_STALE_DROPS_PER_TICK = 4;
   private static readonly AV_SYNC_STALE_DROP_MIN_QUEUE = 8;
+  private static readonly AV_SYNC_MAX_STALE_DROP_LEAD_MS = 60_000;
 
   public onFrameDropped?: () => void;
   public onFrameProcessed?: () => void;
@@ -512,12 +513,13 @@ export class FramePacer {
           ? this.avSync.getCurrentPlayingAudioPtsUs()
           : null;
 
-      // Only drop truly stale video on major timeline discontinuity (> 1500ms behind)
+      // Only drop truly stale video on major timeline discontinuity (1500ms..60000ms behind)
       if (playingAudioPts !== null && playingAudioPts > 0) {
-        while (
-          this.frameQueue.length > 1 &&
-          (playingAudioPts - this.frameQueue[0].ptsUs) / 1000 > 1500
-        ) {
+        while (this.frameQueue.length > 1) {
+          const leadMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
+          if (leadMs <= 1500 || leadMs >= FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS) {
+            break;
+          }
           const stale = this.frameQueue.shift();
           if (stale) {
             try {
@@ -579,13 +581,14 @@ export class FramePacer {
         ? this.avSync.getCurrentPlayingAudioPtsUs()
         : null;
 
-    // If playback queue is severely behind master clock (> 2000ms), drop oldest stale frames to catch up smoothly
+    // If playback queue is severely behind master clock (2000ms..60000ms), drop oldest stale frames to catch up smoothly
     if (playingMasterPts !== null && playingMasterPts > 0 && this.frameQueue.length > 1) {
       let droppedAny = false;
-      while (
-        this.frameQueue.length > 1 &&
-        (playingMasterPts - this.frameQueue[0].ptsUs) / 1000 > 2000
-      ) {
+      while (this.frameQueue.length > 1) {
+        const leadMs = (playingMasterPts - this.frameQueue[0].ptsUs) / 1000;
+        if (leadMs <= 2000 || leadMs >= FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS) {
+          break;
+        }
         const stale = this.frameQueue.shift();
         if (stale) {
           droppedAny = true;
@@ -662,7 +665,8 @@ export class FramePacer {
             while (
               this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
               staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
-              backlogLagMs > FramePacer.AV_SYNC_MAX_ERROR_MS
+              backlogLagMs > FramePacer.AV_SYNC_MAX_ERROR_MS &&
+              backlogLagMs < FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS
             ) {
               const head = this.frameQueue[0];
               if (head.ptsUs > 0 && head.ptsUs < staleDropTargetUs) {

@@ -365,6 +365,9 @@ export function renderStreamingView(
   };
 
   const renderer = new CanvasRenderer(canvas);
+  renderer.onFrameDrawn = (fps: number) => {
+    metricsCollector.recordFrameRendered(fps > 0 ? fps : undefined);
+  };
   const framePacer = new FramePacer(renderer, targetFps, avSync);
   let activeDecoder: VideoStreamDecoder | null = null;
   const applyTargetFps = (fps: number) => {
@@ -722,7 +725,6 @@ export function renderStreamingView(
 
   const decoder = new VideoStreamDecoder(
     (frame: VideoFrame) => {
-      metricsCollector.recordFrameRendered();
       framePacer.queueFrame(frame);
       hideOverlay();
     },
@@ -760,6 +762,13 @@ export function renderStreamingView(
   // Issue #11: クライアント処理負荷計測用（描画所要時間 p50/p95）
   framePacer.onFrameRenderTimed = (durationMs: number) => {
     metricsCollector.recordFrameProcessed(durationMs);
+  };
+
+  // Issue #112: FramePacer 内での破棄フレーム数を ClientMetrics へ計上する
+  framePacer.onFrameDropped = () => {
+    if (typeof metricsCollector.recordFrameDropped === 'function') {
+      metricsCollector.recordFrameDropped();
+    }
   };
 
   framePacer.onFrameProcessed = () => {
@@ -1220,10 +1229,20 @@ export function renderStreamingView(
     }, 50);
   };
 
+  // Full pipeline teardown paths (STREAM_RESET / PAUSE_BROWSER / standby / disconnect) must close AudioDecoder
+  // alongside the jitter buffer so new PTS epochs do not inherit Chromium's prior AudioTimestampHelper offset.
+  const resetAudioForStreamReset = () => {
+    if (typeof audioPlayer.resetDecoder === 'function') {
+      audioPlayer.resetDecoder();
+    } else {
+      audioPlayer.resetJitterBuffer();
+    }
+  };
+
   // Immediate Stop Action
   const triggerStop = () => {
     wsClient.send(ClientProtocol.packCommand({ type: 'PAUSE_BROWSER' }));
-    audioPlayer.resetJitterBuffer();
+    resetAudioForStreamReset();
     if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
       audioPlayer.clearLiveEdgeBarrier();
     }
@@ -1344,7 +1363,7 @@ export function renderStreamingView(
     } else {
       framePacer.resetFirstFrame();
     }
-    audioPlayer.resetJitterBuffer();
+    resetAudioForStreamReset();
     if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
       // Issue #103: ストリーム再構築では PTS が再基準化されるため、旧ストリーム基準のバリアは無効化する
       audioPlayer.clearLiveEdgeBarrier();
@@ -1567,7 +1586,7 @@ export function renderStreamingView(
         jitterController.reset();
         renderer.resetFirstFrame();
         avSync.reset();
-        audioPlayer.resetJitterBuffer();
+        resetAudioForStreamReset();
         if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
           audioPlayer.clearLiveEdgeBarrier();
         }
@@ -1743,6 +1762,10 @@ export function renderStreamingView(
           renderer.resetFirstFrame();
           framePacer.resetFirstFrame();
           avSync.reset();
+          resetAudioForStreamReset();
+          if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+            audioPlayer.clearLiveEdgeBarrier();
+          }
           if (connText) connText.textContent = '切断';
           if (connDot) connDot.className = 'status-dot status-offline';
           if (hudConn) hudConn.title = '接続状態: 切断';
@@ -1755,6 +1778,10 @@ export function renderStreamingView(
       renderer.resetFirstFrame();
       framePacer.resetFirstFrame();
       avSync.reset();
+      resetAudioForStreamReset();
+      if (typeof audioPlayer.clearLiveEdgeBarrier === 'function') {
+        audioPlayer.clearLiveEdgeBarrier();
+      }
       if (connText) connText.textContent = '切断';
       if (connDot) connDot.className = 'status-dot status-offline';
       if (hudConn) hudConn.title = '接続状態: 切断';
