@@ -676,22 +676,27 @@ export class FramePacer {
             // (>8 フレーム) のみ。短キューはスケジュール前倒し余地があるため PLL 負方向シフトに任せる。
             const backlogLagMs = (playingAudioPts - this.frameQueue[0].ptsUs) / 1000;
             const firstStalePtsUs = this.frameQueue[0].ptsUs;
-            while (
-              this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
-              staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK &&
+            // 発動ゲート (60ms〜60s の音声先行域)。通過後のループ継続条件は
+            // キュー長・1tick上限・停止目標 (head.ptsUs >= staleDropTargetUs) のみに分離する。
+            if (
               backlogLagMs > FramePacer.AV_SYNC_AUDIO_LEAD_ABSORB_GATE_MS &&
               backlogLagMs < FramePacer.AV_SYNC_MAX_STALE_DROP_LEAD_MS
             ) {
-              const head = this.frameQueue[0];
-              if (head.ptsUs > 0 && head.ptsUs < staleDropTargetUs) {
-                this.frameQueue.shift();
-                try {
-                  head.frame.close();
-                } catch {}
-                this.onFrameProcessed?.();
-                staleDropped++;
-              } else {
-                break;
+              while (
+                this.frameQueue.length > FramePacer.AV_SYNC_STALE_DROP_MIN_QUEUE &&
+                staleDropped < FramePacer.AV_SYNC_MAX_STALE_DROPS_PER_TICK
+              ) {
+                const head = this.frameQueue[0];
+                if (head.ptsUs > 0 && head.ptsUs < staleDropTargetUs) {
+                  this.frameQueue.shift();
+                  try {
+                    head.frame.close();
+                  } catch {}
+                  this.onFrameProcessed?.();
+                  staleDropped++;
+                } else {
+                  break;
+                }
               }
             }
             // Issue #113: 破棄しただけでは 1x の再生クロックは進まない。破棄した内容分の時間を
