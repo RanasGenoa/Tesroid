@@ -8,6 +8,7 @@ import {
 import type { AppRoute, AppState, AppStore } from "../../state/index.js";
 import { el, getDoc, touchButton } from "../dom.js";
 import { buildOnboardingGuideElement } from "../guide-content.js";
+import { pickerControl, TouchPickerHost } from "../touch-picker.js";
 
 const QUALITY_LABELS: Readonly<Record<SetupQualityChoice, string>> = {
   high: "最高品質 (MCU3)",
@@ -25,6 +26,7 @@ export class SetupWizardView {
   private qualityDraft: SetupQualityChoice = "standard";
   private localError: string | null = null;
   private submitting = false;
+  private readonly pickerHost = new TouchPickerHost();
 
   // Spec: docs/specs/01-auth-security.md#2.3
   constructor(store: AppStore) {
@@ -39,6 +41,7 @@ export class SetupWizardView {
 
   // Spec: docs/specs/01-auth-security.md#2.3
   unmount(): void {
+    this.pickerHost.dismiss();
     if (this.container !== null) {
       this.container.replaceChildren();
     }
@@ -58,6 +61,7 @@ export class SetupWizardView {
         this.localError = null;
         this.submitting = false;
       }
+      this.pickerHost.dismiss();
       this.lastRoute = state.route;
       this.container.replaceChildren();
       this.container.className = "";
@@ -151,22 +155,23 @@ export class SetupWizardView {
     const tzField = el(doc, "div", { className: "form-field" }, [
       el(doc, "label", { text: "タイムゾーン" }),
     ]);
-    const tzSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "setup-timezone-select" },
+    const tzControl = pickerControl(doc, "setup-timezone-select", this.timezoneDraft, () => {
+      void this.pickerHost
+        .open(doc, {
+          title: "タイムゾーン",
+          testid: "setup-timezone-select",
+          options: SETUP_TIMEZONE_OPTIONS.map((tz) => ({ label: tz, value: tz })),
+          selectedValue: this.timezoneDraft,
+        })
+        .then((value) => {
+          if (value === null) {
+            return;
+          }
+          this.timezoneDraft = value;
+          this.render(this.store.getState());
+        });
     });
-    for (const tz of SETUP_TIMEZONE_OPTIONS) {
-      const opt = el(doc, "option", { text: tz, attrs: { value: tz } });
-      if (tz === this.timezoneDraft) {
-        opt.selected = true;
-      }
-      tzSelect.appendChild(opt);
-    }
-    tzSelect.value = this.timezoneDraft;
-    tzSelect.addEventListener("change", () => {
-      this.timezoneDraft = tzSelect.value;
-    });
-    tzField.appendChild(tzSelect);
+    tzField.appendChild(tzControl);
     card.appendChild(tzField);
 
     const presetField = el(doc, "div", { className: "form-field" }, [
