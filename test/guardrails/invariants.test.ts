@@ -278,6 +278,7 @@ describe("Architecture & Specification Invariant Guardrails", () => {
       cdpPort: 9222,
       initialUrl: "https://www.youtube.com",
       viewport: { width: 1280, height: 720 },
+      vaapiRenderNode: "/dev/dri/renderD128",
     });
     for (const flag of PROHIBITED_CHROME_FLAGS) {
       expect(args).not.toContain(flag);

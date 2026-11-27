@@ -24,7 +24,7 @@ import {
   buildXvfbLaunchArgs,
   sanitizeChromePreferences,
 } from "./launch-args.js";
-import { buildCombinedPageInitScript, buildDisplayScaleScript } from "./page-scripts.js";
+import { buildCombinedPageInitScript } from "./page-scripts.js";
 import type {
   BrowserControlPort,
   BrowserLaunchConfig,
@@ -47,7 +47,9 @@ export interface BrowserServiceDeps {
   readonly processTree: ProcessTreeController;
   readonly cdp: CdpClientPort;
   readonly inputRouter: BrowserInputRouter;
-  readonly config: Omit<BrowserLaunchConfig, "initialUrl" | "timezone">;
+  readonly config: Omit<BrowserLaunchConfig, "initialUrl" | "timezone" | "vaapiRenderNode">;
+  // VAAPI レンダノードはエンコーダ側の GPU 検出結果に依存するため、Chrome 起動時点で遅延取得する（app 層で配線）。
+  readonly vaapiRenderNodeProvider?: () => string | null | Promise<string | null>;
   readonly onPageInfoChanged?: (info: BrowserPageInfo) => void;
   readonly onDroppedInput?: (kind: DroppedInputKind, reason: string) => void;
 }
@@ -259,10 +261,7 @@ export class BrowserService implements BrowserControlPort {
     if (!this.deps.cdp.isConnected()) {
       return;
     }
-    await this.deps.cdp.addScriptToEvaluateOnNewDocument(
-      buildCombinedPageInitScript({ displayScale: clamped }),
-    );
-    await this.deps.cdp.evaluate(buildDisplayScaleScript(clamped));
+    await this.deps.cdp.setPageInitScript(buildCombinedPageInitScript({ displayScale: clamped }));
   }
 
   // Spec: docs/specs/05-encoder-gpu.md#2.3
@@ -362,6 +361,7 @@ export class BrowserService implements BrowserControlPort {
       initialUrl,
       timezone,
       viewport: this.viewport,
+      vaapiRenderNode: (await this.deps.vaapiRenderNodeProvider?.()) ?? null,
     });
     const env = buildChromeProcessEnv(
       process.env,
@@ -425,10 +425,7 @@ export class BrowserService implements BrowserControlPort {
     try {
       await this.deps.cdp.connect(this.deps.config.cdpPort);
       this.clearCdpReconnectTimer();
-      await this.deps.cdp.addScriptToEvaluateOnNewDocument(
-        buildCombinedPageInitScript({ displayScale: this.displayScale }),
-      );
-      await this.deps.cdp.evaluate(
+      await this.deps.cdp.setPageInitScript(
         buildCombinedPageInitScript({ displayScale: this.displayScale }),
       );
       await this.deps.cdp.setViewportSize(this.viewport);

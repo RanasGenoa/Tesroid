@@ -3,6 +3,7 @@ import type {
   PrimarySyncMetadata,
   StreamingEvent,
   StreamingState,
+  TelemetryCategory,
 } from "@tesroid/shared";
 
 export interface PlaybackStatsSnapshot {
@@ -152,6 +153,20 @@ export type AudioContextFactory = (options: {
   readonly latencyHint: "interactive";
   readonly sampleRate: number;
 }) => AudioContextLike;
+
+// Spec: docs/specs/08-observability.md#2.1
+// 再生エンジンの観測事象を app 層のメトリクス/テレメトリへ橋渡しする狭い Port。
+export interface PlaybackObserverPort {
+  onFrameRendered(renderDurationMs: number): void;
+  onDroppedFrames(count: number): void;
+  onDecoderError(): void;
+  emitTelemetry(
+    category: TelemetryCategory,
+    event: string,
+    data?: Record<string, unknown> | undefined,
+  ): void;
+  recordThrottledSync(event: string, data?: Record<string, unknown> | undefined): void;
+}
 
 export interface PlaybackControllerPort {
   attachCanvas(canvas: CanvasElementLike): void;

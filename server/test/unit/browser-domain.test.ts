@@ -309,6 +309,7 @@ describe("server/domains/browser (Spec 06)", () => {
       cdpPort: 9222,
       initialUrl: "https://tver.jp",
       viewport: { width: 1280, height: 720 },
+      vaapiRenderNode: null,
     });
 
     for (const prohibited of PROHIBITED_CHROME_FLAGS) {
@@ -317,9 +318,9 @@ describe("server/domains/browser (Spec 06)", () => {
     expect(args).toContain("--app=https://tver.jp");
     expect(args).toContain(`--lang=${DEFAULT_LOCALE}`);
     expect(args).toContain("--password-store=basic");
-    expect(args).toContain("--disable-gpu-rasterization");
+    // レンダリングとコンポジティングの不一致は再生画面の描画破綻を起こすため、強制ソフトウェア化フラグは付与しない（v0.8.0 実績準拠）。
+    expect(args).not.toContain("--disable-gpu-rasterization");
     expect(args).toContain("--enable-accelerated-video-decode");
-    expect(args.some((arg) => arg.includes("VaapiVideoDecoder"))).toBe(true);
     expect(args.some((arg) => arg.includes("Dav1dVideoDecoder"))).toBe(true);
     expect(() =>
       buildChromeLaunchArgs({
@@ -331,6 +332,7 @@ describe("server/domains/browser (Spec 06)", () => {
         cdpPort: 9222,
         initialUrl: "file:///etc/passwd",
         viewport: { width: 1280, height: 720 },
+        vaapiRenderNode: null,
       }),
     ).toThrow();
 
@@ -430,6 +432,75 @@ describe("server/domains/browser (Spec 06)", () => {
       expect(processRunner.spawnCalls).toHaveLength(5);
     });
     expect(processRunner.spawnCalls[4]?.command).toBe("google-chrome");
+
+    await service.stop();
+  });
+
+  it("AC-01: VAAPI video decode binding uses feature names effective on Chrome 131+ and forces the detected render node", () => {
+    const base = {
+      display: ":99",
+      locale: "ja-JP",
+      timezone: "Asia/Tokyo",
+      userDataDir: "/data/chrome-profile",
+      pulseSocketPath: "/tmp/pulse-socket",
+      cdpPort: 9222,
+      initialUrl: "https://www.youtube.com",
+      viewport: { width: 1280, height: 720 },
+    };
+
+    const withNode = buildChromeLaunchArgs({
+      ...base,
+      vaapiRenderNode: "/dev/dri/renderD128",
+    });
+    expect(withNode).toContain("--render-node-override=/dev/dri/renderD128");
+    // 仮想 GPU 構成では Chrome の GPU ブロックリストが HW 動画デコード判定自体を無効化するため除外が必須。
+    expect(withNode).toContain("--ignore-gpu-blocklist");
+    const enabled = withNode.find((arg) => arg.startsWith("--enable-features="));
+    expect(enabled).toContain("AcceleratedVideoDecodeLinuxGL");
+    expect(enabled).toContain("VaapiIgnoreDriverChecks");
+    expect(withNode.some((arg) => arg.includes("VaapiVideoDecoder"))).toBe(false);
+
+    const withoutNode = buildChromeLaunchArgs({ ...base, vaapiRenderNode: null });
+    expect(withoutNode.some((arg) => arg.startsWith("--render-node-override"))).toBe(false);
+  });
+
+  it("AC-01: resolves the render node provider at Chrome spawn time and injects --render-node-override", async () => {
+    const userDataDir = await makeTempDir();
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    const processRunner = new FakeProcessRunner();
+    let detectCount = 0;
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp: new FakeCdpClient(),
+      inputRouter: new BrowserInputRouter({ clock, cdp: new FakeCdpClient() }),
+      // 検出遅延を再現する非同期 provider（起動時点での遅延取得契約）。
+      vaapiRenderNodeProvider: async () => {
+        detectCount += 1;
+        return "/dev/dri/renderD128";
+      },
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: "/tmp/pulse-socket",
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    await service.start();
+    const chromeSpawn = processRunner.spawnCalls.find((call) => call.command === "google-chrome");
+    expect(chromeSpawn?.args).toContain("--render-node-override=/dev/dri/renderD128");
+    expect(detectCount).toBe(1);
 
     await service.stop();
   });
@@ -554,6 +625,43 @@ describe("server/domains/browser (Spec 06)", () => {
     await service.goBack();
     expect(cdp.navigatedUrls).toEqual(["https://example.com"]);
     expect(cdp.backCount).toBe(1);
+  });
+
+  it("AC-01 付則: 注入スクリプトは GPU 能力にかかわらず常に vp9/av1 を拒否し h264 のみ受理する（冪等）", async () => {
+    const harness = createSyntheticDomHarness();
+    // ネイティブが全コーデックを受理する環境を模した最小スタブ。
+    harness.context.MediaSource = {
+      isTypeSupported: (type: string) => /avc1|vp9|av01|opus/.test(String(type)),
+    };
+    (harness.context.navigator as Record<string, unknown>).mediaCapabilities = {
+      decodingInfo: async () => ({ supported: true, smooth: true, powerEfficient: true }),
+    };
+
+    const script = buildCombinedPageInitScript({ displayScale: 100 });
+    vm.runInContext(script, harness.context);
+    // 再注入でも二重ラップにならず挙動が同一（冪等）であることを確認する。
+    vm.runInContext(script, harness.context);
+
+    const mediaSource = harness.context.MediaSource as { isTypeSupported(t: string): boolean };
+    expect(mediaSource.isTypeSupported('video/mp4;codecs="vp09.00.10.08"')).toBe(false);
+    expect(mediaSource.isTypeSupported('video/webm;codecs="vp9"')).toBe(false);
+    expect(mediaSource.isTypeSupported('video/mp4;codecs="av01.0.08M.08"')).toBe(false);
+    expect(mediaSource.isTypeSupported('video/mp4;codecs="avc1.640028"')).toBe(true);
+
+    const caps = (
+      harness.context.navigator as {
+        mediaCapabilities: {
+          decodingInfo(config: unknown): Promise<{ supported: boolean }>;
+        };
+      }
+    ).mediaCapabilities;
+    expect(
+      (await caps.decodingInfo({ video: { contentType: 'video/webm;codecs="vp9"' } })).supported,
+    ).toBe(false);
+    expect(
+      (await caps.decodingInfo({ video: { contentType: 'video/mp4;codecs="avc1.640028"' } }))
+        .supported,
+    ).toBe(true);
   });
 
   it("AC-03: single init script suppresses WebAuthn (NotAllowedError on publicKey, passthrough otherwise, idempotent) and sanitizes Chrome Preferences", async () => {
@@ -724,7 +832,7 @@ describe("server/domains/browser (Spec 06)", () => {
     expect(cdp.getPageInfoCalls).toBe(callsBeforePause);
 
     await service.setDisplayScale(10);
-    expect(cdp.evaluatedExpressions.at(-1)).toContain("50");
+    expect(cdp.initScripts.at(-1)).toContain("__tesroidDisplayScale = 50");
     await service.stop();
   });
 

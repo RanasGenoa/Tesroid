@@ -118,6 +118,7 @@ function createBoundaryEncoderFake(
       getCurrentEpoch: () => STREAM_EPOCH_INITIAL,
       detectBackend: notUsed,
       getActiveBackend: () => backend,
+      getRenderNode: () => null,
       getHealthStatus: notUsed,
       reconfigureDimensions: notUsed,
       applySettingsUpdate: async (update) => {

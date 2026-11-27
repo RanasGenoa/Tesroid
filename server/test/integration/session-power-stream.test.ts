@@ -156,6 +156,7 @@ function createPhase3EncoderFake() {
       reason: "fake",
     }),
     getActiveBackend: () => "vaapi",
+    getRenderNode: () => "/dev/dri/renderD128",
     getHealthStatus: () => ({
       running: videoRunning && audioRunning,
       backend: "vaapi",

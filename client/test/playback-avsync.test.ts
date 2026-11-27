@@ -2,13 +2,17 @@ import {
   AUDIO_FLAG,
   CHANNEL_ID,
   decodeClientControlFrame,
+  decodeMetricsFrame,
+  decodeTelemetryFrame,
   INTERACTION_TIMEOUT_MS,
   type MediaFrame,
   PROTOCOL_TIMING,
+  type TelemetryCategory,
   VIDEO_FLAG,
   type WsCloseCode,
 } from "@tesroid/shared";
 import { describe, expect, it } from "vitest";
+import { attachGlobalAudioUnlock } from "../src/input/audio-unlock.js";
 import {
   AUDIO_PLAYER_CONSTANTS,
   type AudioBufferLike,
@@ -37,6 +41,7 @@ import {
   VideoDecoderPipeline,
   type VideoFrameLike,
 } from "../src/media/index.js";
+import { ClientMetricsCollector, ClientTelemetryReporter } from "../src/observability/index.js";
 import type {
   ClientClock,
   ClientTimerHandle,
@@ -1167,7 +1172,7 @@ describe("client/media (Spec 04)", () => {
 
     syncClock.updateLocalAudioClock(5_000_000, 1_000);
     const aheadEval = syncClock.evaluateVideoFrame(11_500_000, 1_000);
-    expect(aheadEval.action).toBe("WAIT");
+    expect(aheadEval.action).toBe("RENDER_NOW");
     expect(aheadEval.signedDriftMs).toBe(6_500);
 
     const behindEval = syncClock.evaluateVideoFrame(1_000_000, 1_000);
@@ -1227,5 +1232,337 @@ describe("client/media (Spec 04)", () => {
     secController.handleMediaFrame(makeVideoFrame(1, 0, VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC));
     expect(secController.getStatsSnapshot().avDriftMs).toBe(-7_250);
     secController.dispose();
+  });
+});
+
+describe("仕様 08 AC-01/AC-02 クライアント観測結線", () => {
+  const startStreaming = async (
+    controller: PlaybackController,
+    videoFactory: FakeVideoDecoderFactory,
+    audioFactory: FakeAudioDecoderFactory,
+    audioHarness: FakeAudioContextHarness,
+    clock: FakeClock,
+  ) => {
+    controller.attachCanvas(new FakeCanvasElement());
+    controller.dispatchStreamingEvent({ type: "SESSION_ACTIVATED", streamEpoch: 1 });
+    await controller.unlockAudioOnGesture();
+    controller.handleMediaFrame(makeVideoFrame(1, 0, VIDEO_FLAG.CONFIG, SAMPLE_ANNEXB_SPS_PPS));
+    controller.handleMediaFrame(makeAudioFrame(1, 0, AUDIO_FLAG.CONFIG, SAMPLE_OPUS_HEAD));
+    await flushMicrotasks();
+    for (let i = 0; i < 5; i += 1) {
+      const flags = i === 0 ? VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC : VIDEO_FLAG.AVCC;
+      controller.handleMediaFrame(makeVideoFrame(1, i * 33_333, flags));
+      clock.advanceBy(10);
+    }
+    audioFactory.defaultFormat = "f32";
+    for (let i = 0; i < 10; i += 1) {
+      controller.handleMediaFrame(makeAudioFrame(1, i * 20_000));
+    }
+  };
+
+  it("AC-01: 描画・同期廃棄・デコードエラーが ClientMetricsCollector の 10s ウィンドウサンプルへ集計され WS メトリクスフレームで送信される", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const metrics = new ClientMetricsCollector({ transport, clock });
+    metrics.start();
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+      observer: {
+        onFrameRendered: (durationMs: number) => metrics.recordFrameRendered(durationMs),
+        onDroppedFrames: (count: number) => metrics.recordDroppedFrames(count),
+        onDecoderError: () => metrics.recordDecoderError(),
+        emitTelemetry: () => {},
+        recordThrottledSync: () => {},
+      },
+    });
+    await startStreaming(controller, videoFactory, audioFactory, audioHarness, clock);
+
+    const decoder = videoFactory.getLatestInstance();
+    decoder?.emitError(new Error("decode fault"));
+    expect(decoder?.state).toBe("closed");
+
+    // 新フレームを投入し、INTERACTIVE の DIRECT 低遅延パスで旧フレームを廃棄させる。
+    audioHarness.currentTimeSec = 0.3;
+    controller.handleMediaFrame(makeVideoFrame(1, 100_000, VIDEO_FLAG.AVCC));
+
+    clock.advanceBy(10_000);
+
+    const metricsFrames = transport.sentFrames.filter((f) => f[0] === 0x14);
+    expect(metricsFrames.length).toBeGreaterThanOrEqual(1);
+    const lastMetrics = metricsFrames.at(-1);
+    if (lastMetrics === undefined) {
+      throw new Error("metrics frame not sent");
+    }
+    const sample = decodeMetricsFrame(lastMetrics);
+    // 結線検証が目的: 描画・廃棄・デコードエラーの 3 系統が窓サンプルへ到達することを確認する。
+    expect(sample.totalRenderedFrames).toBeGreaterThanOrEqual(1);
+    expect(sample.fps).toBeGreaterThan(0);
+    expect(sample.droppedFrames).toBeGreaterThanOrEqual(1);
+    expect(sample.decoderErrors).toBeGreaterThanOrEqual(1);
+    controller.dispose();
+    metrics.stop();
+  });
+
+  it("AC-02: 音声 underrun/resume がテレメトリ audio イベントとして WS テレメトリバッチへ送信される", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const telemetry = new ClientTelemetryReporter({ transport, clock });
+    telemetry.setEnabled(true);
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+      observer: {
+        onFrameRendered: () => {},
+        onDroppedFrames: () => {},
+        onDecoderError: () => {},
+        emitTelemetry: (
+          category: TelemetryCategory,
+          event: string,
+          data?: Record<string, unknown>,
+        ) => telemetry.record(category, event, data),
+        recordThrottledSync: (event: string, data?: Record<string, unknown>) =>
+          telemetry.recordThrottledSync(event, data),
+      },
+    });
+    await startStreaming(controller, videoFactory, audioFactory, audioHarness, clock);
+
+    // 音声到着を止め、再生クロックを進めた後の次 packet 到着で underrun を検出させる。
+    audioHarness.currentTimeSec = 0.5;
+    clock.advanceBy(600);
+    controller.handleMediaFrame(makeAudioFrame(1, 200_000));
+
+    clock.advanceBy(1_000);
+
+    const telemetryFrames = transport.sentFrames.filter((f) => f[0] === 0x15);
+    expect(telemetryFrames.length).toBeGreaterThanOrEqual(1);
+    const lastTelemetry = telemetryFrames.at(-1);
+    if (lastTelemetry === undefined) {
+      throw new Error("telemetry frame not sent");
+    }
+    const batch = decodeTelemetryFrame(lastTelemetry);
+    const underruns = batch.events.filter(
+      (e) => e.category === "audio" && (e.event as string) === "underrun",
+    );
+    expect(underruns.length).toBeGreaterThanOrEqual(1);
+    controller.dispose();
+    telemetry.dispose();
+  });
+
+  it("AC-02: 先頭フレームの長時間 WAIT と大音ズレが av_sync イベント（long_wait / av_drift）として送信される", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const telemetry = new ClientTelemetryReporter({ transport, clock });
+    telemetry.setEnabled(true);
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+      observer: {
+        onFrameRendered: () => {},
+        onDroppedFrames: () => {},
+        onDecoderError: () => {},
+        emitTelemetry: (
+          category: TelemetryCategory,
+          event: string,
+          data?: Record<string, unknown>,
+        ) => telemetry.record(category, event, data),
+        recordThrottledSync: (event: string, data?: Record<string, unknown>) =>
+          telemetry.recordThrottledSync(event, data),
+      },
+    });
+    await startStreaming(controller, videoFactory, audioFactory, audioHarness, clock);
+
+    // INTERACTION_TIMEOUT で LIVE へ遷移させ、音声クロック 200ms に対し再アンカー閾値内の 1s 先フレームを投入 → WAIT 継続 + 大 drift。
+    audioHarness.currentTimeSec = 0.2;
+    clock.advanceBy(INTERACTION_TIMEOUT_MS + 5);
+    controller.handleMediaFrame(makeVideoFrame(1, 1_200_000, VIDEO_FLAG.AVCC));
+
+    clock.advanceBy(1_000);
+
+    const telemetryFrames = transport.sentFrames.filter((f) => f[0] === 0x15);
+    expect(telemetryFrames.length).toBeGreaterThanOrEqual(1);
+    const lastTelemetry = telemetryFrames.at(-1);
+    if (lastTelemetry === undefined) {
+      throw new Error("telemetry frame not sent");
+    }
+    const batch = decodeTelemetryFrame(lastTelemetry);
+    const events = batch.events.map((e) => e.event as string);
+    expect(events).toContain("av_drift");
+    expect(events).toContain("video_long_wait");
+    controller.dispose();
+    telemetry.dispose();
+  });
+});
+
+describe("仕様 04 AC-03/AC-04 大ドリフト再アンカーと音声給feed継続", () => {
+  it("AC-03: デコード出力が止まっても source 完了イベントで次の窓をスケジュールし音声が途切れない", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+    });
+    controller.attachCanvas(new FakeCanvasElement());
+    controller.dispatchStreamingEvent({ type: "SESSION_ACTIVATED", streamEpoch: 1 });
+    await controller.unlockAudioOnGesture();
+    controller.handleMediaFrame(makeAudioFrame(1, 0, AUDIO_FLAG.CONFIG, SAMPLE_OPUS_HEAD));
+    await flushMicrotasks();
+
+    // 先読み上限 (500ms) を超える PCM を投入し、窓の残りを持つ状態でデコード出力を止める。
+    audioFactory.defaultFormat = "f32";
+    for (let i = 0; i < 40; i += 1) {
+      controller.handleMediaFrame(makeAudioFrame(1, i * 20_000));
+    }
+
+    const scheduledBefore = audioHarness.scheduledSources.length;
+    expect(scheduledBefore).toBeGreaterThan(0);
+    expect(scheduledBefore).toBeLessThan(40);
+
+    // 再生が進行した状態で source 完了イベントのみを発火させる（新規デコード出力は投入しない）。
+    audioHarness.currentTimeSec = 0.3;
+    const lastSource = audioHarness.scheduledSources[audioHarness.scheduledSources.length - 1];
+    lastSource?.source.onended?.();
+
+    expect(audioHarness.scheduledSources.length).toBeGreaterThan(scheduledBefore);
+    controller.dispose();
+  });
+
+  it("AC-04: 音声クロックより 1.5s 以上先行した先頭フレームは無限 WAIT でなく再アンカーで即時評価される", () => {
+    const syncClock = new MasterSyncClock();
+    syncClock.updateLocalAudioClock(0, 10_000);
+
+    const farAhead = syncClock.evaluateVideoFrame(1_600_000, 10_000);
+    expect(farAhead.action).toBe("RENDER_NOW");
+    expect(farAhead.signedDriftMs).toBeGreaterThanOrEqual(1_500);
+
+    // 閾値未満では従来どおり WAIT（過補正ガード）。
+    const moderate = syncClock.evaluateVideoFrame(200_000, 10_000);
+    expect(moderate.action).toBe("WAIT");
+  });
+
+  it("AC-04: LIVE で音声クロックより 2s 先のフレームは再アンカーにより 4s 以内に描画が再開し音が止まらない", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+    });
+    const canvas = new FakeCanvasElement();
+    controller.attachCanvas(canvas);
+    controller.dispatchStreamingEvent({ type: "SESSION_ACTIVATED", streamEpoch: 1 });
+    await controller.unlockAudioOnGesture();
+    controller.handleMediaFrame(makeVideoFrame(1, 0, VIDEO_FLAG.CONFIG, SAMPLE_ANNEXB_SPS_PPS));
+    controller.handleMediaFrame(makeAudioFrame(1, 0, AUDIO_FLAG.CONFIG, SAMPLE_OPUS_HEAD));
+    await flushMicrotasks();
+
+    audioFactory.defaultFormat = "f32";
+    for (let i = 0; i < 10; i += 1) {
+      controller.handleMediaFrame(makeAudioFrame(1, i * 20_000));
+    }
+    audioHarness.currentTimeSec = 0.2;
+    clock.advanceBy(INTERACTION_TIMEOUT_MS + 5);
+
+    // 音声クロック 200ms に対し 2.2s 先のフレーム → 再アンカーで即描画、音声は running のまま。
+    controller.handleMediaFrame(
+      makeVideoFrame(1, 2_400_000, VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC),
+    );
+    expect(canvas.drawnTimestamps).toContain(2_400_000);
+    expect(audioHarness.state).toBe("running");
+    controller.dispose();
+  });
+
+  it("AC-03 付則: 初回操作が非 canvas の UI タップでも音声再生が開始する", async () => {
+    const clock = new FakeClock(20_000);
+    const transport = new FakeWsTransport();
+    const videoFactory = new FakeVideoDecoderFactory();
+    const audioFactory = new FakeAudioDecoderFactory();
+    const audioHarness = new FakeAudioContextHarness();
+
+    const controller = new PlaybackController({
+      transport,
+      onRequestStreamReset: () => {},
+      clock,
+      videoDecoderFactory: videoFactory,
+      audioDecoderFactory: audioFactory,
+      audioContextFactory: audioHarness.factory,
+    });
+    controller.attachCanvas(new FakeCanvasElement());
+    controller.dispatchStreamingEvent({ type: "SESSION_ACTIVATED", streamEpoch: 1 });
+
+    // 解禁は canvas 操作ではなく UI 全域の単一 pointerdown 経路でのみ保証する。
+    const listeners: Array<() => void> = [];
+    const uiSurface = {
+      addEventListener: (_type: "pointerdown", listener: () => void) => {
+        listeners.push(listener);
+      },
+    };
+    attachGlobalAudioUnlock(uiSurface, () => {
+      void controller.unlockAudioOnGesture();
+    });
+    expect(listeners).toHaveLength(1);
+
+    controller.handleMediaFrame(makeAudioFrame(1, 0, AUDIO_FLAG.CONFIG, SAMPLE_OPUS_HEAD));
+    await flushMicrotasks();
+    audioFactory.defaultFormat = "f32";
+    for (let i = 0; i < 5; i += 1) {
+      controller.handleMediaFrame(makeAudioFrame(1, i * 20_000));
+    }
+    await flushMicrotasks();
+    expect(audioHarness.state).toBe("suspended");
+
+    // PIN キーパッド相当の信頼できるポインタ操作で解禁される。
+    listeners[0]?.();
+    await flushMicrotasks();
+    expect(audioHarness.state).toBe("running");
+
+    // 2 回目の操作でも冪等（追加のコンテキスト生成やエラーなし）。
+    listeners[0]?.();
+    await flushMicrotasks();
+    expect(audioHarness.state).toBe("running");
+    expect(audioHarness.createdOptions).toHaveLength(1);
+    controller.dispose();
   });
 });

@@ -16,7 +16,9 @@ const DISABLED_CHROME_FEATURES = [
   "Av1Decoder",
 ].join(",");
 
-const ENABLED_CHROME_FEATURES = ["VaapiVideoDecoder", "VaapiVideoDecodeLinuxGL"].join(",");
+const ENABLED_CHROME_FEATURES = ["AcceleratedVideoDecodeLinuxGL", "VaapiIgnoreDriverChecks"].join(
+  ",",
+);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,6 +40,8 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
   const height = Math.max(1, Math.round(config.viewport.height));
 
   // Hybrid rendering: CPU 2D rasterization paired with VAAPI video decode avoids Xvfb compositor deadlocks.
+  // Chrome 131+ renamed the VAAPI decode features, and ANGLE/llvmpipe under Xvfb rejects DRI
+  // auto-probing, so the detected render node must be bound explicitly.
   return [
     `--app=${config.initialUrl}`,
     "--remote-debugging-address=127.0.0.1",
@@ -55,7 +59,8 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--disable-notifications",
     "--disable-translate",
     "--disable-sync",
-    "--disable-gpu-rasterization",
+    // 仮想 GPU 構成では Chrome の GPU ブロックリストが HW 動画デコード判定自体を無効化するため除外する。
+    "--ignore-gpu-blocklist",
     "--enable-accelerated-video-decode",
     `--enable-features=${ENABLED_CHROME_FEATURES}`,
     `--disable-features=${DISABLED_CHROME_FEATURES}`,
@@ -64,6 +69,7 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--metrics-recording-only",
+    ...(config.vaapiRenderNode ? [`--render-node-override=${config.vaapiRenderNode}`] : []),
   ];
 }
 

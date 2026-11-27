@@ -29,7 +29,7 @@ const AMD_VENDOR_ID = "0x1002";
 const INTEL_VENDOR_ID = "0x8086";
 const DEFAULT_VAAPI_DEVICE = "/dev/dri/renderD128";
 const VAINFO_H264_ENCODE_RE = /VAProfileH264[^\r\n]*VAEntrypointEncSlice/;
-
+// VP9 Version1/2 = 10bit (Profile 1/2) HW decode. Gen 9 iHD exposes Version0 only.
 // Spec: docs/specs/05-encoder-gpu.md#2.2
 export function parseVainfoSupportsH264Encode(output: string): boolean {
   return VAINFO_H264_ENCODE_RE.test(output);

@@ -135,6 +135,15 @@ export function createAppContainer(
         cdpPort: DEFAULT_CDP_PORT,
         viewport: DEFAULT_BROWSER_VIEWPORT,
       },
+      // GPU 検出はエンコーダ側の責務。Chrome 起動時点の値を遅延取得し、未検出なら起動前に検出を保証する。
+      vaapiRenderNodeProvider: async () => {
+        const renderNode = encoder.getRenderNode();
+        if (renderNode !== null) {
+          return renderNode;
+        }
+        await encoder.detectBackend();
+        return encoder.getRenderNode();
+      },
     });
 
   const encoder =

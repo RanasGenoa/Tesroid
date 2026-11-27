@@ -332,6 +332,30 @@ export function buildVolumeLockScript(): string {
 })();`;
 }
 
+// Spec: docs/specs/06-browser-input-cdp.md#2.1
+export function buildVp9CodecPolicyScript(): string {
+  return `(() => {
+  if (globalThis.__tesroidCodecPolicy) { return; }
+  globalThis.__tesroidCodecPolicy = true;
+  const isBlockedVideoCodec = (type) => /vp0?9|av0?1/i.test(String(type || ""));
+  if (typeof MediaSource !== "undefined" && typeof MediaSource.isTypeSupported === "function") {
+    const nativeIsTypeSupported = MediaSource.isTypeSupported.bind(MediaSource);
+    MediaSource.isTypeSupported = (type) =>
+      isBlockedVideoCodec(type) ? false : nativeIsTypeSupported(type);
+  }
+  if (typeof navigator !== "undefined" && navigator.mediaCapabilities &&
+      typeof navigator.mediaCapabilities.decodingInfo === "function") {
+    const nativeDecodingInfo = navigator.mediaCapabilities.decodingInfo.bind(navigator.mediaCapabilities);
+    navigator.mediaCapabilities.decodingInfo = async (config) => {
+      if (isBlockedVideoCodec(config && config.video && config.video.contentType)) {
+        return { supported: false, smooth: false, powerEfficient: false };
+      }
+      return nativeDecodingInfo(config);
+    };
+  }
+})();`;
+}
+
 // Spec: docs/specs/06-browser-input-cdp.md#2.4
 export function buildCombinedPageInitScript(config: PageScriptConfig): string {
   return [
@@ -339,5 +363,6 @@ export function buildCombinedPageInitScript(config: PageScriptConfig): string {
     buildDisplayScaleScript(config.displayScale),
     buildVirtualFullscreenScript(),
     buildVolumeLockScript(),
+    buildVp9CodecPolicyScript(),
   ].join("\n");
 }

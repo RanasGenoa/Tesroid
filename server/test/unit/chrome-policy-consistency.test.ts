@@ -40,6 +40,7 @@ describe("仕様 06 AC-06 managed policy による infobar 恒久抑止", () => 
       cdpPort: 9222,
       initialUrl: "https://example.com/",
       viewport: { width: 1280, height: 720 },
+      vaapiRenderNode: null,
     });
     expect(args).not.toContain("--disable-infobars");
     expect(args).toContain("--no-sandbox");
