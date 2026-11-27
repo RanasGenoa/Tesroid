@@ -33,11 +33,13 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
   - クライアントの編集可能入力欄経由で送信された文字列は、検索欄への自動フォーカス等に依存しないシンプルな CDP テキスト注入で直接入力する。
   - 特殊キー（`Enter`, `Backspace`, `Tab`, `Escape`, `Space`, `Delete`, 方向キー）および戻る・進む・再読み込み・フルスクリーン切替も CDP 経由のみで実行する。CDP 未接続・切断時はフォールバックせず安全に破棄（ログ記録可）し、再接続後に再び注入を受け付ける（非 `http:`/`https:` URL の `navigate` 要求は接続状態に関わらず即時拒否する）。
 
-### 2.3 Chrome ネイティブ UI（Views Bubble）抑止
+### 2.3 Chrome ネイティブ UI（Views Bubble・infobar）抑止
 - **WebAuthn / パスキー抑止**:
   - プラットフォーム認証器・条件付きメディエーション利用可否を常に `false` とし、`publicKey` オプション付きのクレデンシャル取得・作成要求をネイティブダイアログ起動前に `NotAllowedError` で即座に拒絶する（非パスキー要求は元メソッドへ透過）。
 - **パスワード保存・自動入力・翻訳バブル抑止**:
   - ブラウザ設定ファイルおよび起動引数により、翻訳機能・パスワード保存/漏洩検知・自動サインイン・住所/カード自動入力バブルおよび OS キーリングプロンプトを恒久抑止する（既存の正常終了フラグは保持）。
+- **コマンドラインフラグ警告 infobar 抑止**:
+  - `--no-sandbox`（コンテナ root 稼働で必須）により Chrome が「サポートされていないコマンドラインフラグ」のネイティブ infobar を表示する。これは現行 Chrome で `--disable-infobars` が廃止済みで起動引数では抑止できず、車載タッチオンリーでは閉じる操作もできないため、managed policy（`/etc/opt/chrome/policies/managed/` に `CommandLineFlagSecurityWarningsEnabled: false`）をイメージへ焼き込んで恒久抑止する。
 
 ### 2.4 車載表示拡大・Web フルスクリーン・スクリプト集約 & ページ監視
 - **スクリプト注入元の単一集約**: WebAuthn 抑止・車載表示拡大・Web フルスクリーン・動画音声維持のスクリプト注入および設定反映は単一の制御箇所へ集約し、多重定義や拡大率フォールバック値の食い違いを防ぐ。
@@ -94,6 +96,10 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
   - **Given** 親子孫プロセスを持つブラウザ稼働状態
   - **When** 単一電源ドメインからの指示で凍結・復帰を実行する
   - **Then** `SIGSTOP` は末端から親へ、`SIGCONT` は親から末端へ送出されてプロセス状態が正しく遷移する。
+- **AC-06 (managed policy による infobar 恒久抑止)**:
+  - **Given** 稼働イメージのビルド定義
+  - **When** `/etc/opt/chrome/policies/managed/` の policy ファイルと Chrome 起動引数を検査する
+  - **Then** `CommandLineFlagSecurityWarningsEnabled: false` を含む JSON がイメージへ焼き込まれており、廃止済みで無効な `--disable-infobars` は起動引数に含まれない。
 
 ---
 

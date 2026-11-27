@@ -52,7 +52,6 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-session-crashed-bubble",
-    "--disable-infobars",
     "--disable-notifications",
     "--disable-translate",
     "--disable-sync",

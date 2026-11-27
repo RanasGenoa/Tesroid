@@ -130,6 +130,11 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
   fi
 
+# 仕様 06 §2.3: --no-sandbox（コンテナ root 稼働で必須）の infobar 警告は managed policy で恒久抑止する。
+RUN set -eux; \
+  mkdir -p /etc/opt/chrome/policies/managed; \
+  printf '{ "CommandLineFlagSecurityWarningsEnabled": false }\n' > /etc/opt/chrome/policies/managed/tesroid.json
+
 WORKDIR /app
 
 COPY --from=builder /app/package.json /app/package-lock.json ./
