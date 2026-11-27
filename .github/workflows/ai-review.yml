@@ -111,12 +111,12 @@ jobs:
           ### A. 車載絶対不変条件 (§4)
           1. 【描画】クライアント側 (client/) で <video> タグが追加・使用されていないか？（テスラ車載OSのDレンジ動画停止ガード回避のため <canvas desynchronized> + WebCodecs を維持）
           2. 【描画】Xvfb 環境の Chrome 起動引数に --enable-gpu-rasterization / --enable-zero-copy / --disable-gpu-vsync が追加されていないか？（Mesa llvmpipe と VAAPI の競合で画面凍結するため、2D DOM は CPU Skia、動画デコードのみ VAAPI + Av1Decoder 無効を維持）
-          3. 【入力】タッチ入力がマウスエミュレーション（mousedown 等）や X11 フォールバック（xdotool 等）に戻っていないか？入力は CDP（Input.dispatchTouchEvent 等）専用とし、CDP 未接続時の入力は安全に破棄すること。物理キーボード前提（Escape 閉じ・ショートカット・keydown 依存）やマウス前提（hover 専用露出・右クリック・ドラッグ）の実装禁止。リモート文字・キー入力も HUD 仮想キーボード `<input>` 経由の CDP 注入のみ。レビュアー自身がこれらの追加を提案してはならない。
+          3. 【入力】タッチ入力がマウスエミュレーション（mousedown 等）や X11 フォールバック（xdotool 等）に戻っていないか？入力は CDP（Input.dispatchTouchEvent 等）専用とし、CDP 未接続時の入力は安全に破棄すること。物理キーボード前提（Escape 閉じ・ショートカット・keydown 依存）やマウス前提（hover 専用露出・右クリック・ドラッグ）の実装禁止。ネイティブ window.prompt() / window.confirm() の使用禁止。リモート文字・キー入力も HUD 仮想キーボード `<input>` 経由の CDP 注入のみ。レビュアー自身がこれらの追加を提案してはならない。
           4. 【通信】WebSocket バックプレッシャーが単一閾値化していないか？（High: 768KB / Low: 128KB のヒステリシス、H.264 サーバー側 AVCC 事前パッキングを維持）
           5. 【状態機械】ストリーミング状態 (STANDBY/INTERACTIVE/LIVE/CATCHUP/BUFFER_HOLD) を独立 boolean フラグ群で表現・分散保持していないか？単一の純粋遷移関数 transitionStreamingState と純粋セレクタへ集約し、bool 状態フラグの新設は即 FAIL。
-          6. 【電源・配信不変条件】autoSleepTimer と holdExpireTimer の同時稼働、ACTIVE 復帰時の映像・音声エンコーダ双方の未保証、LIVE 配信時のソケット輻輳での CATCHUP 遷移、セカンダリ回線輻輳のプライマリ・エンコーダへの波及がないか？
+          6. 【電源・配信不変条件】autoSleepTimer と holdExpireTimer の同時稼働、ACTIVE 復帰時の映像・音声エンコーダ双方の未保証、LIVE 配信時のソケット輻輳での CATCHUP 遷移、セカンダリ回線輻輳のプライマリ・エンコーダへの波及、通常セカンダリへの音声パケット送信がないか？
           7. 【保存】車載 localStorage による設定・拡大率・バッファ深度等の保存がないか？（設定はサーバー保存へ一元化、sessionStorage は再接続用 token/role のみ）
-          8. 【GPU境界】/etc/libva.conf へのドライバ名ハードコード、GALLIUM_DRIVER=d3d12 の Chrome への付与がないか？（FFmpeg / vainfo サブプロセス限定）
+          8. 【GPU境界】/etc/libva.conf へのドライバ名ハードコード、GALLIUM_DRIVER=d3d12 の Chrome への付与、起動スクリプトでの未指定 LIBVA_DRIVER_NAME への勝手な既定値注入がないか？（FFmpeg / vainfo サブプロセス限定）
           9. 【コンテナ基盤】no-systemd APT Pinning・dbus-x11・--no-install-recommends の削除、Google Chrome 同梱イメージの公開（INSTALL_CHROME=false 違反）、TUNNEL_TOKEN のコマンドライン引数渡しや子プロセス環境残存がないか？
           10. 【秘匿】平文 PIN・トークン・API キー・SSH 鍵・プライベート固定 IP・ホスト固有絶対パスがコード・ログ・公開文書にハードコードされていないか？（<SERVER_IP> 等プレースホルダーへ）
 
@@ -128,7 +128,7 @@ jobs:
           ### C. DDD アーキテクチャ (§3.1・§6.2〜§6.5)
           14. 【依存方向】docs/architecture.md §2.1 依存マトリクスに反する逆方向依存・ドメイン跨ぎ直参照がないか？ドメイン間は app/ 配線の狭い Port 経由のみ。グローバル可変シングルトンの新設がないか？
           15. 【SSOT】プロトコル定数・設定スキーマ・既定値・品質 3 択/プリセット定義・寸法アライメント式が shared/ で唯一定義され、server/ や client/ に二重定義されていないか？
-          16. 【用語集 §6.2】禁止別名を使っていないか？（generationId / epochId、isLive 等の bool 群、buffering を CATCHUP の別名に使用、main/sub/master、ブラウザ再起動の restart 呼称、pause/stall を BUFFER_HOLD の別名に使用）
+          16. 【用語集 §6.2】禁止別名を使っていないか？（generationId / epochId、isLive 等の bool 群、buffering を CATCHUP の別名に使用、main/sub/master、配信リセットの restart 呼称（ブラウザ再起動は browser restart と呼ぶ）、pause/stall を BUFFER_HOLD の別名に使用）
           17. 【集約境界】状態変更が集約ルート・単一遷移関数へのイベント投入経由ではなく、周辺実装へ直接書き込まれていないか？
 
           ### D. コメント・コミット規約 (§3.1・§3.2)
