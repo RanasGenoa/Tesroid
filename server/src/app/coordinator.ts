@@ -3,6 +3,7 @@ import {
   AUDIO_FLAG,
   alignLayoutDimensions,
   CHANNEL_ID,
+  clampAlignedDimensions,
   decodeAuthFrame,
   decodeClientControlFrame,
   decodeMetricsFrame,
@@ -64,6 +65,12 @@ export class ServerCoordinator implements StreamingLifecyclePort {
   private resizeTimer: TimerHandle | null = null;
   private pendingResize: AlignedDimensions | null = null;
   private resizeQueue: Promise<void> = Promise.resolve();
+  // Spec: docs/specs/05-encoder-gpu.md#2.3 — maxSize 変更時に同一の共有関数で再アラインするため生の報告値を保持する。
+  private lastRawViewport: {
+    readonly width: number;
+    readonly height: number;
+    readonly dpr: number | undefined;
+  } | null = null;
   private inFlightHoldEnter: Promise<void> | null = null;
   private inFlightHoldExit: Promise<void> | null = null;
   private inFlightInteractiveReset: Promise<void> | null = null;
@@ -197,10 +204,11 @@ export class ServerCoordinator implements StreamingLifecyclePort {
       }
     }
 
-    const dimensionsChanged =
-      saved.stream.maxSize !== prev.stream.maxSize ||
+    const maxSizeChanged = saved.stream.maxSize !== prev.stream.maxSize;
+    const profileScaleChanged =
       saved.stream.clientProfile.active !== prev.stream.clientProfile.active ||
       saved.stream.clientProfile.custom.scale !== prev.stream.clientProfile.custom.scale;
+    const dimensionsChanged = maxSizeChanged || profileScaleChanged;
     const videoChanged =
       dimensionsChanged ||
       saved.stream.fps !== prev.stream.fps ||
@@ -212,7 +220,34 @@ export class ServerCoordinator implements StreamingLifecyclePort {
       saved.stream.vaapi.gpuColorConvert !== prev.stream.vaapi.gpuColorConvert;
     const audioChanged = saved.stream.audioBitrate !== prev.stream.audioBitrate;
 
-    if (videoChanged || audioChanged || dimensionsChanged) {
+    if (maxSizeChanged) {
+      // Spec 05 §2.3: maxSize 更新は次のクライアントリサイズを待たず、仮想ブラウザとエンコーダの両寸法へ即反映する。
+      try {
+        const aligned =
+          this.lastRawViewport !== null
+            ? alignLayoutDimensions({
+                width: this.lastRawViewport.width,
+                height: this.lastRawViewport.height,
+                dpr: this.lastRawViewport.dpr,
+                maxSize: saved.stream.maxSize,
+              })
+            : clampAlignedDimensions(this.deps.browser.getCurrentViewport(), saved.stream.maxSize);
+        await this.enqueueResize(aligned);
+      } catch {
+        // Live browser/encoder reconfiguration failure must not roll back persisted settings.
+      }
+      if (audioChanged) {
+        try {
+          await this.deps.encoder.applySettingsUpdate({
+            videoChanged: false,
+            audioChanged: true,
+            dimensionsChanged: false,
+          });
+        } catch {
+          // Live encoder reconfiguration failure must not roll back persisted settings.
+        }
+      }
+    } else if (videoChanged || audioChanged || dimensionsChanged) {
       try {
         await this.deps.encoder.applySettingsUpdate({
           videoChanged,
@@ -352,6 +387,11 @@ export class ServerCoordinator implements StreamingLifecyclePort {
         }
         try {
           const frame = decodeResizeFrame(payload);
+          this.lastRawViewport = {
+            width: frame.width,
+            height: frame.height,
+            dpr: frame.dprX100 > 0 ? frame.dprX100 / 100 : undefined,
+          };
           const aligned = alignLayoutDimensions({
             width: frame.width,
             height: frame.height,

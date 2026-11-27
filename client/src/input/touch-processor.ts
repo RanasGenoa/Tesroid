@@ -1,4 +1,10 @@
-import { computeContainRect, TOUCH_ACTION, TOUCH_GUARD, type TouchFrame } from "@tesroid/shared";
+import {
+  alignLayoutDimensions,
+  computeContainRect,
+  TOUCH_ACTION,
+  TOUCH_GUARD,
+  type TouchFrame,
+} from "@tesroid/shared";
 import { type ClientClock, createBrowserClock } from "../transport/ports.js";
 
 export interface TouchProcessorCallbacks {
@@ -141,14 +147,23 @@ export class TouchInputEngine {
   private lastTapUp: TapSnapshot | null = null;
 
   // Spec: docs/specs/06-browser-input-cdp.md#2.2
-  updateStreamDimensions(width: number, height: number): void {
+  // opts 指定時は共有 alignLayoutDimensions で有効レイアウト寸法を算出し、その空間へ正規化する（サーバーと同じ関数で構成的一致）。
+  updateStreamDimensions(
+    width: number,
+    height: number,
+    opts?: { readonly dpr?: number; readonly maxSize?: number },
+  ): void {
     if (!isPositiveFinite(width) || !isPositiveFinite(height)) {
       this.streamWidth = 0;
       this.streamHeight = 0;
       return;
     }
-    this.streamWidth = clamp(Math.round(width), 1, MAX_UINT16);
-    this.streamHeight = clamp(Math.round(height), 1, MAX_UINT16);
+    const effective =
+      opts === undefined
+        ? { width, height }
+        : alignLayoutDimensions({ width, height, dpr: opts.dpr, maxSize: opts.maxSize });
+    this.streamWidth = clamp(Math.round(effective.width), 1, MAX_UINT16);
+    this.streamHeight = clamp(Math.round(effective.height), 1, MAX_UINT16);
   }
 
   // Spec: docs/specs/06-browser-input-cdp.md#2.2
@@ -500,8 +515,12 @@ export class TouchInputProcessor {
   }
 
   // Spec: docs/specs/06-browser-input-cdp.md#2.2
-  updateStreamDimensions(width: number, height: number): void {
-    this.engine.updateStreamDimensions(width, height);
+  updateStreamDimensions(
+    width: number,
+    height: number,
+    opts?: { readonly dpr?: number; readonly maxSize?: number },
+  ): void {
+    this.engine.updateStreamDimensions(width, height, opts);
   }
 
   // Spec: docs/specs/06-browser-input-cdp.md#2.2

@@ -99,6 +99,7 @@ function createPhase3BrowserFake() {
     resizeViewport: async (dimensions) => {
       resizeCalls.push(dimensions);
     },
+    getCurrentViewport: () => ({ width: 1_280, height: 720 }),
     injectTouch: async (frame) => {
       touchCalls.push(frame);
     },

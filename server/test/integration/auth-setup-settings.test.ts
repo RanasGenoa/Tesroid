@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  type AlignedDimensions,
   AUTH_SECURITY_CONSTANTS,
   type EncoderBackend,
   MAX_FAVORITES,
@@ -49,13 +50,17 @@ function makeEnv(dataDir: string): ServerEnvConfig {
 function createBoundaryBrowserFake(options?: { failScale?: boolean }): {
   port: BrowserControlPort;
   scaleCalls: number[];
+  viewportCalls: AlignedDimensions[];
 } {
   const scaleCalls: number[] = [];
+  const viewportCalls: AlignedDimensions[] = [];
+  let currentViewport: AlignedDimensions = { width: 1_280, height: 720 };
   const notUsed = (): never => {
     throw new Error("UNEXPECTED_CALL");
   };
   return {
     scaleCalls,
+    viewportCalls,
     port: {
       start: notUsed,
       stop: async () => {},
@@ -75,7 +80,11 @@ function createBoundaryBrowserFake(options?: { failScale?: boolean }): {
           throw new Error("Browser scale apply failed");
         }
       },
-      resizeViewport: notUsed,
+      resizeViewport: async (dimensions: AlignedDimensions) => {
+        currentViewport = dimensions;
+        viewportCalls.push(dimensions);
+      },
+      getCurrentViewport: () => currentViewport,
       injectTouch: notUsed,
       injectText: notUsed,
       injectKey: notUsed,
@@ -624,9 +633,9 @@ describe("Integration: Auth, Setup & Settings (Spec 01, 05, 07)", () => {
       const updated = updateRes.json() as PublicAppSettings;
       expect(updated.stream.videoBitrate).toBe(2_000_000);
       expect(updated.stream.maxSize).toBe(960);
-      expect(encoderFake.applyCalls).toEqual([
-        { videoChanged: true, audioChanged: false, dimensionsChanged: true },
-      ]);
+      // Spec 05 §2.3: maxSize 更新はクライアントリサイズを待たず仮想ブラウザ寸法へ即反映される。
+      expect(browserFake.viewportCalls).toEqual([{ width: 960, height: 540 }]);
+      expect(encoderFake.applyCalls).toEqual([]);
     } finally {
       await app.close();
       await container.dispose();

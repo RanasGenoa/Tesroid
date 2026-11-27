@@ -1,3 +1,4 @@
+import { STREAM_BOUNDS } from "@tesroid/shared";
 import { TouchInputProcessor, ViewportResizeReporter } from "./input/index.js";
 import { type CanvasElementLike, PlaybackController } from "./media/index.js";
 import { ClientMetricsCollector, ClientTelemetryReporter } from "./observability/index.js";
@@ -33,6 +34,13 @@ export function bootstrapClientApp(root: HTMLElement): ClientAppHandle {
   const telemetry = new ClientTelemetryReporter({ transport });
 
   let storeRef: AppStore | null = null;
+  // Spec 06 §2.2: タッチ正規化空間は有効レイアウト寸法（共有 alignLayoutDimensions の結果）。設定変更でも再適用する。
+  let lastRawViewport: {
+    readonly width: number;
+    readonly height: number;
+    readonly dpr: number;
+  } | null = null;
+  let applyEffectiveTouchSpace: () => void = () => {};
   const playback = new PlaybackController({
     transport,
     onRequestStreamReset: () => {
@@ -47,6 +55,9 @@ export function bootstrapClientApp(root: HTMLElement): ClientAppHandle {
     sessionStorage,
     telemetry,
     metrics,
+    onSettingsUpdated: () => {
+      applyEffectiveTouchSpace();
+    },
   });
   storeRef = store;
 
@@ -67,10 +78,26 @@ export function bootstrapClientApp(root: HTMLElement): ClientAppHandle {
     touchProcessor.attach(canvas);
   }
 
+  applyEffectiveTouchSpace = () => {
+    if (lastRawViewport === null) {
+      return;
+    }
+    const maxSize = store.getState().settings?.stream.maxSize ?? STREAM_BOUNDS.maxSize.default;
+    touchProcessor.updateStreamDimensions(lastRawViewport.width, lastRawViewport.height, {
+      dpr: lastRawViewport.dpr,
+      maxSize,
+    });
+  };
+
   const resizeReporter = new ViewportResizeReporter({
     onResizeFrame: (frame) => {
       store.sendResizeFrame(frame);
-      touchProcessor.updateStreamDimensions(frame.width, frame.height);
+      lastRawViewport = {
+        width: frame.width,
+        height: frame.height,
+        dpr: frame.dprX100 / 100,
+      };
+      applyEffectiveTouchSpace();
       metrics.setViewportMetrics(frame.width, frame.height, frame.dprX100 / 100);
     },
   });

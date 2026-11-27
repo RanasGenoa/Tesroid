@@ -274,6 +274,10 @@ export class BrowserService implements BrowserControlPort {
     await this.deps.cdp.setViewportSize(dimensions);
   }
 
+  getCurrentViewport(): AlignedDimensions {
+    return this.viewport;
+  }
+
   // Spec: docs/specs/06-browser-input-cdp.md#2.2
   async injectTouch(frame: TouchFrame): Promise<void> {
     await this.deps.inputRouter.dispatchTouch(frame);

@@ -45,6 +45,7 @@ export interface BrowserControlPort extends PowerBrowserPort {
   toggleFullscreen(): Promise<void>;
   setDisplayScale(scale: number): Promise<void>;
   resizeViewport(dimensions: AlignedDimensions): Promise<void>;
+  getCurrentViewport(): AlignedDimensions;
   injectTouch(frame: TouchFrame): Promise<void>;
   injectText(text: string): Promise<void>;
   injectKey(key: SpecialKey): Promise<void>;
