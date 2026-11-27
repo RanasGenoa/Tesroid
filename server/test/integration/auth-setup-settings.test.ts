@@ -57,7 +57,7 @@ function createBoundaryBrowserFake(options?: { failScale?: boolean }): {
     scaleCalls,
     port: {
       start: notUsed,
-      stop: notUsed,
+      stop: async () => {},
       freezeTree: notUsed,
       resumeTree: notUsed,
       restartBrowser: notUsed,
@@ -101,7 +101,7 @@ function createBoundaryEncoderFake(
     applyCalls,
     port: {
       ensureDualRunning: notUsed,
-      stopAll: notUsed,
+      stopAll: async () => {},
       advanceEpochAndResetClock: () => STREAM_EPOCH_INITIAL,
       pauseWithTimelineComp: notUsed,
       clearTimelineComp: () => {},
@@ -157,6 +157,7 @@ function createBoundarySessionFake(): {
       closeAllWithPolicyViolation: (reason: string) => {
         policyViolationReasons.push({ code: WS_CLOSE_CODE.POLICY_VIOLATION, reason });
       },
+      dispose: () => {},
     },
   };
 }

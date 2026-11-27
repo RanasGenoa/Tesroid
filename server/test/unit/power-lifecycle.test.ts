@@ -1,4 +1,4 @@
-import { type PowerState, STREAM_EPOCH_INITIAL } from "@tesroid/shared";
+import { type PowerState, type SessionRole, STREAM_EPOCH_INITIAL } from "@tesroid/shared";
 import { describe, expect, it } from "vitest";
 import {
   type PowerBrowserPort,
@@ -13,32 +13,53 @@ import { SettingsService } from "../../src/domains/settings/index.js";
 import { FakeAtomicJsonStore, FakeClock } from "../helpers/fakes.js";
 
 function createPowerPortFakes() {
-  const calls: string[] = [];
+  let browserFrozen = false;
+  let browserRestartedWhileFrozen = false;
+  let monitoringPaused = false;
   let videoRunning = false;
   let audioRunning = false;
+  let timelineCompActive = false;
   let epoch = STREAM_EPOCH_INITIAL;
-  let monitoringPaused = false;
   let hasActiveSession = false;
+  let confirmedPtsUs: bigint | null = null;
+  let secondaryRole: Extract<SessionRole, "SECONDARY_STREAMING" | "SECONDARY_STANDBY"> =
+    "SECONDARY_STANDBY";
+  let streamingBufferDirty = false;
+  let streamingPowerHoldActive = false;
+  let streamingSleeping = false;
+  let failNextStopAll = false;
+  let failNextFreezeTree = false;
+  let failNextResumeTree = false;
+  const broadcastStates: Array<{ readonly state: PowerState; readonly epoch: number }> = [];
 
   const browser: PowerBrowserPort = {
     start: async () => {
-      calls.push("browser:start");
+      browserFrozen = false;
     },
     stop: async () => {
-      calls.push("browser:stop");
+      browserFrozen = false;
     },
     freezeTree: async () => {
-      calls.push("browser:freeze");
+      if (failNextFreezeTree) {
+        failNextFreezeTree = false;
+        throw new Error("FREEZE_FAILED");
+      }
+      browserFrozen = true;
     },
     resumeTree: async () => {
-      calls.push("browser:resume");
+      if (failNextResumeTree) {
+        failNextResumeTree = false;
+        throw new Error("RESUME_FAILED");
+      }
+      browserFrozen = false;
     },
     restartBrowser: async () => {
-      calls.push("browser:restart");
+      if (browserFrozen) {
+        browserRestartedWhileFrozen = true;
+      }
     },
     setMonitoringPaused: (paused: boolean) => {
       monitoringPaused = paused;
-      calls.push(`browser:monitoring=${paused}`);
     },
     getCurrentPageInfo: () => ({ url: "https://www.youtube.com", title: "YouTube" }),
   };
@@ -47,64 +68,66 @@ function createPowerPortFakes() {
     ensureDualRunning: async () => {
       videoRunning = true;
       audioRunning = true;
-      calls.push("encoder:ensureDualRunning");
     },
     stopAll: async () => {
+      if (failNextStopAll) {
+        failNextStopAll = false;
+        throw new Error("STOP_FAILED");
+      }
       videoRunning = false;
       audioRunning = false;
-      calls.push("encoder:stopAll");
     },
     advanceEpochAndResetClock: () => {
       epoch += 1;
-      calls.push(`encoder:advanceEpoch(${epoch})`);
       return epoch;
     },
     pauseWithTimelineComp: async () => {
       videoRunning = false;
       audioRunning = false;
-      calls.push("encoder:pauseWithTimelineComp");
+      timelineCompActive = true;
     },
     clearTimelineComp: () => {
-      calls.push("encoder:clearTimelineComp");
+      timelineCompActive = false;
     },
     getCurrentEpoch: () => epoch,
   };
 
-  const broadcastStates: Array<{ readonly state: PowerState; readonly epoch: number }> = [];
   const streaming: PowerStreamingPort = {
     clearBufferAndQueues: () => {
-      calls.push("streaming:clearBuffer");
+      streamingBufferDirty = false;
     },
     broadcastPowerState: (state: PowerState, streamEpoch: number) => {
       broadcastStates.push({ state, epoch: streamEpoch });
-      calls.push(`streaming:broadcast(${state},${streamEpoch})`);
+    },
+    onPowerActive: () => {
+      streamingSleeping = false;
     },
     onPowerSleep: () => {
-      calls.push("streaming:onPowerSleep");
+      streamingSleeping = true;
+      streamingPowerHoldActive = false;
     },
     onPowerHoldEntered: () => {
-      calls.push("streaming:onPowerHoldEntered");
+      streamingPowerHoldActive = true;
     },
-    onPowerHoldExited: (newEpoch: number) => {
-      calls.push(`streaming:onPowerHoldExited(${newEpoch})`);
+    onPowerHoldExited: () => {
+      streamingPowerHoldActive = false;
     },
   };
 
   const session: PowerSessionPort = {
     hasActivePrimaryOrActing: () => hasActiveSession,
-    demoteAllStreamingToStandby: (streamEpoch: number) => {
-      calls.push(`session:demote(${streamEpoch})`);
+    demoteAllStreamingToStandby: () => {
+      secondaryRole = "SECONDARY_STANDBY";
     },
-    promoteStandbyToStreaming: (streamEpoch: number) => {
-      calls.push(`session:promote(${streamEpoch})`);
+    promoteStandbyToStreaming: () => {
+      secondaryRole = "SECONDARY_STREAMING";
     },
     clearPrimaryFeedback: () => {
-      calls.push("session:clearPrimaryFeedback");
+      confirmedPtsUs = null;
     },
   };
 
   return {
-    calls,
     broadcastStates,
     browser,
     encoder,
@@ -112,8 +135,34 @@ function createPowerPortFakes() {
     session,
     isDualRunning: () => videoRunning && audioRunning,
     isMonitoringPaused: () => monitoringPaused,
+    isBrowserFrozen: () => browserFrozen,
+    wasBrowserRestartedWhileFrozen: () => browserRestartedWhileFrozen,
+    isTimelineCompActive: () => timelineCompActive,
+    isBufferDirty: () => streamingBufferDirty,
+    markBufferDirty: () => {
+      streamingBufferDirty = true;
+    },
+    isStreamingHoldActive: () => streamingPowerHoldActive,
+    isStreamingSleeping: () => streamingSleeping,
+    getConfirmedPtsUs: () => confirmedPtsUs,
+    setConfirmedPtsUs: (ptsUs: bigint | null) => {
+      confirmedPtsUs = ptsUs;
+    },
+    getSecondaryRole: () => secondaryRole,
+    setSecondaryRole: (role: Extract<SessionRole, "SECONDARY_STREAMING" | "SECONDARY_STANDBY">) => {
+      secondaryRole = role;
+    },
     setHasActiveSession: (active: boolean) => {
       hasActiveSession = active;
+    },
+    injectFailure: (target: "stopAll" | "freezeTree" | "resumeTree") => {
+      if (target === "stopAll") {
+        failNextStopAll = true;
+      } else if (target === "freezeTree") {
+        failNextFreezeTree = true;
+      } else {
+        failNextResumeTree = true;
+      }
     },
     getEpoch: () => epoch,
   };
@@ -146,10 +195,10 @@ async function createPowerHarness(options?: {
   const timers = new PowerTimers({
     clock,
     onAutoSleepExpired: () => {
-      void serviceRef?.handleAutoSleepExpired();
+      void serviceRef?.handleAutoSleepExpired().catch(() => undefined);
     },
     onHoldExpired: () => {
-      void serviceRef?.handleHoldExpired();
+      void serviceRef?.handleHoldExpired().catch(() => undefined);
     },
   });
   const service = new PowerService({
@@ -175,50 +224,54 @@ describe("server/domains/power (Spec 10)", () => {
     const { service, fakes } = await createPowerHarness();
     expect(service.getStatus().state).toBe("STOPPED");
 
+    fakes.setConfirmedPtsUs(1_000_000n);
     const started = await service.ensureActive();
     expect(started.ok).toBe(true);
     expect(started.state).toBe("ACTIVE");
     expect(fakes.isDualRunning()).toBe(true);
     expect(fakes.isMonitoringPaused()).toBe(false);
-    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
+    expect(fakes.getConfirmedPtsUs()).toBeNull();
 
-    fakes.calls.length = 0;
+    fakes.setConfirmedPtsUs(2_000_000n);
+    fakes.markBufferDirty();
+    fakes.setSecondaryRole("SECONDARY_STREAMING");
     const slept = await service.sleep();
     expect(slept.ok).toBe(true);
     expect(slept.state).toBe("SLEEP_PAUSED");
     expect(fakes.isDualRunning()).toBe(false);
     expect(fakes.isMonitoringPaused()).toBe(true);
-    expect(fakes.calls).toContain("browser:freeze");
-    expect(fakes.calls).toContain("streaming:clearBuffer");
-    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
-    expect(fakes.calls).toContain(`session:demote(${slept.streamEpoch})`);
+    expect(fakes.isBrowserFrozen()).toBe(true);
+    expect(fakes.isBufferDirty()).toBe(false);
+    expect(fakes.getConfirmedPtsUs()).toBeNull();
+    expect(fakes.isStreamingSleeping()).toBe(true);
+    expect(fakes.getSecondaryRole()).toBe("SECONDARY_STANDBY");
 
     fakes.setHasActiveSession(true);
-    fakes.calls.length = 0;
+    fakes.setConfirmedPtsUs(3_000_000n);
     const resumed = await service.resume();
     expect(resumed.ok).toBe(true);
     expect(resumed.state).toBe("ACTIVE");
     expect(resumed.streamEpoch).toBeGreaterThan(slept.streamEpoch);
     expect(fakes.isDualRunning()).toBe(true);
-    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
-    expect(fakes.calls).toContain(`session:promote(${resumed.streamEpoch})`);
+    expect(fakes.isBrowserFrozen()).toBe(false);
+    expect(fakes.isStreamingSleeping()).toBe(false);
+    expect(fakes.getConfirmedPtsUs()).toBeNull();
+    expect(fakes.getSecondaryRole()).toBe("SECONDARY_STREAMING");
 
-    fakes.calls.length = 0;
+    fakes.setConfirmedPtsUs(4_000_000n);
     const restarted = await service.restartBrowser();
     expect(restarted.ok).toBe(true);
     expect(restarted.state).toBe("ACTIVE");
     expect(restarted.streamEpoch).toBeGreaterThan(resumed.streamEpoch);
     expect(fakes.isDualRunning()).toBe(true);
-    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
+    expect(fakes.getConfirmedPtsUs()).toBeNull();
 
     await service.sleep();
-    fakes.calls.length = 0;
     const restartedFromSleep = await service.restartBrowser();
     expect(restartedFromSleep.ok).toBe(true);
     expect(restartedFromSleep.state).toBe("ACTIVE");
-    expect(fakes.calls.indexOf("browser:resume")).toBeLessThan(
-      fakes.calls.indexOf("browser:restart"),
-    );
+    expect(fakes.isBrowserFrozen()).toBe(false);
+    expect(fakes.wasBrowserRestartedWhileFrozen()).toBe(false);
     expect(fakes.isDualRunning()).toBe(true);
 
     service.dispose();
@@ -249,7 +302,7 @@ describe("server/domains/power (Spec 10)", () => {
     });
 
     fakes.setHasActiveSession(true);
-    await service.onPrimaryConnected();
+    await service.onPrimaryConnected("NEW_SESSION");
     expect(service.getStatus().state).toBe("ACTIVE");
 
     const holdRes = await service.enterBufferHold();
@@ -264,7 +317,7 @@ describe("server/domains/power (Spec 10)", () => {
     expect(timers.getActiveTimerKind()).toBe("HOLD_EXPIRE");
 
     // Re-armed 10-minute timer must not expire after 9m59s, and must expire at 10m00s.
-    fakes.calls.length = 0;
+    fakes.markBufferDirty();
     clock.advanceByMs(9 * 60_000 + 59_000);
     await Promise.resolve();
     expect(service.getStatus().state).toBe("BUFFER_HOLD");
@@ -274,54 +327,73 @@ describe("server/domains/power (Spec 10)", () => {
     await Promise.resolve();
     expect(service.getStatus().state).toBe("SLEEP_PAUSED");
     expect(timers.getActiveTimerKind()).toBe("NONE");
-    expect(fakes.calls).not.toContain("browser:resume");
-    expect(fakes.calls).toContain("encoder:clearTimelineComp");
-    expect(fakes.calls).toContain("streaming:clearBuffer");
+    expect(fakes.isBrowserFrozen()).toBe(true);
+    expect(fakes.isTimelineCompActive()).toBe(false);
+    expect(fakes.isBufferDirty()).toBe(false);
 
     service.dispose();
   });
 
-  it("AC-03: converts manual sleep during BUFFER_HOLD directly to SLEEP_PAUSED without encoder resume churn, preserves BUFFER_HOLD on same-primary catchup reconnect, and clears Hold on 4009 takeover or LIVE fallback", async () => {
+  it("AC-03: converts manual sleep during BUFFER_HOLD directly to SLEEP_PAUSED without encoder resume churn, preserves BUFFER_HOLD on RECONNECT, and settles safely on I/O failure", async () => {
     const { service, timers, fakes } = await createPowerHarness();
 
     fakes.setHasActiveSession(true);
-    await service.onPrimaryConnected();
+    await service.onPrimaryConnected("NEW_SESSION");
     await service.enterBufferHold();
     expect(service.getStatus().state).toBe("BUFFER_HOLD");
+    expect(fakes.isStreamingHoldActive()).toBe(true);
+    expect(fakes.isTimelineCompActive()).toBe(true);
 
-    fakes.calls.length = 0;
+    fakes.markBufferDirty();
     const manualSleep = await service.sleep();
     expect(manualSleep.ok).toBe(true);
     expect(manualSleep.state).toBe("SLEEP_PAUSED");
     expect(timers.getActiveTimerKind()).toBe("NONE");
-    expect(fakes.calls).not.toContain("browser:resume");
-    expect(fakes.calls).not.toContain("encoder:ensureDualRunning");
-    expect(fakes.calls).toContain("encoder:clearTimelineComp");
-    expect(fakes.calls).toContain("streaming:clearBuffer");
+    expect(fakes.isDualRunning()).toBe(false);
+    expect(fakes.isTimelineCompActive()).toBe(false);
+    expect(fakes.isBufferDirty()).toBe(false);
+    expect(fakes.isStreamingHoldActive()).toBe(false);
 
     await service.resume();
     await service.enterBufferHold();
-    fakes.calls.length = 0;
-    await service.onPrimaryConnected({ preserveBufferHold: true });
+    const epochBeforeReconnect = fakes.getEpoch();
+    await service.onPrimaryConnected("RECONNECT");
     expect(service.getStatus().state).toBe("BUFFER_HOLD");
     expect(timers.getActiveTimerKind()).toBe("HOLD_EXPIRE");
-    expect(fakes.calls).not.toContain("browser:resume");
+    expect(fakes.isBrowserFrozen()).toBe(true);
+    expect(fakes.getEpoch()).toBe(epochBeforeReconnect);
 
-    await service.onPrimaryConnected();
+    await service.onPrimaryConnected("NEW_SESSION");
     expect(service.getStatus().state).toBe("ACTIVE");
     expect(timers.getActiveTimerKind()).toBe("NONE");
     expect(fakes.isDualRunning()).toBe(true);
-    expect(fakes.calls).toContain("browser:resume");
-    expect(fakes.calls).toContain("encoder:ensureDualRunning");
+    expect(fakes.isBrowserFrozen()).toBe(false);
+    expect(fakes.isTimelineCompActive()).toBe(false);
+
+    // Failure during sleep/hold/exit settles safely to ok=false without leaving inconsistent state.
+    fakes.injectFailure("freezeTree");
+    const failedSleep = await service.sleep();
+    expect(failedSleep).toMatchObject({ ok: false, state: "ACTIVE" });
+    expect(fakes.isMonitoringPaused()).toBe(false);
+
+    fakes.injectFailure("freezeTree");
+    const failedHold = await service.enterBufferHold();
+    expect(failedHold).toMatchObject({ ok: false, state: "ACTIVE" });
+    expect(fakes.isMonitoringPaused()).toBe(false);
 
     await service.enterBufferHold();
-    fakes.calls.length = 0;
+    fakes.injectFailure("resumeTree");
+    const failedExit = await service.exitBufferHold("DRAINED");
+    expect(failedExit).toMatchObject({ ok: false, state: "BUFFER_HOLD" });
+    expect(timers.getActiveTimerKind()).toBe("HOLD_EXPIRE");
+
+    fakes.markBufferDirty();
     const fallbackRes = await service.exitBufferHold("LIVE_FALLBACK");
     expect(fallbackRes.ok).toBe(true);
     expect(fallbackRes.state).toBe("ACTIVE");
     expect(fakes.isDualRunning()).toBe(true);
-    expect(fakes.calls).toContain("streaming:clearBuffer");
-    expect(fakes.calls).toContain("encoder:clearTimelineComp");
+    expect(fakes.isBufferDirty()).toBe(false);
+    expect(fakes.isTimelineCompActive()).toBe(false);
 
     service.dispose();
   });
@@ -333,7 +405,8 @@ describe("server/domains/power (Spec 10)", () => {
     });
 
     fakes.setHasActiveSession(true);
-    await service.onPrimaryConnected();
+    await service.onPrimaryConnected("NEW_SESSION");
+    fakes.setSecondaryRole("SECONDARY_STREAMING");
 
     fakes.setHasActiveSession(false);
     service.onPrimaryDisconnected();
@@ -342,7 +415,7 @@ describe("server/domains/power (Spec 10)", () => {
     clock.advanceByMs(120_000);
     expect(service.getStatus().state).toBe("ACTIVE");
     fakes.setHasActiveSession(true);
-    await service.onPrimaryConnected();
+    await service.onPrimaryConnected("RECONNECT");
     expect(timers.getActiveTimerKind()).toBe("NONE");
 
     clock.advanceByMs(180_000);
@@ -352,14 +425,13 @@ describe("server/domains/power (Spec 10)", () => {
     service.onPrimaryDisconnected();
     expect(timers.getActiveTimerKind()).toBe("AUTO_SLEEP");
 
-    fakes.calls.length = 0;
     clock.advanceByMs(180_000);
     for (let i = 0; i < 8; i += 1) {
       await Promise.resolve();
     }
     expect(service.getStatus().state).toBe("SLEEP_PAUSED");
     expect(timers.getActiveTimerKind()).toBe("NONE");
-    expect(fakes.calls).toContain(`session:demote(${fakes.getEpoch()})`);
+    expect(fakes.getSecondaryRole()).toBe("SECONDARY_STANDBY");
     expect(fakes.broadcastStates.at(-1)?.state).toBe("SLEEP_PAUSED");
 
     service.dispose();

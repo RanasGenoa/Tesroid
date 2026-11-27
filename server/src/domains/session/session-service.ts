@@ -576,6 +576,11 @@ export class SessionService implements SessionServicePort {
     }
   }
 
+  // Spec: docs/specs/02-session-multidisplay.md#2.3
+  dispose(): void {
+    this.deps.registry.dispose();
+  }
+
   private getStreamEpoch(): number {
     return this.deps.callbacks?.getStreamEpoch?.() ?? STREAM_EPOCH_INITIAL;
   }

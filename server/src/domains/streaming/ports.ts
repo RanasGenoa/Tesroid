@@ -12,15 +12,13 @@ export interface BufferedMediaEntry {
   readonly frameBytes: Uint8Array;
 }
 
-export interface StreamingPowerHooks {
-  requestHold(): Promise<void>;
-  requestResumeFromHold(
-    reason: "DRAINED" | "INTERACTION" | "RESET" | "LIVE_FALLBACK",
+export interface StreamingLifecyclePort {
+  requestBufferHold(): Promise<void>;
+  requestExitBufferHold(
+    reason: "DRAINED" | "INTERACTION" | "LIVE_FALLBACK",
+    atMs?: number,
   ): Promise<void>;
-}
-
-export interface StreamingEncoderHooks {
-  advanceEpochAndReset(): Promise<number>;
+  requestInteractiveEpochReset(atMs: number): Promise<void>;
 }
 
 export interface StreamingControlPort extends PowerStreamingPort {
@@ -34,7 +32,8 @@ export interface StreamingControlPort extends PowerStreamingPort {
     videoBufferedMs: number,
     audioBufferedMs: number,
   ): void;
-  handleUserInteraction(atMs: number): void;
+  handleUserInteraction(atMs: number): Promise<void>;
+  completeInteractiveEpochReset(atMs: number, newStreamEpoch: number): void;
   handleSessionActivated(
     sessionId: SessionConnectionId,
     streamEpoch: number,

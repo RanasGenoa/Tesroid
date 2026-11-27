@@ -11,7 +11,6 @@ import {
   encodeServerControlFrame,
   isCurrentStreamEpoch,
   isInputAllowed,
-  nextStreamEpoch,
   type PowerState,
   type PrimaryPlaybackMode,
   type StreamingEvent,
@@ -24,16 +23,12 @@ import {
 } from "@tesroid/shared";
 import type { Clock, TimerHandle } from "../../infra/index.js";
 import type { EncodedMediaPacket } from "../encoder/ports.js";
+import type { HoldExitReason } from "../power/ports.js";
 import type { SessionConnectionId, SessionServicePort } from "../session/ports.js";
 import type { SettingsRepository } from "../settings/ports.js";
 import type { CatchupPacer } from "./catchup-pacer.js";
 import { SocketLiveHysteresis } from "./live-hysteresis.js";
-import type {
-  BufferedMediaEntry,
-  StreamingControlPort,
-  StreamingEncoderHooks,
-  StreamingPowerHooks,
-} from "./ports.js";
+import type { BufferedMediaEntry, StreamingControlPort, StreamingLifecyclePort } from "./ports.js";
 import type { MediaRingBuffer } from "./ring-buffer.js";
 
 export interface StreamingControllerDeps {
@@ -42,8 +37,7 @@ export interface StreamingControllerDeps {
   readonly session: SessionServicePort;
   readonly ringBuffer: MediaRingBuffer;
   readonly catchupPacer: CatchupPacer;
-  readonly powerHooks: StreamingPowerHooks;
-  readonly encoderHooks: StreamingEncoderHooks;
+  readonly lifecycle: StreamingLifecyclePort;
   readonly idleToBufferSeconds?: number;
 }
 
@@ -51,12 +45,6 @@ interface ClientBufferSnapshot {
   readonly streamEpoch: number;
   readonly videoBufferedMs: number;
   readonly audioBufferedMs: number;
-}
-
-interface TransitionOptions {
-  readonly suppressPowerHook?: boolean;
-  readonly suppressEncoderHook?: boolean;
-  readonly holdResumeReason?: "DRAINED" | "INTERACTION" | "RESET" | "LIVE_FALLBACK";
 }
 
 function isConfigPacket(packet: EncodedMediaPacket): boolean {
@@ -95,6 +83,7 @@ export class StreamingController implements StreamingControlPort {
   private interactionTimer: TimerHandle | null = null;
   private lastClientBuffers: ClientBufferSnapshot | null = null;
   private lastInteractionAtMs: number | null = null;
+  private disposed = false;
 
   // Spec: docs/specs/03-streaming-transport.md#2.2
   constructor(deps: StreamingControllerDeps) {
@@ -121,15 +110,18 @@ export class StreamingController implements StreamingControlPort {
 
   // Spec: docs/specs/03-streaming-transport.md#2.2
   dispatchEvent(event: StreamingEvent): void {
-    this.applyTransition(event);
+    this.commitTransition(event);
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.1
   ingestEncodedPacket(packet: EncodedMediaPacket): void {
+    if (this.disposed) {
+      return;
+    }
     if (!isCurrentStreamEpoch(packet.streamEpoch, this.state.streamEpoch)) {
       return;
     }
-    if (shouldPauseGeneration(this.state) || shouldSuppressMediaSend(this.state)) {
+    if (shouldPauseGeneration(this.state)) {
       return;
     }
 
@@ -212,6 +204,9 @@ export class StreamingController implements StreamingControlPort {
     videoBufferedMs: number,
     audioBufferedMs: number,
   ): void {
+    if (this.disposed) {
+      return;
+    }
     const primary = this.deps.session.getPrimaryAuthority();
     if (primary === null || primary.id !== sessionId) {
       return;
@@ -231,50 +226,57 @@ export class StreamingController implements StreamingControlPort {
       audioBufferedMs: Math.max(0, Number.isFinite(audioBufferedMs) ? audioBufferedMs : 0),
     };
 
-    this.deps.session.recordPrimaryFeedback(
-      sessionId,
-      streamEpoch,
-      renderedPtsUs,
-      targetBufferMs,
-      toPrimaryPlaybackMode(this.state) ?? "LIVE",
-    );
-
     if (selectQueueKind(this.state) === "CATCHUP") {
       this.deps.catchupPacer.recordProgress({ renderedPtsUs, nowMs });
     }
 
-    const kindBeforeEval = this.state.kind;
-    this.evaluateBufferHoldOccupancy();
+    const confirmedPtsUs = BigInt(Math.round(renderedPtsUs));
+    this.evaluateBufferHoldOccupancy(confirmedPtsUs);
 
-    // Update mode in SessionRegistry only when HOLD_THRESHOLD_REACHED kept the same streamEpoch.
-    if (this.state.kind !== kindBeforeEval && this.state.streamEpoch === streamEpoch) {
-      const updatedMode = toPrimaryPlaybackMode(this.state);
-      if (updatedMode !== null) {
-        this.deps.session.recordPrimaryFeedback(
-          sessionId,
-          streamEpoch,
-          renderedPtsUs,
-          targetBufferMs,
-          updatedMode,
-        );
-      }
+    if (isCurrentStreamEpoch(streamEpoch, this.state.streamEpoch)) {
+      this.deps.session.recordPrimaryFeedback(
+        sessionId,
+        streamEpoch,
+        renderedPtsUs,
+        targetBufferMs,
+        toPrimaryPlaybackMode(this.state) ?? "LIVE",
+      );
     }
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.2
-  handleUserInteraction(atMs: number): void {
-    if (!isInputAllowed(this.state)) {
+  async handleUserInteraction(atMs: number): Promise<void> {
+    if (this.disposed || !isInputAllowed(this.state)) {
       return;
     }
     this.lastInteractionAtMs = atMs;
-    const newStreamEpoch =
-      this.state.kind === "CATCHUP" || this.state.kind === "BUFFER_HOLD"
-        ? nextStreamEpoch(this.state.streamEpoch)
-        : this.state.streamEpoch;
-    this.applyTransition(
-      { type: "USER_INTERACTION", atMs, newStreamEpoch },
-      { holdResumeReason: "INTERACTION" },
-    );
+    const preview = transitionStreamingState(this.state, {
+      type: "USER_INTERACTION",
+      atMs,
+      newStreamEpoch: this.state.streamEpoch,
+    });
+    if (preview.effects.some((effect) => effect.type === "REQUEST_POWER_RESUME")) {
+      await this.deps.lifecycle.requestExitBufferHold("INTERACTION", atMs);
+      return;
+    }
+    if (preview.effects.some((effect) => effect.type === "ADVANCE_EPOCH_AND_RESET")) {
+      await this.deps.lifecycle.requestInteractiveEpochReset(atMs);
+      return;
+    }
+    this.commitTransition({
+      type: "USER_INTERACTION",
+      atMs,
+      newStreamEpoch: this.state.streamEpoch,
+    });
+  }
+
+  // Spec: docs/specs/03-streaming-transport.md#2.2
+  completeInteractiveEpochReset(atMs: number, newStreamEpoch: number): void {
+    this.commitTransition({
+      type: "USER_INTERACTION",
+      atMs,
+      newStreamEpoch,
+    });
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.4
@@ -283,6 +285,9 @@ export class StreamingController implements StreamingControlPort {
     streamEpoch: number,
     lastAckPtsUs: bigint | null,
   ): void {
+    if (this.disposed) {
+      return;
+    }
     this.getOrCreateHysteresis(sessionId);
     const sessionRecord = this.deps.session.getSession(sessionId);
     if (sessionRecord === null || sessionRecord.role === "SECONDARY_STANDBY") {
@@ -311,7 +316,7 @@ export class StreamingController implements StreamingControlPort {
 
     if (catchupEntries.length > 0 && catchupEntries[0] !== undefined) {
       const targetBufferMs = this.deps.settings.getCurrent().stream.targetBufferMs;
-      this.applyTransition({
+      this.commitTransition({
         type: "SESSION_ACTIVATED",
         streamEpoch,
         resumeCatchup: {
@@ -323,28 +328,21 @@ export class StreamingController implements StreamingControlPort {
       return;
     }
 
-    this.applyTransition(
-      { type: "SESSION_ACTIVATED", streamEpoch },
-      { holdResumeReason: "LIVE_FALLBACK", suppressEncoderHook: true },
-    );
+    const preview = transitionStreamingState(this.state, {
+      type: "SESSION_ACTIVATED",
+      streamEpoch,
+    });
+    if (preview.effects.some((effect) => effect.type === "REQUEST_POWER_RESUME")) {
+      this.dispatchAsyncLifecycle(() => this.deps.lifecycle.requestExitBufferHold("LIVE_FALLBACK"));
+      return;
+    }
+    this.commitTransition({ type: "SESSION_ACTIVATED", streamEpoch });
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.5
   handleStreamReset(newStreamEpoch: number): void {
     this.clearBufferAndQueues();
-    if (this.state.kind === "STANDBY") {
-      if (this.deps.session.hasActivePrimaryOrActing()) {
-        this.applyTransition(
-          { type: "SESSION_ACTIVATED", streamEpoch: newStreamEpoch },
-          { suppressEncoderHook: true, suppressPowerHook: true },
-        );
-      }
-      return;
-    }
-    this.applyTransition(
-      { type: "STREAM_RESET", newStreamEpoch },
-      { suppressEncoderHook: true, suppressPowerHook: true },
-    );
+    this.commitTransition({ type: "STREAM_RESET", newStreamEpoch });
   }
 
   // Spec: docs/specs/02-session-multidisplay.md#2.4
@@ -432,50 +430,53 @@ export class StreamingController implements StreamingControlPort {
     for (const client of this.deps.session.getAllSessions()) {
       client.transport.sendBinary(frame);
     }
+  }
 
-    if (state === "ACTIVE" && this.deps.session.hasActivePrimaryOrActing()) {
-      if (
-        this.state.kind === "STANDBY" ||
-        (this.state.streamEpoch !== streamEpoch && this.state.kind !== "BUFFER_HOLD")
-      ) {
-        this.applyTransition(
-          { type: "SESSION_ACTIVATED", streamEpoch },
-          { suppressEncoderHook: true, suppressPowerHook: true },
-        );
-      }
+  // Spec: docs/specs/10-power-lifecycle.md#2.3
+  onPowerActive(streamEpoch: number): void {
+    if (this.deps.session.hasActivePrimaryOrActing()) {
+      this.commitTransition({ type: "SESSION_ACTIVATED", streamEpoch });
     }
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.3
   onPowerSleep(): void {
-    this.applyTransition(
-      { type: "POWER_SLEEP" },
-      { suppressPowerHook: true, suppressEncoderHook: true },
-    );
+    this.commitTransition({ type: "POWER_SLEEP" });
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.3
   onPowerHoldEntered(atMs: number): void {
-    this.applyTransition({ type: "HOLD_THRESHOLD_REACHED", atMs }, { suppressPowerHook: true });
+    this.commitTransition({ type: "HOLD_THRESHOLD_REACHED", atMs });
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.3
-  onPowerHoldExited(newStreamEpoch: number): void {
-    this.applyTransition(
-      { type: "HOLD_DRAINED", newStreamEpoch },
-      { suppressPowerHook: true, suppressEncoderHook: true },
-    );
+  onPowerHoldExited(newStreamEpoch: number, reason: HoldExitReason, atMs?: number): void {
+    if (reason === "INTERACTION") {
+      this.commitTransition({
+        type: "USER_INTERACTION",
+        atMs: atMs ?? this.deps.clock.nowMs(),
+        newStreamEpoch,
+      });
+      return;
+    }
+    this.commitTransition({ type: "HOLD_DRAINED", newStreamEpoch });
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.4
   dispose(): void {
+    this.disposed = true;
     this.cancelInteractionTimer();
     this.deps.catchupPacer.flush();
+    this.deps.ringBuffer.clear();
     this.unsubscribeSettings();
     this.socketHysteresis.clear();
+    this.lastClientBuffers = null;
   }
 
-  private applyTransition(event: StreamingEvent, options?: TransitionOptions): void {
+  private commitTransition(event: StreamingEvent): void {
+    if (this.disposed) {
+      return;
+    }
     const prevKind = this.state.kind;
     const prevEpoch = this.state.streamEpoch;
     const { nextState, effects } = transitionStreamingState(this.state, event);
@@ -486,8 +487,6 @@ export class StreamingController implements StreamingControlPort {
       this.deps.session.clearPrimaryFeedback();
     }
 
-    const hasPowerResumeEffect = effects.some((effect) => effect.type === "REQUEST_POWER_RESUME");
-
     for (const effect of effects) {
       switch (effect.type) {
         case "FLUSH_CATCHUP_QUEUE":
@@ -495,9 +494,6 @@ export class StreamingController implements StreamingControlPort {
           break;
         case "ADVANCE_EPOCH_AND_RESET":
           this.clearBufferAndQueues();
-          if (!options?.suppressEncoderHook && !hasPowerResumeEffect) {
-            void this.deps.encoderHooks.advanceEpochAndReset();
-          }
           break;
         case "ARM_INTERACTION_TIMER":
           this.armInteractionTimer(effect.delayMs);
@@ -506,15 +502,7 @@ export class StreamingController implements StreamingControlPort {
           this.cancelInteractionTimer();
           break;
         case "REQUEST_POWER_HOLD":
-          if (!options?.suppressPowerHook) {
-            void this.deps.powerHooks.requestHold();
-          }
-          break;
         case "REQUEST_POWER_RESUME":
-          if (!options?.suppressPowerHook) {
-            void this.deps.powerHooks.requestResumeFromHold(options?.holdResumeReason ?? "RESET");
-          }
-          break;
         case "ENTER_LIVE_HYSTERESIS":
           break;
         case "BROADCAST_STATE":
@@ -566,10 +554,9 @@ export class StreamingController implements StreamingControlPort {
     }
   }
 
-  private evaluateBufferHoldOccupancy(): void {
-    const primaryConfirmedPtsUs = this.deps.session.getPrimaryConfirmedPtsUs(
-      this.state.streamEpoch,
-    );
+  private evaluateBufferHoldOccupancy(confirmedPtsUsOverride?: bigint): void {
+    const primaryConfirmedPtsUs =
+      confirmedPtsUsOverride ?? this.deps.session.getPrimaryConfirmedPtsUs(this.state.streamEpoch);
     if (primaryConfirmedPtsUs === null) {
       return;
     }
@@ -584,37 +571,40 @@ export class StreamingController implements StreamingControlPort {
       maxBytes: this.deps.ringBuffer.getMaxBytes(),
     });
 
-    if (this.state.kind === "LIVE" || this.state.kind === "CATCHUP") {
-      if (occupancy >= BUFFER_HOLD_CONSTANTS.triggerOccupancyRatio) {
-        this.dispatchEvent({
-          type: "HOLD_THRESHOLD_REACHED",
-          atMs: this.deps.clock.nowMs(),
-        });
-      }
-      return;
-    }
-
-    if (this.state.kind === "BUFFER_HOLD") {
-      if (this.deps.session.getPrimaryAuthority() === null) {
+    switch (this.state.kind) {
+      case "STANDBY":
+      case "INTERACTIVE":
         return;
-      }
-      if (occupancy <= BUFFER_HOLD_CONSTANTS.resumeOccupancyRatio) {
-        this.applyTransition(
-          {
-            type: "HOLD_DRAINED",
-            newStreamEpoch: nextStreamEpoch(this.state.streamEpoch),
-          },
-          { holdResumeReason: "DRAINED" },
-        );
-      }
+      case "LIVE":
+      case "CATCHUP":
+        if (occupancy >= BUFFER_HOLD_CONSTANTS.triggerOccupancyRatio) {
+          this.dispatchAsyncLifecycle(() => this.deps.lifecycle.requestBufferHold());
+        }
+        return;
+      case "BUFFER_HOLD":
+        if (
+          this.deps.session.getPrimaryAuthority() !== null &&
+          occupancy <= BUFFER_HOLD_CONSTANTS.resumeOccupancyRatio
+        ) {
+          this.dispatchAsyncLifecycle(() => this.deps.lifecycle.requestExitBufferHold("DRAINED"));
+        }
+        return;
+      default:
+        assertNever(this.state);
     }
   }
 
   private startCatchupDrain(entries: readonly BufferedMediaEntry[], targetBufferMs: number): void {
+    if (this.disposed) {
+      return;
+    }
     this.deps.catchupPacer.start(
       entries,
       targetBufferMs,
       (entry) => {
+        if (this.disposed) {
+          return false;
+        }
         if (!isCurrentStreamEpoch(entry.streamEpoch, this.state.streamEpoch)) {
           return true;
         }
@@ -653,11 +643,16 @@ export class StreamingController implements StreamingControlPort {
         return true;
       },
       () => {
-        if (this.state.kind !== "BUFFER_HOLD") {
-          this.dispatchEvent({ type: "CATCHUP_DRAINED" });
-        }
+        this.dispatchEvent({ type: "CATCHUP_DRAINED" });
       },
     );
+  }
+
+  private dispatchAsyncLifecycle(task: () => Promise<void>): void {
+    if (this.disposed) {
+      return;
+    }
+    void task().catch(() => undefined);
   }
 
   private sendCurrentConfigsToPrimary(
@@ -684,6 +679,9 @@ export class StreamingController implements StreamingControlPort {
   }
 
   private armInteractionTimer(delayMs: number): void {
+    if (this.disposed) {
+      return;
+    }
     this.cancelInteractionTimer();
     this.interactionTimer = this.deps.clock.setTimeout(() => {
       this.interactionTimer = null;

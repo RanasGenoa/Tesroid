@@ -14,6 +14,7 @@ import type {
   PowerEncoderPort,
   PowerSessionPort,
   PowerStreamingPort,
+  PrimaryConnectMode,
 } from "./ports.js";
 import { type PowerTransitionEvent, transitionPowerState } from "./power-fsm.js";
 import type { PowerTimers } from "./power-timers.js";
@@ -92,15 +93,15 @@ export class PowerService implements PowerControllerPort {
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.4
-  exitBufferHold(reason: HoldExitReason): Promise<PowerActionResult> {
+  exitBufferHold(reason: HoldExitReason, atMs?: number): Promise<PowerActionResult> {
     this.deps.timers.cancelAll();
-    return this.enqueue(() => this.exitBufferHoldInternal(reason));
+    return this.enqueue(() => this.exitBufferHoldInternal(reason, atMs));
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.3
-  async onPrimaryConnected(options?: { readonly preserveBufferHold?: boolean }): Promise<void> {
+  async onPrimaryConnected(mode: PrimaryConnectMode): Promise<void> {
     await this.enqueue(async () => {
-      if (this.state === "BUFFER_HOLD" && options?.preserveBufferHold === true) {
+      if (this.state === "BUFFER_HOLD" && mode === "RECONNECT") {
         this.deps.session.promoteStandbyToStreaming(this.deps.encoder.getCurrentEpoch());
         return;
       }
@@ -214,6 +215,7 @@ export class PowerService implements PowerControllerPort {
       this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
       this.applyFsm({ type: "STARTUP_SUCCEEDED" });
+      this.deps.streaming.onPowerActive(epoch);
       this.deps.streaming.broadcastPowerState(this.state, epoch);
       return { ok: true, state: this.state, streamEpoch: epoch };
     } catch {
@@ -246,13 +248,26 @@ export class PowerService implements PowerControllerPort {
       };
     }
 
-    this.deps.browser.setMonitoringPaused(true);
-    await this.deps.encoder.stopAll();
-    this.deps.encoder.clearTimelineComp();
+    try {
+      this.deps.browser.setMonitoringPaused(true);
+      await this.deps.encoder.stopAll();
+      this.deps.encoder.clearTimelineComp();
 
-    // BUFFER_HOLD already froze the browser tree; convert directly without resume churn.
-    if (prevState !== "BUFFER_HOLD") {
-      await this.deps.browser.freezeTree();
+      // BUFFER_HOLD already froze the browser tree; convert directly without resume churn.
+      if (prevState !== "BUFFER_HOLD") {
+        await this.deps.browser.freezeTree();
+      }
+    } catch {
+      if (prevState === "BUFFER_HOLD") {
+        this.deps.timers.armHoldExpire(this.holdExpireDelayMs);
+      } else {
+        this.deps.browser.setMonitoringPaused(false);
+      }
+      return {
+        ok: false,
+        state: this.state,
+        streamEpoch: this.deps.encoder.getCurrentEpoch(),
+      };
     }
 
     this.deps.streaming.clearBufferAndQueues();
@@ -301,6 +316,7 @@ export class PowerService implements PowerControllerPort {
       this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
       this.applyFsm({ type: "STARTUP_SUCCEEDED" });
+      this.deps.streaming.onPowerActive(epoch);
       this.deps.streaming.broadcastPowerState(this.state, epoch);
       if (this.deps.session.hasActivePrimaryOrActing()) {
         this.deps.session.promoteStandbyToStreaming(epoch);
@@ -342,6 +358,7 @@ export class PowerService implements PowerControllerPort {
       await this.deps.encoder.ensureDualRunning();
 
       this.applyFsm({ type: "RESTART_SUCCEEDED" });
+      this.deps.streaming.onPowerActive(epoch);
       this.deps.streaming.broadcastPowerState(this.state, epoch);
       if (this.deps.session.hasActivePrimaryOrActing()) {
         this.deps.session.promoteStandbyToStreaming(epoch);
@@ -356,7 +373,8 @@ export class PowerService implements PowerControllerPort {
   }
 
   private async enterBufferHoldInternal(): Promise<PowerActionResult> {
-    if (!this.applyFsm({ type: "HOLD_REQUESTED" })) {
+    const transition = transitionPowerState(this.state, { type: "HOLD_REQUESTED" });
+    if (!transition.allowed) {
       return {
         ok: false,
         state: this.state,
@@ -364,9 +382,20 @@ export class PowerService implements PowerControllerPort {
       };
     }
 
-    this.deps.browser.setMonitoringPaused(true);
-    await this.deps.encoder.pauseWithTimelineComp();
-    await this.deps.browser.freezeTree();
+    try {
+      this.deps.browser.setMonitoringPaused(true);
+      await this.deps.encoder.pauseWithTimelineComp();
+      await this.deps.browser.freezeTree();
+    } catch {
+      this.deps.browser.setMonitoringPaused(false);
+      return {
+        ok: false,
+        state: this.state,
+        streamEpoch: this.deps.encoder.getCurrentEpoch(),
+      };
+    }
+
+    this.setState(transition.nextState);
     this.deps.timers.armHoldExpire(this.holdExpireDelayMs);
 
     const epoch = this.deps.encoder.getCurrentEpoch();
@@ -375,9 +404,13 @@ export class PowerService implements PowerControllerPort {
     return { ok: true, state: this.state, streamEpoch: epoch };
   }
 
-  private async exitBufferHoldInternal(reason: HoldExitReason): Promise<PowerActionResult> {
+  private async exitBufferHoldInternal(
+    reason: HoldExitReason,
+    atMs?: number,
+  ): Promise<PowerActionResult> {
     this.deps.timers.cancelAll();
-    if (!this.applyFsm({ type: "HOLD_RELEASED" })) {
+    const transition = transitionPowerState(this.state, { type: "HOLD_RELEASED" });
+    if (!transition.allowed) {
       return {
         ok: false,
         state: this.state,
@@ -385,17 +418,28 @@ export class PowerService implements PowerControllerPort {
       };
     }
 
-    await this.deps.browser.resumeTree();
-    this.deps.browser.setMonitoringPaused(false);
-    if (reason !== "DRAINED") {
-      this.deps.streaming.clearBufferAndQueues();
-      this.deps.encoder.clearTimelineComp();
+    let epoch: number;
+    try {
+      await this.deps.browser.resumeTree();
+      this.deps.browser.setMonitoringPaused(false);
+      if (reason !== "DRAINED") {
+        this.deps.streaming.clearBufferAndQueues();
+        this.deps.encoder.clearTimelineComp();
+      }
+      epoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
+      await this.deps.encoder.ensureDualRunning();
+    } catch {
+      this.deps.timers.armHoldExpire(this.holdExpireDelayMs);
+      return {
+        ok: false,
+        state: this.state,
+        streamEpoch: this.deps.encoder.getCurrentEpoch(),
+      };
     }
-    const epoch = this.deps.encoder.advanceEpochAndResetClock();
-    this.deps.session.clearPrimaryFeedback();
-    await this.deps.encoder.ensureDualRunning();
 
-    this.deps.streaming.onPowerHoldExited(epoch);
+    this.setState(transition.nextState);
+    this.deps.streaming.onPowerHoldExited(epoch, reason, atMs);
     this.deps.streaming.broadcastPowerState(this.state, epoch);
     return { ok: true, state: this.state, streamEpoch: epoch };
   }

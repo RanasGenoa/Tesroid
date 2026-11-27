@@ -9,11 +9,6 @@ export interface RingBufferStats {
   readonly oldestMediaPtsUs: bigint | null;
 }
 
-export interface UnconsumedBufferStats {
-  readonly unconsumedDurationMs: number;
-  readonly unconsumedBytes: number;
-}
-
 export interface RingBufferConfig {
   readonly maxSeconds: number;
   readonly maxBytes: number;
@@ -120,21 +115,6 @@ export class MediaRingBuffer {
       }
     }
     return unconsumedBytes;
-  }
-
-  // Spec: docs/specs/03-streaming-transport.md#2.4
-  getUnconsumedStats(confirmedPtsUs: bigint | null): UnconsumedBufferStats {
-    if (confirmedPtsUs === null || this.entries.length === 0) {
-      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
-    }
-    const latestMediaPtsUs = this.getStats().latestMediaPtsUs;
-    if (latestMediaPtsUs === null) {
-      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
-    }
-    return {
-      unconsumedDurationMs: Math.max(0, Number(latestMediaPtsUs - confirmedPtsUs) / 1_000),
-      unconsumedBytes: this.getUnconsumedBytesAfter(confirmedPtsUs),
-    };
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.4

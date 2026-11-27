@@ -22,9 +22,10 @@ export interface PowerEncoderPort {
 export interface PowerStreamingPort {
   clearBufferAndQueues(): void;
   broadcastPowerState(state: PowerState, streamEpoch: number): void;
+  onPowerActive(streamEpoch: number): void;
   onPowerSleep(): void;
   onPowerHoldEntered(atMs: number): void;
-  onPowerHoldExited(newStreamEpoch: number): void;
+  onPowerHoldExited(newStreamEpoch: number, reason: HoldExitReason, atMs?: number): void;
 }
 
 export interface PowerSessionPort {
@@ -35,6 +36,7 @@ export interface PowerSessionPort {
 }
 
 export type HoldExitReason = "DRAINED" | "INTERACTION" | "NEW_PRIMARY" | "LIVE_FALLBACK" | "RESET";
+export type PrimaryConnectMode = "NEW_SESSION" | "RECONNECT";
 
 export interface PowerControllerPort {
   getStatus(): PowerStatusSnapshot;
@@ -43,8 +45,8 @@ export interface PowerControllerPort {
   resume(): Promise<PowerActionResult>;
   restartBrowser(): Promise<PowerActionResult>;
   enterBufferHold(): Promise<PowerActionResult>;
-  exitBufferHold(reason: HoldExitReason): Promise<PowerActionResult>;
-  onPrimaryConnected(options?: { readonly preserveBufferHold?: boolean }): Promise<void>;
+  exitBufferHold(reason: HoldExitReason, atMs?: number): Promise<PowerActionResult>;
+  onPrimaryConnected(mode: PrimaryConnectMode): Promise<void>;
   onPrimaryDisconnected(): void;
   dispose(): void;
 }

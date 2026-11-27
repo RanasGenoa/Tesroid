@@ -814,6 +814,7 @@ describe("server/domains/browser (Spec 06)", () => {
     const streamingPort: PowerStreamingPort = {
       clearBufferAndQueues: () => {},
       broadcastPowerState: () => {},
+      onPowerActive: () => {},
       onPowerSleep: () => {},
       onPowerHoldEntered: () => {},
       onPowerHoldExited: () => {},

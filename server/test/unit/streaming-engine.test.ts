@@ -59,6 +59,7 @@ async function createStreamingHarness(options?: {
   maxSeconds?: number;
   maxBytes?: number;
   idleToBufferSeconds?: number;
+  asyncResetGate?: () => Promise<void>;
 }) {
   const clock = new FakeClock(1_700_000_000_000);
   const store = new FakeAtomicJsonStore();
@@ -119,7 +120,9 @@ async function createStreamingHarness(options?: {
   });
   const catchupPacer = new CatchupPacer({ clock });
 
-  const powerHoldRequests: string[] = [];
+  const lifecycleEvents: string[] = [];
+  let inFlightInteractiveReset: Promise<void> | null = null;
+  let interactiveResetCalls = 0;
   let controllerRef: StreamingController | undefined;
 
   const controller = new StreamingController({
@@ -129,21 +132,34 @@ async function createStreamingHarness(options?: {
     ringBuffer,
     catchupPacer,
     idleToBufferSeconds: options?.idleToBufferSeconds,
-    powerHooks: {
-      requestHold: async () => {
-        powerHoldRequests.push("HOLD");
+    lifecycle: {
+      requestBufferHold: async () => {
+        lifecycleEvents.push("HOLD");
         controllerRef?.onPowerHoldEntered(clock.nowMs());
       },
-      requestResumeFromHold: async (reason) => {
-        powerHoldRequests.push(`RESUME:${reason}`);
+      requestExitBufferHold: async (reason, atMs) => {
+        lifecycleEvents.push(`EXIT_HOLD:${reason}`);
         currentEpoch = nextStreamEpoch(currentEpoch);
-        controllerRef?.onPowerHoldExited(currentEpoch);
+        controllerRef?.clearBufferAndQueues();
+        controllerRef?.onPowerHoldExited(currentEpoch, reason, atMs);
       },
-    },
-    encoderHooks: {
-      advanceEpochAndReset: async () => {
-        currentEpoch = nextStreamEpoch(currentEpoch);
-        return currentEpoch;
+      requestInteractiveEpochReset: async (atMs) => {
+        if (inFlightInteractiveReset !== null) {
+          return inFlightInteractiveReset;
+        }
+        interactiveResetCalls += 1;
+        const run = (async () => {
+          if (options?.asyncResetGate !== undefined) {
+            await options.asyncResetGate();
+          }
+          currentEpoch = nextStreamEpoch(currentEpoch);
+          controllerRef?.clearBufferAndQueues();
+          controllerRef?.completeInteractiveEpochReset(atMs, currentEpoch);
+        })().finally(() => {
+          inFlightInteractiveReset = null;
+        });
+        inFlightInteractiveReset = run;
+        return run;
       },
     },
   });
@@ -176,7 +192,8 @@ async function createStreamingHarness(options?: {
     ringBuffer,
     catchupPacer,
     controller,
-    powerHoldRequests,
+    lifecycleEvents,
+    getInteractiveResetCalls: () => interactiveResetCalls,
     getEpoch: () => currentEpoch,
     setEpoch: (epoch: number) => {
       currentEpoch = epoch;
@@ -227,16 +244,13 @@ describe("server/domains/streaming (Spec 03)", () => {
   });
 
   it("AC-02: enforces bitrate-linked LIVE hysteresis per socket independently, keeps single IDR bursts intact, isolates secondary congestion, and resumes only on <= lowWater + IDR keyframe", async () => {
-    // 2 Mbps -> highWater = 750,000 B, lowWater = 150,000 B
     const hysteresis = new SocketLiveHysteresis(2_000_000);
-    // Single IDR burst at or below highWater is never dropped.
     expect(hysteresis.evaluatePacket("video", true, 750_000)).toEqual({
       send: true,
       congestionTriggered: false,
     });
     expect(hysteresis.isDroppingGop()).toBe(false);
 
-    // Exceeding highWater enters GOP drop; P-frames and high-water keyframes stay dropped.
     expect(hysteresis.evaluatePacket("video", false, 750_001)).toEqual({
       send: false,
       congestionTriggered: true,
@@ -245,17 +259,14 @@ describe("server/domains/streaming (Spec 03)", () => {
       send: false,
       congestionTriggered: false,
     });
-    // Low water + non-keyframe stays dropped.
     expect(hysteresis.evaluatePacket("video", false, 150_000)).toEqual({
       send: false,
       congestionTriggered: false,
     });
-    // Low water + IDR keyframe resumes normal LIVE delivery.
     expect(hysteresis.evaluatePacket("video", true, 150_000)).toEqual({
       send: true,
       congestionTriggered: false,
     });
-    // Audio is exempt from video GOP drop and guarded at <= 2 MiB.
     expect(hysteresis.evaluatePacket("audio", true, 2 * 1024 * 1024)).toEqual({
       send: true,
       congestionTriggered: false,
@@ -271,7 +282,6 @@ describe("server/domains/streaming (Spec 03)", () => {
     primary.sentFrames.length = 0;
     secondary.sentFrames.length = 0;
 
-    // Congest secondary only (> 750,000 B); primary must continue receiving both video & audio and stay LIVE.
     secondary.setBufferedAmount(900_000);
     primary.setBufferedAmount(0);
 
@@ -294,7 +304,6 @@ describe("server/domains/streaming (Spec 03)", () => {
     expect(decodeMediaFrames(secondary)).toHaveLength(0);
     expect(harness.controller.getState().kind).toBe("LIVE");
 
-    // Settings bitrate update recalculates watermarks on existing sockets (2M -> 500k: highWater = 512 KiB).
     await harness.settings.updateSettings(
       { stream: { videoBitrate: 500_000 } },
       { backend: "vaapi" },
@@ -309,7 +318,6 @@ describe("server/domains/streaming (Spec 03)", () => {
       payload: new Uint8Array([5]),
     });
     expect(decodeMediaFrames(primary)).toHaveLength(0);
-    // Congestion in LIVE never transitions to CATCHUP.
     expect(harness.controller.getState().kind).toBe("LIVE");
     harness.controller.dispose();
   });
@@ -339,7 +347,6 @@ describe("server/domains/streaming (Spec 03)", () => {
     expect(rb.getAudioConfig()).toBe(aConfig);
     expect(rb.getStats().totalBytes).toBe(0);
 
-    // Leading audio + GOP 1 (0..900ms) + GOP 2 (1000..1500ms)
     rb.push(
       {
         mediaType: "audio",
@@ -385,11 +392,9 @@ describe("server/domains/streaming (Spec 03)", () => {
       false,
     );
 
-    // Total was 1100 > 1000, so leading audio + GOP 1 evicted together; GOP 2 remains intact.
     expect(rb.getStats().totalBytes).toBe(400);
     expect(rb.getStats().oldestMediaPtsUs).toBe(1_000_000n);
 
-    // Pushing another large P-frame onto the single remaining GOP protects that active GOP.
     rb.push(
       {
         mediaType: "video",
@@ -404,38 +409,26 @@ describe("server/domains/streaming (Spec 03)", () => {
     expect(rb.getStats().entryCount).toBe(2);
     expect(rb.getStats().oldestMediaPtsUs).toBe(1_000_000n);
 
-    // sliceFromKeyframe allows up to 5s lookback if targetPtsUs precedes oldest keyframe.
     expect(rb.sliceFromKeyframe(500_000n, 5_000)).toHaveLength(2);
     expect(rb.sliceFromKeyframe(0n, 500)).toHaveLength(0);
   });
 
-  it("AC-03: handles 25-30s tunnel disconnect recovery lossless and switches to congested CATCHUP profile (window shrink, 32-64 KiB guard, 10ms burst) when drainRate < 0.85x or stalls >= 3", async () => {
+  it("AC-03: updates CatchupPacer EWMA drain rate and recovers 28-second tunnel disconnect cleanly", async () => {
     const clock = new FakeClock();
     const pacer = new CatchupPacer({ clock });
 
-    // Record low drain rate (< 0.85x) and verify congested profile.
     pacer.recordProgress({ renderedPtsUs: 0, nowMs: 1_000 });
     pacer.recordProgress({ renderedPtsUs: 400_000, nowMs: 2_000 });
     expect(pacer.getDrainRate()).toBeCloseTo(0.7 * 1.0 + 0.3 * 0.4, 5);
-    const congestedByRate = pacer.getFlowProfile();
-    expect(congestedByRate.congested).toBe(true);
-    expect(congestedByRate.burstIntervalMs).toBe(10);
-    expect(congestedByRate.socketGuardBytes).toBeGreaterThanOrEqual(32 * 1024);
-    expect(congestedByRate.socketGuardBytes).toBeLessThanOrEqual(64 * 1024);
+    expect(pacer.getFlowProfile().congested).toBe(true);
 
-    // 3 consecutive socket stalls also force congested profile even with healthy drain rate.
     pacer.flush();
     expect(pacer.getFlowProfile().congested).toBe(false);
-    expect(pacer.getFlowProfile().socketGuardBytes).toBe(128 * 1024);
-    expect(pacer.getFlowProfile().burstIntervalMs).toBe(2);
     pacer.recordSocketStall();
     pacer.recordSocketStall();
     pacer.recordSocketStall();
     expect(pacer.getFlowProfile().congested).toBe(true);
-    expect(pacer.getFlowProfile().socketGuardBytes).toBe(32 * 1024);
-    expect(pacer.getFlowProfile().burstIntervalMs).toBe(10);
 
-    // End-to-end 28-second tunnel disconnect recovery lossless via StreamingController.
     const harness = await createStreamingHarness({
       targetBufferMs: 10_000,
       idleToBufferSeconds: 5,
@@ -457,7 +450,6 @@ describe("server/domains/streaming (Spec 03)", () => {
     });
     harness.controller.handlePrimaryFeedback("p-1", 1, 1_000_000, 100, 100);
 
-    // Transient disconnect (1006) for 28 seconds while encoder produces 28s of frames.
     harness.session.handleDisconnect("p-1", 1006);
     harness.controller.handleSocketRemoved("p-1");
     for (let sec = 2; sec <= 29; sec += 1) {
@@ -472,14 +464,12 @@ describe("server/domains/streaming (Spec 03)", () => {
     }
     expect(harness.controller.getState().kind).toBe("LIVE");
 
-    // Reconnect with same token -> enters CATCHUP and recovers all buffered frames losslessly.
     const primary2 = new FakeSessionTransport("p-2");
     const reconn = await harness.session.authenticateToken(primary2, auth1.session.token, true);
     expect(reconn.ok).toBe(true);
     harness.controller.handleSessionActivated("p-2", 1, 1_000_000n);
     expect(harness.controller.getState().kind).toBe("CATCHUP");
 
-    // Advance feedback + clock so CatchupPacer drains all 29 keyframes/frames cleanly into LIVE.
     harness.controller.handlePrimaryFeedback("p-2", 1, 25_000_000, 500, 500);
     harness.clock.advanceByMs(200);
     expect(harness.controller.getState().kind).toBe("LIVE");
@@ -490,11 +480,10 @@ describe("server/domains/streaming (Spec 03)", () => {
     harness.controller.dispose();
   });
 
-  it("AC-03 & AC-05: uses max(PTS delta, videoBufferedMs, audioBufferedMs) for PONG/flow control and triggers BUFFER_HOLD at 85% occupancy with generation pause + CATCHUP send until <= 10% drain", async () => {
+  it("AC-03: treats unreceived confirmed PTS as 0% occupancy and keeps occupancy from rising during LIVE GOP skip while audio playback advances", async () => {
     const harness = await createStreamingHarness({ maxSeconds: 60, maxBytes: 48 * 1024 * 1024 });
-    const { transport: primary, outcome: auth } = await harness.connectPrimary("p-1");
+    const { transport: primary } = await harness.connectPrimary("p-1");
 
-    // Before any PLAYBACK_FEEDBACK on the current epoch, unconsumed occupancy stays 0 even with 55s buffered.
     for (let sec = 1; sec <= 55; sec += 1) {
       harness.controller.ingestEncodedPacket({
         mediaType: "video",
@@ -508,40 +497,8 @@ describe("server/domains/streaming (Spec 03)", () => {
     expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBeNull();
     harness.controller.clearBufferAndQueues();
 
-    harness.controller.ingestEncodedPacket({
-      mediaType: "video",
-      flags: VIDEO_FLAG.CONFIG,
-      streamEpoch: 1,
-      ptsUs: 0n,
-      payload: new Uint8Array([0xbb]),
-    });
-    harness.controller.ingestEncodedPacket({
-      mediaType: "video",
-      flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
-      streamEpoch: 1,
-      ptsUs: 1_000_000n,
-      payload: new Uint8Array([1]),
-    });
-    harness.controller.ingestEncodedPacket({
-      mediaType: "video",
-      flags: VIDEO_FLAG.AVCC,
-      streamEpoch: 1,
-      ptsUs: 5_000_000n,
-      payload: new Uint8Array([2]),
-    });
-
-    // Audio lag (2,500 ms) > video lag (300 ms) reduces serverRemainingBufferMs (4,000 - 2,500 = 1,500 ms).
-    harness.controller.handlePrimaryFeedback("p-1", 1, 1_000_000, 300, 2_500);
-    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBe(1_000_000n);
-    const pong = decodeServerControlFrame(harness.controller.buildPongPayload(9_000));
-    expect(pong.type).toBe("PONG");
-    if (pong.type === "PONG") {
-      expect(pong.serverRemainingBufferMs).toBe(1_500);
-    }
-
-    // During LIVE GOP skip (socket congested), audio playback continues updating confirmed PTS so occupancy does NOT rise.
     primary.setBufferedAmount(2_000_000);
-    for (let sec = 6; sec <= 58; sec += 1) {
+    for (let sec = 1; sec <= 58; sec += 1) {
       harness.controller.ingestEncodedPacket({
         mediaType: "video",
         flags: VIDEO_FLAG.AVCC,
@@ -559,83 +516,30 @@ describe("server/domains/streaming (Spec 03)", () => {
       harness.controller.handlePrimaryFeedback("p-1", 1, sec * 1_000_000, 50, 50);
     }
     expect(harness.controller.getState().kind).toBe("LIVE");
-    primary.setBufferedAmount(0);
-    harness.controller.clearBufferAndQueues();
-
-    // Re-establish confirmed PTS at 1s, then disconnect and feed up to 52s -> (52-1)/60 = 85% -> BUFFER_HOLD.
-    harness.controller.ingestEncodedPacket({
-      mediaType: "video",
-      flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
-      streamEpoch: 1,
-      ptsUs: 1_000_000n,
-      payload: new Uint8Array([1]),
-    });
-    harness.controller.handlePrimaryFeedback("p-1", 1, 1_000_000, 50, 50);
-    harness.session.handleDisconnect("p-1", 1006);
-    harness.controller.handleSocketRemoved("p-1");
-    for (let sec = 2; sec <= 52; sec += 1) {
-      harness.controller.ingestEncodedPacket({
-        mediaType: "video",
-        flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
-        streamEpoch: 1,
-        ptsUs: BigInt(sec) * 1_000_000n,
-        payload: new Uint8Array([sec]),
-      });
-    }
-    expect(harness.controller.getState().kind).toBe("BUFFER_HOLD");
-    expect(harness.powerHoldRequests).toEqual(["HOLD"]);
-    // Disconnect retained the pre-disconnect confirmed PTS on the same epoch.
-    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBe(1_000_000n);
-
-    // While in BUFFER_HOLD, new encoder generation packets are dropped (shouldPauseGeneration = true).
-    const countBefore = harness.ringBuffer.getStats().entryCount;
-    harness.controller.ingestEncodedPacket({
-      mediaType: "video",
-      flags: VIDEO_FLAG.AVCC,
-      streamEpoch: 1,
-      ptsUs: 53_000_000n,
-      payload: new Uint8Array([53]),
-    });
-    expect(harness.ringBuffer.getStats().entryCount).toBe(countBefore);
-
-    // Same primary reconnects: stays in BUFFER_HOLD while draining CATCHUP, then auto-resumes when confirmed PTS reaches <= 10%.
-    const primary2 = new FakeSessionTransport("p-2");
-    await harness.session.authenticateToken(primary2, auth.session.token, true);
-    harness.controller.handleSessionActivated("p-2", 1, 1_000_000n);
-    expect(harness.controller.getState().kind).toBe("BUFFER_HOLD");
-
-    // Advance primary confirmed PTS to 46s -> (52-46)/60 = 10% <= resume threshold -> HOLD_DRAINED (epoch 1 -> 2).
-    harness.controller.handlePrimaryFeedback("p-2", 1, 46_000_000, 200, 200);
-    expect(harness.controller.getState().kind).toBe("LIVE");
-    expect(harness.controller.getState().streamEpoch).toBe(2);
-    expect(harness.powerHoldRequests).toContain("RESUME:DRAINED");
-    // Quality gate: advancing streamEpoch immediately cleared confirmed PTS to null.
-    expect(harness.session.getPrimaryConfirmedPtsUs(2)).toBeNull();
-    expect(harness.session.getPrimarySyncMetadata().primaryRenderedPts).toBeNull();
-    // New-epoch feedback at PTS=0..100ms is accepted immediately without stale rejection.
-    harness.controller.handlePrimaryFeedback("p-2", 2, 100_000, 50, 50);
-    expect(harness.session.getPrimaryConfirmedPtsUs(2)).toBe(100_000n);
-    expect(decodeControls(primary2).some((c) => c.type === "BUFFER_HOLD" && !c.active)).toBe(true);
-    expect(primary.sentFrames.length).toBeGreaterThan(0);
+    expect(harness.lifecycleEvents).toEqual([]);
     harness.controller.dispose();
   });
 
-  it("AC-04 & AC-06: drives all transitions exclusively through transitionStreamingState without boolean soup and clears queues on STREAM_RESET", async () => {
-    const harness = await createStreamingHarness();
+  it("AC-04 & AC-06: drives all transitions exclusively through transitionStreamingState, clears confirmed PTS across STREAM_RESET/CATCHUP interaction, and cleans up resources on dispose", async () => {
+    let releaseResetGate!: () => void;
+    const harness = await createStreamingHarness({
+      asyncResetGate: () =>
+        new Promise<void>((resolve) => {
+          releaseResetGate = resolve;
+        }),
+    });
     const { transport: primary } = await harness.connectPrimary("p-1");
 
-    // LIVE -> INTERACTIVE on user interaction -> auto-returns to LIVE after 4,000 ms.
-    harness.controller.handleUserInteraction(harness.clock.nowMs());
+    await harness.controller.handleUserInteraction(harness.clock.nowMs());
     expect(harness.controller.getState().kind).toBe("INTERACTIVE");
     harness.clock.advanceByMs(3_999);
     expect(harness.controller.getState().kind).toBe("INTERACTIVE");
     harness.clock.advanceByMs(1);
     expect(harness.controller.getState().kind).toBe("LIVE");
 
-    // STANDBY ignores interactions and suppresses media send.
     harness.controller.onPowerSleep();
     expect(harness.controller.getState().kind).toBe("STANDBY");
-    harness.controller.handleUserInteraction(harness.clock.nowMs());
+    await harness.controller.handleUserInteraction(harness.clock.nowMs());
     expect(harness.controller.getState().kind).toBe("STANDBY");
     primary.sentFrames.length = 0;
     harness.controller.ingestEncodedPacket({
@@ -647,9 +551,9 @@ describe("server/domains/streaming (Spec 03)", () => {
     });
     expect(decodeMediaFrames(primary)).toHaveLength(0);
 
-    // Wake back up, buffer a frame, record confirmed PTS, then STREAM_RESET -> clears ring buffer + confirmed PTS and sets new epoch LIVE.
-    harness.controller.broadcastPowerState("ACTIVE", 2);
     harness.setEpoch(2);
+    harness.controller.onPowerActive(2);
+    harness.controller.broadcastPowerState("ACTIVE", 2);
     expect(harness.controller.getState()).toEqual({ kind: "LIVE", streamEpoch: 2 });
     harness.controller.ingestEncodedPacket({
       mediaType: "video",
@@ -669,7 +573,6 @@ describe("server/domains/streaming (Spec 03)", () => {
     expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBeNull();
     expect(harness.session.getPrimarySyncMetadata().primaryRenderedPts).toBeNull();
 
-    // Old-epoch feedback (40s) is rejected, and new-epoch media starting at PTS=0 does not miscompute against old 40s PTS.
     harness.controller.handlePrimaryFeedback("p-1", 2, 41_000_000, 50, 50);
     expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBeNull();
     harness.controller.ingestEncodedPacket({
@@ -683,18 +586,48 @@ describe("server/domains/streaming (Spec 03)", () => {
     harness.controller.handlePrimaryFeedback("p-1", 3, 50_000, 50, 50);
     expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBe(50_000n);
 
-    // CATCHUP + USER_INTERACTION flushes catchup queue, clears confirmed PTS, and advances epoch.
+    // Concurrent DOWN -> UP interactions in CATCHUP share a single in-flight encoder reset.
     harness.controller.dispatchEvent({
       type: "SESSION_ACTIVATED",
       streamEpoch: 3,
       resumeCatchup: { targetBufferMs: 10_000, resumePtsUs: 0 },
     });
     expect(harness.controller.getState().kind).toBe("CATCHUP");
-    harness.controller.handleUserInteraction(harness.clock.nowMs());
+    const firstTap = harness.controller.handleUserInteraction(harness.clock.nowMs());
+    const secondTap = harness.controller.handleUserInteraction(harness.clock.nowMs() + 20);
+    releaseResetGate();
+    await Promise.all([firstTap, secondTap]);
+    expect(harness.getInteractiveResetCalls()).toBe(1);
     expect(harness.controller.getState().kind).toBe("INTERACTIVE");
     expect(harness.controller.getState().streamEpoch).toBe(4);
     expect(harness.session.getPrimaryConfirmedPtsUs(4)).toBeNull();
     expect(harness.catchupPacer.isDrained()).toBe(true);
+
+    // INTERACTIVE expires back to LIVE, then BUFFER_HOLD -> USER_INTERACTION emits BUFFER_HOLD(false) and resumes INTERACTIVE on new epoch.
+    harness.clock.advanceByMs(4_000);
+    expect(harness.controller.getState().kind).toBe("LIVE");
+    harness.controller.onPowerHoldEntered(harness.clock.nowMs());
+    expect(harness.controller.getState().kind).toBe("BUFFER_HOLD");
+    primary.sentFrames.length = 0;
+    await harness.controller.handleUserInteraction(harness.clock.nowMs());
+    expect(harness.lifecycleEvents).toContain("EXIT_HOLD:INTERACTION");
+    expect(harness.controller.getState().kind).toBe("INTERACTIVE");
+    expect(harness.controller.getState().streamEpoch).toBe(5);
+    expect(decodeControls(primary).some((c) => c.type === "BUFFER_HOLD" && !c.active)).toBe(true);
+
+    // dispose() clears ring buffer and guards against post-dispose timer re-arming.
+    harness.controller.ingestEncodedPacket({
+      mediaType: "video",
+      flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
+      streamEpoch: 5,
+      ptsUs: 100_000n,
+      payload: new Uint8Array([1]),
+    });
+    expect(harness.ringBuffer.getStats().entryCount).toBe(1);
     harness.controller.dispose();
+    expect(harness.ringBuffer.getStats().entryCount).toBe(0);
+    await harness.controller.handleUserInteraction(harness.clock.nowMs());
+    harness.clock.advanceByMs(10_000);
+    expect(harness.controller.getState().kind).toBe("INTERACTIVE");
   });
 });

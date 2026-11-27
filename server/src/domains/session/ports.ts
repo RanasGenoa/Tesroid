@@ -71,4 +71,5 @@ export interface SessionServicePort extends PowerSessionPort {
   getPrimaryConfirmedPtsUs(activeStreamEpoch: number): bigint | null;
   getPrimarySyncMetadata(): PrimarySyncMetadata;
   closeAllWithPolicyViolation(reason: string): void;
+  dispose(): void;
 }

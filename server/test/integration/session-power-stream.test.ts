@@ -536,6 +536,10 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
 
       primary.sendBinary(encodeResizeFrame({ width: 773, height: 553, dprX100: 153 }));
       await flushMicrotasks();
+      expect(harness.browserFake.resizeCalls).toHaveLength(0);
+      expect(harness.encoderFake.reconfigureCalls).toHaveLength(0);
+      harness.clock.advanceByMs(PROTOCOL_TIMING.serverResizeDebounceMs);
+      await flushMicrotasks();
       expect(harness.browserFake.resizeCalls).toHaveLength(1);
       expect(harness.encoderFake.reconfigureCalls).toHaveLength(1);
       const activeEpoch = harness.encoderFake.getEpoch();
@@ -910,11 +914,13 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       const pong = await primary.nextControl("PONG");
       expect(pong.serverRemainingBufferMs).toBe(1_200);
 
-      // Simulate transient 1006 disconnect; ring buffer fills to 52s (>= 85% of 60s) -> BUFFER_HOLD.
-      const authority = harness.container.session.getPrimaryAuthority();
-      if (authority !== null) {
-        harness.container.coordinator.handleWsClose(authority.id, 1006);
+      // Terminate primary socket cleanly via real WS close path (close code 1006).
+      primary.ws.terminate();
+      await primary.closed;
+      for (let i = 0; i < 100 && harness.container.session.getPrimaryAuthority() !== null; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
       }
+      expect(harness.container.session.getPrimaryAuthority()).toBeNull();
       for (let sec = 6; sec <= 52; sec += 1) {
         harness.encoderFake.emitPacket({
           mediaType: "video",
@@ -966,7 +972,7 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
     }
   });
 
-  it("Phase 5B DI wiring: wires real EncoderService + StreamingController + PowerService + SessionService inside createAppContainer and resets confirmed PTS cleanly across epoch updates", async () => {
+  it("Spec 03 AC-03 & AC-04: wires real EncoderService + StreamingController + PowerService + SessionService inside createAppContainer and resets confirmed PTS cleanly across epoch updates", async () => {
     const dataDir = await makeTempDataDir();
     const clock = new FakeClock(1_700_000_000_000);
     const browserFake = createPhase3BrowserFake();
@@ -1022,7 +1028,6 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
         streamEpoch: resetBody.streamEpoch,
       });
 
-      // Quality gate: confirmed PTS cursor must be null immediately after reset, stale feedback ignored, and new-epoch feedback accepted.
       expect(container.session.getPrimaryConfirmedPtsUs(resetBody.streamEpoch)).toBeNull();
       client.sendControl({ type: "PING", clientTimestampMs: 101 });
       const pongAfterReset = await client.nextControl("PONG");
@@ -1074,6 +1079,7 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       client.ws.terminate();
       await app.close();
       await container.dispose();
+      expect(container.encoder.getHealthStatus().running).toBe(false);
     }
   });
 });

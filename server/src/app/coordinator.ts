@@ -31,7 +31,7 @@ import type { AuthServicePort } from "../domains/auth/ports.js";
 import type { BrowserControlPort } from "../domains/browser/ports.js";
 import type { EncodedMediaPacket, EncoderControlPort } from "../domains/encoder/ports.js";
 import type { MetricsServicePort, TelemetryServicePort } from "../domains/observability/ports.js";
-import type { PowerControllerPort } from "../domains/power/ports.js";
+import type { PowerControllerPort, PrimaryConnectMode } from "../domains/power/ports.js";
 import type {
   ClientSessionRecord,
   SessionAuthOutcome,
@@ -41,7 +41,7 @@ import type {
 } from "../domains/session/ports.js";
 import { SettingsDomainError } from "../domains/settings/errors.js";
 import type { SettingsRepository } from "../domains/settings/ports.js";
-import type { StreamingControlPort } from "../domains/streaming/ports.js";
+import type { StreamingControlPort, StreamingLifecyclePort } from "../domains/streaming/ports.js";
 import type { Clock, ServerEnvConfig, TimerHandle } from "../infra/index.js";
 
 export interface CoordinatorDeps {
@@ -58,13 +58,15 @@ export interface CoordinatorDeps {
   readonly telemetry: TelemetryServicePort;
 }
 
-export class ServerCoordinator {
+export class ServerCoordinator implements StreamingLifecyclePort {
   private readonly deps: CoordinatorDeps;
   private readonly pendingTransports = new Map<SessionConnectionId, SessionTransportPort>();
   private resizeTimer: TimerHandle | null = null;
   private pendingResize: AlignedDimensions | null = null;
-  private lastResizeAppliedAtMs: number | null = null;
   private resizeQueue: Promise<void> = Promise.resolve();
+  private inFlightHoldEnter: Promise<void> | null = null;
+  private inFlightHoldExit: Promise<void> | null = null;
+  private inFlightInteractiveReset: Promise<void> | null = null;
   private readonly startedAtMonotonicMs: number;
   private lastStatsAtMonotonicMs: number;
   private videoFramesInWindow = 0;
@@ -225,26 +227,71 @@ export class ServerCoordinator {
     return toPublicSettings(saved);
   }
 
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  requestBufferHold(): Promise<void> {
+    if (this.inFlightHoldEnter !== null) {
+      return this.inFlightHoldEnter;
+    }
+    const run = this.deps.power
+      .enterBufferHold()
+      .then(() => undefined)
+      .finally(() => {
+        if (this.inFlightHoldEnter === run) {
+          this.inFlightHoldEnter = null;
+        }
+      });
+    this.inFlightHoldEnter = run;
+    return run;
+  }
+
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  requestExitBufferHold(
+    reason: "DRAINED" | "INTERACTION" | "LIVE_FALLBACK",
+    atMs?: number,
+  ): Promise<void> {
+    if (this.inFlightHoldExit !== null) {
+      return this.inFlightHoldExit;
+    }
+    const run = this.deps.power
+      .exitBufferHold(reason, atMs)
+      .then(() => undefined)
+      .finally(() => {
+        if (this.inFlightHoldExit === run) {
+          this.inFlightHoldExit = null;
+        }
+      });
+    this.inFlightHoldExit = run;
+    return run;
+  }
+
+  // Spec: docs/specs/03-streaming-transport.md#2.2
+  requestInteractiveEpochReset(atMs: number): Promise<void> {
+    if (this.inFlightInteractiveReset !== null) {
+      return this.inFlightInteractiveReset;
+    }
+    const run = (async () => {
+      const newEpoch = await this.resetDualEncoderPipeline();
+      this.deps.streaming.completeInteractiveEpochReset(atMs, newEpoch);
+    })().finally(() => {
+      if (this.inFlightInteractiveReset === run) {
+        this.inFlightInteractiveReset = null;
+      }
+    });
+    this.inFlightInteractiveReset = run;
+    return run;
+  }
+
   // Spec: docs/specs/03-streaming-transport.md#2.5
   async resetStream(): Promise<PowerActionResult> {
     const state = this.deps.power.getStatus().state;
     if (state === "BUFFER_HOLD") {
-      const result = await this.deps.power.exitBufferHold("RESET");
-      this.deps.streaming.handleStreamReset(result.streamEpoch);
-      return result;
+      return this.deps.power.exitBufferHold("RESET");
     }
     if (state === "STOPPED" || state === "SLEEP_PAUSED") {
-      const result = await this.deps.power.ensureActive();
-      this.deps.streaming.handleStreamReset(result.streamEpoch);
-      return result;
+      return this.deps.power.ensureActive();
     }
 
-    await this.deps.encoder.stopAll();
-    this.deps.encoder.clearTimelineComp();
-    this.deps.streaming.clearBufferAndQueues();
-    const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
-    this.deps.session.clearPrimaryFeedback();
-    await this.deps.encoder.ensureDualRunning();
+    const newEpoch = await this.resetDualEncoderPipeline();
     this.deps.streaming.handleStreamReset(newEpoch);
     const nextState = this.deps.power.getStatus().state;
     this.deps.streaming.broadcastPowerState(nextState, newEpoch);
@@ -311,23 +358,23 @@ export class ServerCoordinator {
             dpr: frame.dprX100 > 0 ? frame.dprX100 / 100 : undefined,
             maxSize: this.deps.settings.getCurrent().stream.maxSize,
           });
-          await this.scheduleResize(aligned);
+          this.scheduleResize(aligned);
         } catch {
-          // Ignore malformed resize frames or transient resize errors.
+          // Ignore malformed resize frames.
         }
         return;
       }
       case CHANNEL_ID.TOUCH: {
-        if (isStandby || !isInputAllowed(this.deps.streaming.getState())) {
+        if (isStandby) {
           return;
         }
+        let frame: ReturnType<typeof decodeTouchFrame>;
         try {
-          const frame = decodeTouchFrame(payload);
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.injectTouch(frame);
+          frame = decodeTouchFrame(payload);
         } catch {
-          // Ignore malformed touch frames or transient input errors.
+          return;
         }
+        await this.runInteractiveAction(() => this.deps.browser.injectTouch(frame));
         return;
       }
       case CHANNEL_ID.CONTROL_COMMAND: {
@@ -476,34 +523,41 @@ export class ServerCoordinator {
     }
   }
 
-  private async scheduleResize(aligned: AlignedDimensions): Promise<void> {
-    const nowMs = this.deps.clock.nowMs();
-    const canApplyLeading =
-      this.resizeTimer === null &&
-      (this.lastResizeAppliedAtMs === null ||
-        nowMs - this.lastResizeAppliedAtMs >= PROTOCOL_TIMING.serverResizeDebounceMs);
+  private async resetDualEncoderPipeline(): Promise<number> {
+    await this.deps.encoder.stopAll();
+    this.deps.encoder.clearTimelineComp();
+    this.deps.streaming.clearBufferAndQueues();
+    const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
+    this.deps.session.clearPrimaryFeedback();
+    await this.deps.encoder.ensureDualRunning();
+    return newEpoch;
+  }
 
-    if (canApplyLeading) {
-      this.lastResizeAppliedAtMs = nowMs;
-      await this.enqueueResize(aligned);
+  private async runInteractiveAction(action: () => Promise<void>): Promise<void> {
+    if (!isInputAllowed(this.deps.streaming.getState())) {
       return;
     }
-
-    this.pendingResize = aligned;
-    if (this.resizeTimer === null) {
-      const elapsed =
-        this.lastResizeAppliedAtMs === null ? 0 : Math.max(0, nowMs - this.lastResizeAppliedAtMs);
-      const delayMs = Math.max(1, PROTOCOL_TIMING.serverResizeDebounceMs - elapsed);
-      this.resizeTimer = this.deps.clock.setTimeout(() => {
-        this.resizeTimer = null;
-        const next = this.pendingResize;
-        this.pendingResize = null;
-        if (next !== null) {
-          this.lastResizeAppliedAtMs = this.deps.clock.nowMs();
-          void this.enqueueResize(next);
-        }
-      }, delayMs);
+    try {
+      await this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
+      await action();
+    } catch {
+      // Ignore transient browser input or navigation errors.
     }
+  }
+
+  private scheduleResize(aligned: AlignedDimensions): void {
+    this.pendingResize = aligned;
+    if (this.resizeTimer !== null) {
+      this.deps.clock.clearTimeout(this.resizeTimer);
+    }
+    this.resizeTimer = this.deps.clock.setTimeout(() => {
+      this.resizeTimer = null;
+      const next = this.pendingResize;
+      this.pendingResize = null;
+      if (next !== null) {
+        void this.enqueueResize(next).catch(() => undefined);
+      }
+    }, PROTOCOL_TIMING.serverResizeDebounceMs);
   }
 
   private enqueueResize(aligned: AlignedDimensions): Promise<void> {
@@ -574,12 +628,7 @@ export class ServerCoordinator {
     this.pendingTransports.delete(connectionId);
 
     if (outcome.requiresDualEncoderReset) {
-      await this.deps.encoder.stopAll();
-      this.deps.encoder.clearTimelineComp();
-      this.deps.streaming.clearBufferAndQueues();
-      const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
-      this.deps.session.clearPrimaryFeedback();
-      await this.deps.encoder.ensureDualRunning();
+      const newEpoch = await this.resetDualEncoderPipeline();
       this.deps.streaming.handleStreamReset(newEpoch);
       if (outcome.demotedActingPrimaryId !== undefined) {
         const demoted = this.deps.session.getSession(outcome.demotedActingPrimaryId);
@@ -600,9 +649,10 @@ export class ServerCoordinator {
       isPrimaryAuthorityRole &&
       !outcome.requiresDualEncoderReset &&
       outcome.displacedSessionId === undefined;
+    const connectMode: PrimaryConnectMode = preserveBufferHold ? "RECONNECT" : "NEW_SESSION";
 
     if (isPrimaryAuthorityRole) {
-      await this.deps.power.onPrimaryConnected({ preserveBufferHold });
+      await this.deps.power.onPrimaryConnected(connectMode);
     }
 
     const activeEpoch = this.deps.encoder.getCurrentEpoch();
@@ -694,66 +744,21 @@ export class ServerCoordinator {
         await this.deps.power.restartBrowser();
         return;
       }
-      case "NAVIGATE": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.navigate(command.url);
-        } catch {
-          // Ignore transient browser navigation errors.
-        }
+      case "NAVIGATE":
+        await this.runInteractiveAction(() => this.deps.browser.navigate(command.url));
         return;
-      }
-      case "HISTORY_BACK": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.goBack();
-        } catch {
-          // Ignore transient browser history errors.
-        }
+      case "HISTORY_BACK":
+        await this.runInteractiveAction(() => this.deps.browser.goBack());
         return;
-      }
-      case "HISTORY_FORWARD": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.goForward();
-        } catch {
-          // Ignore transient browser history errors.
-        }
+      case "HISTORY_FORWARD":
+        await this.runInteractiveAction(() => this.deps.browser.goForward());
         return;
-      }
-      case "RELOAD": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.reload();
-        } catch {
-          // Ignore transient browser reload errors.
-        }
+      case "RELOAD":
+        await this.runInteractiveAction(() => this.deps.browser.reload());
         return;
-      }
-      case "TOGGLE_FULLSCREEN": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.toggleFullscreen();
-        } catch {
-          // Ignore transient fullscreen toggle errors.
-        }
+      case "TOGGLE_FULLSCREEN":
+        await this.runInteractiveAction(() => this.deps.browser.toggleFullscreen());
         return;
-      }
       case "SET_ZOOM": {
         try {
           await this.deps.browser.setDisplayScale(command.scale);
@@ -762,30 +767,12 @@ export class ServerCoordinator {
         }
         return;
       }
-      case "INPUT_TEXT": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.injectText(command.text);
-        } catch {
-          // Ignore transient text input errors.
-        }
+      case "INPUT_TEXT":
+        await this.runInteractiveAction(() => this.deps.browser.injectText(command.text));
         return;
-      }
-      case "INPUT_KEY": {
-        if (!isInputAllowed(this.deps.streaming.getState())) {
-          return;
-        }
-        try {
-          this.deps.streaming.handleUserInteraction(this.deps.clock.nowMs());
-          await this.deps.browser.injectKey(command.key);
-        } catch {
-          // Ignore transient key input errors.
-        }
+      case "INPUT_KEY":
+        await this.runInteractiveAction(() => this.deps.browser.injectKey(command.key));
         return;
-      }
     }
   }
 }

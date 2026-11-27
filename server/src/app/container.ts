@@ -197,7 +197,6 @@ export function createAppContainer(
     shutdownHandler,
   });
 
-  let sessionRegistry: SessionRegistry | undefined;
   let powerRef: PowerControllerPort | undefined;
   let sessionServiceRef: SessionService | undefined;
 
@@ -210,7 +209,6 @@ export function createAppContainer(
           sessionServiceRef?.handleReloadGraceExpired();
         },
       });
-      sessionRegistry = registry;
       const service = new SessionService({
         clock,
         auth,
@@ -228,6 +226,7 @@ export function createAppContainer(
     })();
   sessionRef = session;
 
+  let coordinatorRef: ServerCoordinator | undefined;
   const streaming: StreamingControlPort =
     overrides?.streaming ??
     new StreamingController({
@@ -239,22 +238,15 @@ export function createAppContainer(
         maxBytes: env.playbackBufferMaxBytes,
       }),
       catchupPacer: new CatchupPacer({ clock }),
-      powerHooks: {
-        requestHold: async () => {
-          await powerRef?.enterBufferHold();
+      lifecycle: {
+        requestBufferHold: async () => {
+          await coordinatorRef?.requestBufferHold();
         },
-        requestResumeFromHold: async (reason) => {
-          await powerRef?.exitBufferHold(reason);
+        requestExitBufferHold: async (reason, atMs) => {
+          await coordinatorRef?.requestExitBufferHold(reason, atMs);
         },
-      },
-      encoderHooks: {
-        advanceEpochAndReset: async () => {
-          const newEpoch = encoder.advanceEpochAndResetClock();
-          session.clearPrimaryFeedback();
-          await encoder.stopAll();
-          encoder.clearTimelineComp();
-          await encoder.ensureDualRunning();
-          return newEpoch;
+        requestInteractiveEpochReset: async (atMs) => {
+          await coordinatorRef?.requestInteractiveEpochReset(atMs);
         },
       },
       idleToBufferSeconds: env.idleToBufferSeconds,
@@ -267,10 +259,10 @@ export function createAppContainer(
       const timers = new PowerTimers({
         clock,
         onAutoSleepExpired: () => {
-          void powerServiceRef?.handleAutoSleepExpired();
+          void powerServiceRef?.handleAutoSleepExpired().catch(() => undefined);
         },
         onHoldExpired: () => {
-          void powerServiceRef?.handleHoldExpired();
+          void powerServiceRef?.handleHoldExpired().catch(() => undefined);
         },
       });
       const service = new PowerService({
@@ -301,6 +293,7 @@ export function createAppContainer(
     metrics,
     telemetry,
   });
+  coordinatorRef = coordinator;
 
   const unsubscribePackets = encoder.subscribePackets((packet) => {
     streaming.ingestEncodedPacket(packet);
@@ -322,8 +315,12 @@ export function createAppContainer(
     coordinator,
     dispose: async () => {
       unsubscribePackets();
-      sessionRegistry?.dispose();
       await coordinator.dispose();
+      session.dispose();
+      await Promise.allSettled([
+        Promise.resolve().then(() => encoder.stopAll()),
+        Promise.resolve().then(() => browser.stop()),
+      ]);
     },
   };
 }
