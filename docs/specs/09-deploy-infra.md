@@ -51,10 +51,10 @@ Linux・各種 NAS OS（TrueNAS / QNAP 等）・Windows Docker Desktop・NVIDIA 
 - **ローカル検証プロキシ（`scripts/pc-proxy.mjs`）**: LAN 内別 PC 等から HTTPS 公開前にテストできるよう、`http://127.0.0.1:<ポート>`（WebCodecs セキュアコンテキスト扱い）として HTTP + WebSocket を転送する。
 
 ### 2.6 CI/CD & 品質ガードレール
-- **CI ワークフロー（Node.js 22）**: `main` / `release/**` 向け push・PR でリント/フォーマット（Biome）、厳格型チェック（tsc）、全単体/結合テスト（Vitest）、プロダクションビルド、ビルド成果物に対する車載 DOM 制約検証（`<video>` ゼロ・`<canvas>` 存在・HUD 中央揃え）を実行する。権限は `contents: read` のみ（シークレット不使用、`pull_request_target` 不使用）。
+- **CI ワークフロー（Node.js 22）**: `main` / `restart/**` / `release/**` 向け push およびすべての PR でリント/フォーマット（Biome）、厳格型チェック（tsc）、全単体/結合テスト（Vitest）、プロダクションビルド、ビルド成果物に対する車載 DOM 制約検証（`<video>` ゼロ・`<canvas>` 存在・HUD 中央揃え）を実行する。権限は `contents: read` のみ（シークレット不使用、`pull_request_target` 不使用）。
 - **品質ガードレールテスト**: プロトコル対称性、禁止 Chrome フラグ、PulseAudio/WebAuthn/パスワードバブル抑止、完全タッチオンリー規約、機密情報（プライベート IP・鍵・ローカルパス）の混入ゼロを自動検査する。
 - **コンテナ公開ワークフロー**: `main` への push および `v*` タグ時に Chrome 非同梱イメージ（`INSTALL_CHROME=false`）をビルド・公開し、`latest` タグはプレリリースを含まない安定版 `v*` タグ時のみ付与する。
-- **AI PR レビュー**: 読み取り専用トークン分離で差分（3MB 上限）を解析し、作業ツリーを汚さずレビューコメントを更新する（Fork PR 時は `pull_request_target` で安全性分離）。
+- **AI PR レビュー**: 読み取り専用トークン分離で差分（3MB 上限）を解析し、機械ゲート（CI・ガードレールテスト）と役割分担した高シグナルレビューコメントを更新する（Fork PR 時は `pull_request_target` で安全性分離）。
 
 ---
 
