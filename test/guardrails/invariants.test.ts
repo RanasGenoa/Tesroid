@@ -83,11 +83,11 @@ describe("Architecture & Specification Invariant Guardrails", () => {
     }
   });
 
-  it("Spec 01 AC-05 & Spec 07 AC-01: client source and built dist contain zero localStorage references", () => {
+  it("Spec 01 AC-05 & Spec 07 AC-01: client source and built dist contain zero localStorage references and zero hardcoded 1.53 DPR literals", () => {
     const filesToInspect = [
       path.join(rootDir, "client/index.html"),
-      ...collectFiles(path.join(rootDir, "client/src"), [".ts", ".html"]),
-      ...collectFiles(path.join(rootDir, "client/dist"), [".js", ".html"]),
+      ...collectFiles(path.join(rootDir, "client/src"), [".ts", ".css", ".html"]),
+      ...collectFiles(path.join(rootDir, "client/dist"), [".js", ".css", ".html"]),
     ];
 
     for (const filePath of filesToInspect) {
@@ -95,6 +95,7 @@ describe("Architecture & Specification Invariant Guardrails", () => {
       expect(content, `${filePath} must not reference localStorage`).not.toMatch(
         /\blocalStorage\b/,
       );
+      expect(content, `${filePath} must not hardcode DPR 1.53`).not.toMatch(/\b1\.53\b/);
     }
   });
 

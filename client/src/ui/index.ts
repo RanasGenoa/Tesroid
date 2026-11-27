@@ -1,4 +1,5 @@
 export * from "./escape.js";
+export * from "./guide-content.js";
 export * from "./views/hud-bar-view.js";
 export * from "./views/modals-view.js";
 export * from "./views/pin-status-views.js";
