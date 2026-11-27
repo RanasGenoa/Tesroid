@@ -115,7 +115,7 @@
 - **AC-07 (静的フロントエンドの公開配信)**:
   - **Given** ビルド済みクライアント（`client/dist`）が配置されたサーバーと、Bearer トークンを保持しない未認証状態
   - **When** `GET /`、`GET /assets/index-<hash>.js`、および API 以外の未知パスをそれぞれ実行する
-  - **Then** `/` は `index.html` を HTTP `200`・`text/html`・`Cache-Control: no-cache`（每次都座検定）で返し、認証を要求しない。ハッシュ付き assets は HTTP `200`・正しい MIME・長期不変キャッシュ（`max-age=31536000, immutable`）で返す。API 以外の未知パスは JSON `404` のまま据え置き、ディープリンクの SPA 書き換えは行わない。
+  - **Then** `/` は `index.html` を HTTP `200`・`text/html`・`Cache-Control: no-cache`（毎回再検証・HTTP キャッシュの都度再検証）で返し、認証を要求しない。ハッシュ付き assets は HTTP `200`・正しい MIME・長期不変キャッシュ（`max-age=31536000, immutable`）で返す。API 以外の未知パスは JSON `404` のまま据え置き、ディープリンクの SPA 書き換えは行わない。
 
 ---
 
