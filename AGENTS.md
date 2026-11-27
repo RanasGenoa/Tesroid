@@ -7,10 +7,11 @@
 
 ## 1. 絶対遵守事項（仕様駆動・根本解決・同時削除）
 
-すべての機能追加・仕様変更・不具合修正において、以下 3 点を例外なく絶対遵守する：
+すべての機能追加・仕様変更・不具合修正において、以下 4 点を例外なく絶対遵守する：
 
 - **機能追加・仕様変更の仕様書先行更新**: 機能追加・仕様変更は必ず [`docs/specs/`](docs/specs/)（必要に応じ [`docs/architecture.md`](docs/architecture.md)）の更新案を先に提示し、合意を得てから実装する。
 - **不具合修正の原因分類と根本解決**: 不具合修正は実装前に「仕様違反（実装ミス）」か「仕様漏れ（エッジケース追加）」かを判定し、ワークアラウンドではなく根本原因を直す（「仕様漏れ」に該当する場合は、先に仕様書の更新案を提示し合意を得てから実装する）。
+- **緊急修正も仕様先行を迂回しない**: 本番緊急対応でも「仕様漏れの判定 → 仕様書更新案の提示」を省略できない。実装を先に先行させる場合は、同一 PR 内に対象仕様書の「要確認事項」へ暫定記録を追加することを必須とし、仕様書に触れない hotfix のマージを禁止する。
 - **仕様変更に伴う旧資産の同時削除**: 仕様変更により不要になった旧コード・旧テスト・修正経緯コメントは必ず同時に削除する。
 
 ---
@@ -54,6 +55,7 @@
 
 ### 3.3 テスト規約（モック乱用・内部結合の禁止）
 - **振る舞いベース・最小限**: テストは [`docs/specs/`](docs/specs/) 各仕様書の「セクション 5: 受け入れ条件（AC）」に基づき、外部から観測可能な振る舞い（入力に対する出力・状態遷移・プロトコル/HTTP 応答）のみを検証する。
+- **AC 追跡可能性**: 新規・変更されたテストの最上位 `describe` 名には対応仕様書の AC 番号を含める（例: `describe("仕様 03 AC-04 ...")`）。PR 本文には「AC ↔ テストファイル」対応表を必須とし、対応 AC のない変更はスコープクリープとして §6.4 のレビューゲートで FAIL とする。
 - **絶対禁止テスト**:
   - **内部実装のモック乱用**: 同一プロセス内のドメインモジュールやヘルパー関数を `vi.mock` 等で差し替えること（差し替えを許すのは外部 OS/I/O 境界の Port Fake と `Clock` のみ）。
   - **内部実装への結合**: private 状態の確認や、`toHaveBeenCalledTimes(n)`・呼び出し順序などの手順テスト。
@@ -85,3 +87,64 @@
 - **保護ブランチ保護**: `main` および `release/*` への直接コミット・直接プッシュを厳禁とする。作業は必ずトピックブランチ（`feat/...`, `fix/...`, `docs/...`, `refactor/...`, `chore/...`）で行い、PR 経由で統合する。
 - **リリースタグ運用**: リリースタグ `v<MAJOR>.<MINOR>.<PATCH>`（SemVer 2.0.0）はユーザーの明示指示があるときのみ付与し、付与前にすべての `package.json` / `package-lock.json` のバージョンを一致させる。
 - **コミット・PR 前必須ゲート**: パッケージ基盤整備（Phase 0）以降、すべてのコード変更はコミットおよび PR 作成前に `npm run check`（Biome + `tsc --noEmit`）、`npm test`、`npm run build` の全 PASS を必須とする。
+
+---
+
+## 6. DDD × SDD 運用規約（フェーズワークフロー・用語集・コンテキスト境界）
+
+> 本節は §1〜§5 の方針を AI エージェントで運用するための手続定義であり、要件・設計の正典（[`docs/specs/`](docs/specs/) と [`docs/architecture.md`](docs/architecture.md)）および §1〜§5 の絶対規則に優先するものではない。正典と矛盾する場合は常に正典が勝つ。
+
+### 6.1 フェーズ別ワークフローとスキル割り当て（1フェーズ1オーナー）
+
+| Phase | 活動・成果物 | 主担当（オーナー） | 従属ゲート |
+| :--- | :--- | :--- | :--- |
+| 1. 要件・境界の精査 | `docs/domain/<context>.md` 作成・更新 | DDD モデリング（`ddd-modeling`。逆質問は `grill-me` 併用可） | — |
+| 2. 技術・モデル検証 | 使い捨て実験の結論（コードは本流に接続しない） | `spike` | — |
+| 3. 仕様・実装計画 | `docs/specs/` 先行更新（§1 のフロー）＋ 実装計画 `docs/plans/<NNN>-<topic>.md` | `writing-plans` | 仕様合意が計画より常に先行 |
+| 4. 実装・2段階レビュー | コード＋テスト（TDD: §6.4） | `subagent-driven-development` ＋ `test-driven-development` | `ddd-architecture-review` と `tesroid-architecture-guard` の**両方**が必須 |
+| 5. 最終仕上げ・PR | リンククリーンな diff・PR・CI | `requesting-code-review` / `simplify-code` | §5 の品質ゲート＋PR 運用 |
+
+### 6.2 ユビキタス言語用語集
+
+新規用語は DDD モデリング手続での合意後に本表へ追加する（コード実在識別子を検証して記載）。**禁止別名**はコード・コメント・ドキュメント・PR 本文のいずれにも使用しない。
+
+| 業務用語 | コード上の英語名（正典） | 定義 | 禁止別名 |
+| :--- | :--- | :--- | :--- |
+| ストリーム世代 ID | `streamEpoch` | エンコーダ再起動・電源復帰・配信リセット・寸法変更のたびに単調増加する `UInt32BE` の世代識別子 | `generationId`, `epochId` |
+| ストリーミング状態 | `StreamingState`（`STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD`） | 排他的判別ユニオン。遷移契約は [`architecture.md` §3.5](docs/architecture.md) | `isLive` 等の bool 群, `buffering`（CATCHUP の別称として） |
+| セッションロール | `PRIMARY` / `ACTING_PRIMARY` / `SECONDARY_STREAMING` / `SECONDARY_STANDBY` | 配信権威の排他と後席待機の役割（[仕様書 02](docs/specs/02-session-multidisplay.md)） | `main`, `sub`, `master` |
+| 配信リセット | stream reset（`POST /api/stream/reset`） | V/A 両エンコーダとクライアント両デコーダをリセットする単一経路 | `restart`（ブラウザ再起動は browser restart と呼ぶ） |
+| 生成一時停止 | `BUFFER_HOLD` | 未消費占有率 85% 以上で発動する生成停止状態（降格解除は 10% 排水） | `pause`, `stall` |
+
+### 6.3 境界づけられたコンテキスト一覧と責務
+
+各コンテキストの責務・配置・内部構造の正典は [`docs/architecture.md`](docs/architecture.md) §1.2〜§2.3 とする（本节は重複せず、コンテキストと公開契約の対応のみ列挙する）。コンテキスト内部モデルの詳細は `docs/domain/<context>.md` に置く。
+
+| コンテキスト | ディレクトリ | 他コンテキストへ見える公開契約のみ |
+| :--- | :--- | :--- |
+| 共有正典 | `shared/src/` | protocol / settings / geometry / state の純型・純関数（ランタイム依存ゼロ） |
+| 認証 | `server/src/domains/auth` | 認証 REST、トークン検証契約、ロックアウト状態 |
+| 設定 | `server/src/domains/settings` | `SettingsRepository` Port |
+| セッション | `server/src/domains/session` | `PowerSessionPort`、ロール状態の制御 JSON DTO |
+| 電源ライフサイクル | `server/src/domains/power` | `/api/power/*`、`PowerBrowserPort` 等消費側契約、電源状態ブロードキャスト |
+| 仮想ブラウザ | `server/src/domains/browser` | `PowerBrowserPort`、CDP 入力 Port、単一ページスクリプト注入 |
+| エンコーディング | `server/src/domains/encoder` | `PowerEncoderPort`、AVCC / OggOpus 媒体フレーム出力 |
+| ストリーミング配信 | `server/src/domains/streaming` | WS 多重化フレーム仕様、`PowerStreamingPort`、バッファ状態セレクタ |
+| 観測性 | `server/src/domains/observability` | `/api/metrics/*`・`/api/telemetry/*` 契約、純粋集計型 |
+| クライアント再生エンジン | `client/src/media`, `client/src/input` | 内部完結。UI へは `client/state`（AppStore）制御面経由のみ |
+| クライアント UI | `client/src/ui`, `client/src/state` | 内部完結。設定はサーバー DTO のみで永続化しない |
+
+### 6.4 DDD アーキテクチャ制約（§3・§4 の補足。本文の再掲はしない）
+
+- **層間依存**: 新規 import は [`architecture.md` §2.1](docs/architecture.md) 依存マトリクスで照合可能なもののみ許可する。
+- **集約操作**: 状態変更は集約ルートおよび単一遷移関数へのイベント投入経由のみ（§3.1 より。bool 状態フラグの新設はレビューで即 FAIL）。
+- **テスト先行**: 新しい外部観測可能挙動は、仕様 AC に基づく失敗テストを先に書いてから実装する。状態遷移を伴う設計は §3.1 の Stub-First 順序が優先する。
+- **PR 前レビューゲート 2 種必須**: `ddd-architecture-review`（用語集準拠・貧血モデル・集約境界・依存方向・スコープクリープ）と `tesroid-architecture-guard`（車載制約・品質ゲート）の両方を PASS させてから PR を作成する。
+
+### 6.5 サブエージェント委譲ルール（`delegate_task` 運用）
+
+サブエージェントへ渡すのは (1) 対象コンテキストのディレクトリ、(2) 他コンテキストとの公開契約（`shared/` の型・Port インターフェースと [`architecture.md` §2.3](docs/architecture.md) の契約表）、(3) 対応仕様書の AC セクションのみとする。**他コンテキストの内部実装を読み込ませず**、その報告も要求しない。委譲成果は §6.4 のレビューゲート通過後にのみ本流へ統合する。
+
+### 6.6 セッション管理ルール
+
+フェーズの切れ目 — 設計完了（`docs/domain/<context>.md` への書き出し完了）および計画完了（`docs/plans/<NNN>-<topic>.md` への書き出し完了）— では、成果物を必ずファイルへ永理化してから、セッション分割（`/new`）を推奨する。新しいセッションでは、書き出された成果物と本規約のみを参照して再開できる状態を保つ（会話文脈に依存した設計判断を残さない）。
