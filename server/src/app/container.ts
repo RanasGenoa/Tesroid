@@ -140,7 +140,6 @@ export function createAppContainer(
     processExit,
   });
 
-  // 仕様 06 §2.1 の単一ソケット経路。イメージ焼き込みの /etc/pulse/tesroid.pa（Dockerfile）と一致が必須
   const pulseSocketPath = PULSE_SOCKET_PATH;
   const cdp = overrides?.cdp ?? createDisconnectedCdpFallback();
   const browser =

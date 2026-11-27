@@ -1044,8 +1044,7 @@ export class AppStore {
         this.dispatch({ type: "SET_WS_STATUS", wsStatus: "CONNECTED" });
         this.dispatch({ type: "SET_LOCAL_BUFFER_SURVIVAL", active: false });
         const authPayload = this.resolveReconnectAuthPayload();
-        if (authPayload !== null) {
-          this.deps.transport.sendBinary(encodeAuthFrame(authPayload));
+        if (authPayload !== null && this.deps.transport.sendBinary(encodeAuthFrame(authPayload))) {
           this.authFrameSentOnCurrentConnection = true;
         }
       },
@@ -1118,8 +1117,9 @@ export class AppStore {
         }
         const authPayload = this.resolveReconnectAuthPayload();
         if (authPayload !== null) {
-          this.deps.transport.sendBinary(encodeAuthFrame(authPayload));
-          this.authFrameSentOnCurrentConnection = true;
+          if (this.deps.transport.sendBinary(encodeAuthFrame(authPayload))) {
+            this.authFrameSentOnCurrentConnection = true;
+          }
           return;
         }
         this.dispatch({

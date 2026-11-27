@@ -414,7 +414,7 @@ afterEach(async () => {
   }
 });
 
-describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
+describe("Integration: Session, Power & Stream Reset (Spec 01, 02, 03, 10)", () => {
   it("Spec 01 AC-02: allows valid initial PIN over WS /ws when setup is incomplete and establishes PRIMARY session", async () => {
     const harness = await startHarness({ skipSetup: true });
     try {
