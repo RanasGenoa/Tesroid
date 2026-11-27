@@ -494,6 +494,20 @@ describe("server/domains/streaming (Spec 03)", () => {
     const harness = await createStreamingHarness({ maxSeconds: 60, maxBytes: 48 * 1024 * 1024 });
     const { transport: primary, outcome: auth } = await harness.connectPrimary("p-1");
 
+    // Before any PLAYBACK_FEEDBACK on the current epoch, unconsumed occupancy stays 0 even with 55s buffered.
+    for (let sec = 1; sec <= 55; sec += 1) {
+      harness.controller.ingestEncodedPacket({
+        mediaType: "video",
+        flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
+        streamEpoch: 1,
+        ptsUs: BigInt(sec) * 1_000_000n,
+        payload: new Uint8Array([sec]),
+      });
+    }
+    expect(harness.controller.getState().kind).toBe("LIVE");
+    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBeNull();
+    harness.controller.clearBufferAndQueues();
+
     harness.controller.ingestEncodedPacket({
       mediaType: "video",
       flags: VIDEO_FLAG.CONFIG,
@@ -518,16 +532,48 @@ describe("server/domains/streaming (Spec 03)", () => {
 
     // Audio lag (2,500 ms) > video lag (300 ms) reduces serverRemainingBufferMs (4,000 - 2,500 = 1,500 ms).
     harness.controller.handlePrimaryFeedback("p-1", 1, 1_000_000, 300, 2_500);
+    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBe(1_000_000n);
     const pong = decodeServerControlFrame(harness.controller.buildPongPayload(9_000));
     expect(pong.type).toBe("PONG");
     if (pong.type === "PONG") {
       expect(pong.serverRemainingBufferMs).toBe(1_500);
     }
 
-    // Disconnect and feed up to 52s unconsumed (> 85% of 60s) -> enters BUFFER_HOLD.
+    // During LIVE GOP skip (socket congested), audio playback continues updating confirmed PTS so occupancy does NOT rise.
+    primary.setBufferedAmount(2_000_000);
+    for (let sec = 6; sec <= 58; sec += 1) {
+      harness.controller.ingestEncodedPacket({
+        mediaType: "video",
+        flags: VIDEO_FLAG.AVCC,
+        streamEpoch: 1,
+        ptsUs: BigInt(sec) * 1_000_000n,
+        payload: new Uint8Array([sec]),
+      });
+      harness.controller.ingestEncodedPacket({
+        mediaType: "audio",
+        flags: AUDIO_FLAG.KEYFRAME,
+        streamEpoch: 1,
+        ptsUs: BigInt(sec) * 1_000_000n,
+        payload: new Uint8Array([sec]),
+      });
+      harness.controller.handlePrimaryFeedback("p-1", 1, sec * 1_000_000, 50, 50);
+    }
+    expect(harness.controller.getState().kind).toBe("LIVE");
+    primary.setBufferedAmount(0);
+    harness.controller.clearBufferAndQueues();
+
+    // Re-establish confirmed PTS at 1s, then disconnect and feed up to 52s -> (52-1)/60 = 85% -> BUFFER_HOLD.
+    harness.controller.ingestEncodedPacket({
+      mediaType: "video",
+      flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
+      streamEpoch: 1,
+      ptsUs: 1_000_000n,
+      payload: new Uint8Array([1]),
+    });
+    harness.controller.handlePrimaryFeedback("p-1", 1, 1_000_000, 50, 50);
     harness.session.handleDisconnect("p-1", 1006);
     harness.controller.handleSocketRemoved("p-1");
-    for (let sec = 6; sec <= 52; sec += 1) {
+    for (let sec = 2; sec <= 52; sec += 1) {
       harness.controller.ingestEncodedPacket({
         mediaType: "video",
         flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
@@ -538,6 +584,8 @@ describe("server/domains/streaming (Spec 03)", () => {
     }
     expect(harness.controller.getState().kind).toBe("BUFFER_HOLD");
     expect(harness.powerHoldRequests).toEqual(["HOLD"]);
+    // Disconnect retained the pre-disconnect confirmed PTS on the same epoch.
+    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBe(1_000_000n);
 
     // While in BUFFER_HOLD, new encoder generation packets are dropped (shouldPauseGeneration = true).
     const countBefore = harness.ringBuffer.getStats().entryCount;
@@ -550,18 +598,23 @@ describe("server/domains/streaming (Spec 03)", () => {
     });
     expect(harness.ringBuffer.getStats().entryCount).toBe(countBefore);
 
-    // Same primary reconnects: stays in BUFFER_HOLD while draining CATCHUP, then auto-resumes at <= 10%.
+    // Same primary reconnects: stays in BUFFER_HOLD while draining CATCHUP, then auto-resumes when confirmed PTS reaches <= 10%.
     const primary2 = new FakeSessionTransport("p-2");
     await harness.session.authenticateToken(primary2, auth.session.token, true);
     harness.controller.handleSessionActivated("p-2", 1, 1_000_000n);
     expect(harness.controller.getState().kind).toBe("BUFFER_HOLD");
 
-    // Advance feedback & clock so CatchupPacer drains past 90% (<= 10% unconsumed remains).
-    harness.controller.handlePrimaryFeedback("p-2", 1, 48_000_000, 200, 200);
-    harness.clock.advanceByMs(200);
+    // Advance primary confirmed PTS to 46s -> (52-46)/60 = 10% <= resume threshold -> HOLD_DRAINED (epoch 1 -> 2).
+    harness.controller.handlePrimaryFeedback("p-2", 1, 46_000_000, 200, 200);
     expect(harness.controller.getState().kind).toBe("LIVE");
     expect(harness.controller.getState().streamEpoch).toBe(2);
     expect(harness.powerHoldRequests).toContain("RESUME:DRAINED");
+    // Quality gate: advancing streamEpoch immediately cleared confirmed PTS to null.
+    expect(harness.session.getPrimaryConfirmedPtsUs(2)).toBeNull();
+    expect(harness.session.getPrimarySyncMetadata().primaryRenderedPts).toBeNull();
+    // New-epoch feedback at PTS=0..100ms is accepted immediately without stale rejection.
+    harness.controller.handlePrimaryFeedback("p-2", 2, 100_000, 50, 50);
+    expect(harness.session.getPrimaryConfirmedPtsUs(2)).toBe(100_000n);
     expect(decodeControls(primary2).some((c) => c.type === "BUFFER_HOLD" && !c.active)).toBe(true);
     expect(primary.sentFrames.length).toBeGreaterThan(0);
     harness.controller.dispose();
@@ -594,7 +647,7 @@ describe("server/domains/streaming (Spec 03)", () => {
     });
     expect(decodeMediaFrames(primary)).toHaveLength(0);
 
-    // Wake back up, buffer a frame, then STREAM_RESET -> clears ring buffer and sets new epoch LIVE.
+    // Wake back up, buffer a frame, record confirmed PTS, then STREAM_RESET -> clears ring buffer + confirmed PTS and sets new epoch LIVE.
     harness.controller.broadcastPowerState("ACTIVE", 2);
     harness.setEpoch(2);
     expect(harness.controller.getState()).toEqual({ kind: "LIVE", streamEpoch: 2 });
@@ -602,16 +655,35 @@ describe("server/domains/streaming (Spec 03)", () => {
       mediaType: "video",
       flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
       streamEpoch: 2,
-      ptsUs: 20_000n,
+      ptsUs: 50_000_000n,
       payload: new Uint8Array([8]),
     });
+    harness.controller.handlePrimaryFeedback("p-1", 2, 40_000_000, 50, 50);
+    expect(harness.session.getPrimaryConfirmedPtsUs(2)).toBe(40_000_000n);
     expect(harness.ringBuffer.getStats().entryCount).toBe(1);
 
     harness.controller.handleStreamReset(3);
+    harness.setEpoch(3);
     expect(harness.ringBuffer.getStats().entryCount).toBe(0);
     expect(harness.controller.getState()).toEqual({ kind: "LIVE", streamEpoch: 3 });
+    expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBeNull();
+    expect(harness.session.getPrimarySyncMetadata().primaryRenderedPts).toBeNull();
 
-    // CATCHUP + USER_INTERACTION flushes catchup queue and advances epoch.
+    // Old-epoch feedback (40s) is rejected, and new-epoch media starting at PTS=0 does not miscompute against old 40s PTS.
+    harness.controller.handlePrimaryFeedback("p-1", 2, 41_000_000, 50, 50);
+    expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBeNull();
+    harness.controller.ingestEncodedPacket({
+      mediaType: "video",
+      flags: VIDEO_FLAG.KEYFRAME | VIDEO_FLAG.AVCC,
+      streamEpoch: 3,
+      ptsUs: 0n,
+      payload: new Uint8Array([7]),
+    });
+    expect(harness.controller.getState().kind).toBe("LIVE");
+    harness.controller.handlePrimaryFeedback("p-1", 3, 50_000, 50, 50);
+    expect(harness.session.getPrimaryConfirmedPtsUs(3)).toBe(50_000n);
+
+    // CATCHUP + USER_INTERACTION flushes catchup queue, clears confirmed PTS, and advances epoch.
     harness.controller.dispatchEvent({
       type: "SESSION_ACTIVATED",
       streamEpoch: 3,
@@ -621,6 +693,7 @@ describe("server/domains/streaming (Spec 03)", () => {
     harness.controller.handleUserInteraction(harness.clock.nowMs());
     expect(harness.controller.getState().kind).toBe("INTERACTIVE");
     expect(harness.controller.getState().streamEpoch).toBe(4);
+    expect(harness.session.getPrimaryConfirmedPtsUs(4)).toBeNull();
     expect(harness.catchupPacer.isDrained()).toBe(true);
     harness.controller.dispose();
   });

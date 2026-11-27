@@ -948,6 +948,8 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       await flushMicrotasks();
       expect(harness.container.power.getStatus().state).toBe("ACTIVE");
       expect(harness.container.streaming.getState().kind).toBe("LIVE");
+      const epochAfterHoldResume = harness.container.streaming.getState().streamEpoch;
+      expect(harness.container.session.getPrimaryConfirmedPtsUs(epochAfterHoldResume)).toBeNull();
 
       // Re-enter BUFFER_HOLD and verify 4009 raw PIN takeover discards buffer and resumes ACTIVE immediately.
       await harness.container.power.enterBufferHold();
@@ -964,7 +966,7 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
     }
   });
 
-  it("Phase 5B DI wiring: wires real EncoderService + StreamingController + PowerService + SessionService inside createAppContainer", async () => {
+  it("Phase 5B DI wiring: wires real EncoderService + StreamingController + PowerService + SessionService inside createAppContainer and resets confirmed PTS cleanly across epoch updates", async () => {
     const dataDir = await makeTempDataDir();
     const clock = new FakeClock(1_700_000_000_000);
     const browserFake = createPhase3BrowserFake();
@@ -994,6 +996,17 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
         streamEpoch: authOk.streamEpoch,
       });
 
+      // Record confirmed PTS on initial epoch.
+      client.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: authOk.streamEpoch,
+        renderedPtsUs: 40_000_000,
+        videoBufferedMs: 100,
+        audioBufferedMs: 100,
+      });
+      await flushMicrotasks();
+      expect(container.session.getPrimaryConfirmedPtsUs(authOk.streamEpoch)).toBe(40_000_000n);
+
       const resetRes = await app.inject({
         method: "POST",
         url: "/api/stream/reset",
@@ -1008,6 +1021,55 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
         kind: "LIVE",
         streamEpoch: resetBody.streamEpoch,
       });
+
+      // Quality gate: confirmed PTS cursor must be null immediately after reset, stale feedback ignored, and new-epoch feedback accepted.
+      expect(container.session.getPrimaryConfirmedPtsUs(resetBody.streamEpoch)).toBeNull();
+      client.sendControl({ type: "PING", clientTimestampMs: 101 });
+      const pongAfterReset = await client.nextControl("PONG");
+      expect(pongAfterReset.primaryRenderedPts).toBeNull();
+
+      client.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: authOk.streamEpoch,
+        renderedPtsUs: 45_000_000,
+        videoBufferedMs: 50,
+        audioBufferedMs: 50,
+      });
+      await flushMicrotasks();
+      expect(container.session.getPrimaryConfirmedPtsUs(resetBody.streamEpoch)).toBeNull();
+
+      client.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: resetBody.streamEpoch,
+        renderedPtsUs: 200_000,
+        videoBufferedMs: 50,
+        audioBufferedMs: 50,
+      });
+      await flushMicrotasks();
+      expect(container.session.getPrimaryConfirmedPtsUs(resetBody.streamEpoch)).toBe(200_000n);
+      client.sendControl({ type: "PING", clientTimestampMs: 102 });
+      const pongNewEpoch = await client.nextControl("PONG");
+      expect(pongNewEpoch.primaryRenderedPts).toBe(200_000);
+
+      // Restart browser also advances epoch, resets cursor to null, and accepts feedback on the restarted epoch.
+      const restartRes = await app.inject({
+        method: "POST",
+        url: "/api/power/restart-browser",
+        headers: { authorization: `Bearer ${authOk.token}` },
+      });
+      expect(restartRes.statusCode).toBe(200);
+      const restartBody = restartRes.json() as { ok: boolean; streamEpoch: number; state: string };
+      expect(restartBody.streamEpoch).toBe(resetBody.streamEpoch + 1);
+      expect(container.session.getPrimaryConfirmedPtsUs(restartBody.streamEpoch)).toBeNull();
+      client.sendControl({
+        type: "PLAYBACK_FEEDBACK",
+        streamEpoch: restartBody.streamEpoch,
+        renderedPtsUs: 50_000,
+        videoBufferedMs: 30,
+        audioBufferedMs: 30,
+      });
+      await flushMicrotasks();
+      expect(container.session.getPrimaryConfirmedPtsUs(restartBody.streamEpoch)).toBe(50_000n);
     } finally {
       client.ws.terminate();
       await app.close();

@@ -109,35 +109,31 @@ export class MediaRingBuffer {
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.4
-  getUnconsumedStats(consumedPtsUs: bigint | null): UnconsumedBufferStats {
-    if (this.entries.length === 0) {
-      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
+  getUnconsumedBytesAfter(confirmedPtsUs: bigint | null): number {
+    if (confirmedPtsUs === null || this.entries.length === 0) {
+      return 0;
     }
-    const oldest = this.entries[0];
-    const latest = this.entries[this.entries.length - 1];
-    if (oldest === undefined || latest === undefined) {
-      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
-    }
-
-    if (consumedPtsUs === null) {
-      return {
-        unconsumedDurationMs: Math.max(0, Number(latest.ptsUs - oldest.ptsUs) / 1_000),
-        unconsumedBytes: this.totalBytes,
-      };
-    }
-
     let unconsumedBytes = 0;
-    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
-      const entry = this.entries[i];
-      if (entry === undefined || entry.ptsUs <= consumedPtsUs) {
-        break;
+    for (const entry of this.entries) {
+      if (entry.ptsUs > confirmedPtsUs) {
+        unconsumedBytes += entry.frameBytes.byteLength;
       }
-      unconsumedBytes += entry.frameBytes.byteLength;
     }
+    return unconsumedBytes;
+  }
 
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  getUnconsumedStats(confirmedPtsUs: bigint | null): UnconsumedBufferStats {
+    if (confirmedPtsUs === null || this.entries.length === 0) {
+      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
+    }
+    const latestMediaPtsUs = this.getStats().latestMediaPtsUs;
+    if (latestMediaPtsUs === null) {
+      return { unconsumedDurationMs: 0, unconsumedBytes: 0 };
+    }
     return {
-      unconsumedDurationMs: Math.max(0, Number(latest.ptsUs - consumedPtsUs) / 1_000),
-      unconsumedBytes,
+      unconsumedDurationMs: Math.max(0, Number(latestMediaPtsUs - confirmedPtsUs) / 1_000),
+      unconsumedBytes: this.getUnconsumedBytesAfter(confirmedPtsUs),
     };
   }
 
@@ -151,10 +147,16 @@ export class MediaRingBuffer {
 
   // Spec: docs/specs/03-streaming-transport.md#2.4
   getStats(): RingBufferStats {
-    const oldest = this.entries[0];
-    const latest = this.entries[this.entries.length - 1];
-    const oldestMediaPtsUs = oldest?.ptsUs ?? null;
-    const latestMediaPtsUs = latest?.ptsUs ?? null;
+    let oldestMediaPtsUs: bigint | null = null;
+    let latestMediaPtsUs: bigint | null = null;
+    for (const entry of this.entries) {
+      if (oldestMediaPtsUs === null || entry.ptsUs < oldestMediaPtsUs) {
+        oldestMediaPtsUs = entry.ptsUs;
+      }
+      if (latestMediaPtsUs === null || entry.ptsUs > latestMediaPtsUs) {
+        latestMediaPtsUs = entry.ptsUs;
+      }
+    }
     const byteRatio = this.maxBytes > 0 ? this.totalBytes / this.maxBytes : 0;
     const durationUs =
       oldestMediaPtsUs !== null && latestMediaPtsUs !== null

@@ -163,7 +163,7 @@ flowchart LR
 | **`PowerBrowserPort`** | `domains/browser` → `domains/power` | `freezeTree()` (`SIGSTOP` 子→親), `resumeTree()` (`SIGCONT` 親→子), `restartBrowser()`, `setMonitoringPaused(bool)` |
 | **`PowerEncoderPort`** | `domains/encoder` → `domains/power` | `ensureDualRunning()` (V/A 片肺防止保証), `stopAll()`, `advanceEpochAndResetClock()`, `pauseWithTimelineComp()`, `clearTimelineComp()` |
 | **`PowerStreamingPort`** | `domains/streaming` → `domains/power` | `clearBufferAndQueues()`, `broadcastPowerState(state, epoch)` |
-| **`PowerSessionPort`** | `domains/session` → `domains/power` | プライマリ有無・代理有無の照会、`demoteAllStreamingToStandby()`, `promoteStandbyToStreaming()` |
+| **`PowerSessionPort`** | `domains/session` → `domains/power` | プライマリ有無・代理有無の照会、`demoteAllStreamingToStandby()`, `promoteStandbyToStreaming()`, `clearPrimaryFeedback()` |
 
 ---
 
@@ -182,9 +182,9 @@ flowchart LR
 ### 3.2 サーバー揮発状態（インメモリ）
 
 - **`SessionTokenStore`**: 暗号学的ランダム 32 バイト（64 hex 文字）、TTL `24 時間 (86,400,000 ms)`、`10 分` 周期掃討。サーバー再起動または PIN 更新時に全失効。
-- **`SessionRegistry`**: 接続ソケットとロール（`PRIMARY`, `ACTING_PRIMARY`, `SECONDARY_STREAMING`, `SECONDARY_STANDBY`）、リロード `3,000 ms` 昇格猶予タイマー、プライマリ確認済み PTS・再生モードメタデータを保持。
+- **`SessionRegistry`**: 接続ソケットとロール（`PRIMARY`, `ACTING_PRIMARY`, `SECONDARY_STREAMING`, `SECONDARY_STANDBY`）、リロード `3,000 ms` 昇格猶予タイマー、現世代 `streamEpoch` に紐づく唯一の未消費占有率基準点であるプライマリ（不在時は `ACTING_PRIMARY`）確認済み PTS（音声実再生地点）・再生モードメタデータを保持する。`streamEpoch` 更新時は基準点を即座に未受信（`null`）へリセットし、旧世代フィードバックは無視する。プライマリ切断中は同一 `streamEpoch` 上の最終確認済み PTS を基準点として維持する。
 - **`LifecycleMachine` & `PowerTimers`**: 単一電源状態と排他タイマー（`autoSleepTimer` と `holdExpireTimer` は絶対同時稼働不可、`autoSleepMinutes = 0` 下でも `BUFFER_HOLD` 中のプライマリ切断時は `holdExpireTimer` を再武装）。
-- **`RingBuffer`**: 最大 `60 秒` / `48 MiB`、映像 `CONFIG` 別スロット保持、上限超過時は最古の完全 GOP と先行音声のみ破棄（最新進行中 GOP は保護）。
+- **`RingBuffer`**: 最大 `60 秒` / `48 MiB`、映像 `CONFIG` 別スロット保持、上限超過時は最古の完全 GOP と先行音声のみ破棄（最新進行中 GOP は保護）。未消費占有率は `SessionRegistry` の現世代プライマリ確認済み PTS を唯一の基準点として `max(max(0, 最新生成 PTS - 確認済み PTS) / 60s, sumBytes(entry.ptsUs > 確認済み PTS) / 48MiB)` で算出し、現世代確認済み PTS 未受信（`null`）時は `0` とみなす。
 - **`MetricsRingBuffer`**: `360` エントリ（10 秒間隔 × 1 時間）の純粋な差分ウィンドウ集計。
 
 ### 3.3 クライアント状態管理
@@ -206,8 +206,8 @@ stateDiagram-v2
   STARTING --> ACTIVE: ブラウザ & V/A両エンコーダ稼働確認
   STARTING --> ERROR: 起動不能
 
-  ACTIVE --> BUFFER_HOLD: 未消費占有率 >= 85% (autoSleepTimer停止, holdExpireTimer武装)
-  BUFFER_HOLD --> ACTIVE: 未消費占有率 <= 10%へ排水 / 操作 / リセット / 別プライマリ奪取(4009) / LIVE転落
+  ACTIVE --> BUFFER_HOLD: プライマリ確認済みPTS基準の未消費占有率 >= 85% (autoSleepTimer停止, holdExpireTimer武装)
+  BUFFER_HOLD --> ACTIVE: プライマリ確認済みPTS基準の未消費占有率 <= 10%へ排水 / 操作 / リセット / 別プライマリ奪取(4009) / LIVE転落
   BUFFER_HOLD --> SLEEP_PAUSED: 手動Sleep (再開せず直接遷移) / holdExpireTimer満了
 
   ACTIVE --> SLEEP_PAUSED: 手動Sleep / autoSleepTimer満了

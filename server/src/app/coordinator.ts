@@ -12,7 +12,6 @@ import {
   isInputAllowed,
   type PowerActionResult,
   PROTOCOL_TIMING,
-  type PrimaryPlaybackMode,
   type PublicAppSettings,
   type SettingsUpdateInput,
   type SetupRequestInput,
@@ -227,6 +226,7 @@ export class ServerCoordinator {
     this.deps.encoder.clearTimelineComp();
     this.deps.streaming.clearBufferAndQueues();
     const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
+    this.deps.session.clearPrimaryFeedback();
     await this.deps.encoder.ensureDualRunning();
     this.deps.streaming.handleStreamReset(newEpoch);
     const nextState = this.deps.power.getStatus().state;
@@ -393,6 +393,7 @@ export class ServerCoordinator {
       await this.deps.browser.resizeViewport(aligned);
       this.deps.streaming.clearBufferAndQueues();
       const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.reconfigureDimensions(aligned);
       this.deps.streaming.handleStreamReset(newEpoch);
     });
@@ -459,6 +460,7 @@ export class ServerCoordinator {
       this.deps.encoder.clearTimelineComp();
       this.deps.streaming.clearBufferAndQueues();
       const newEpoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
       this.deps.streaming.handleStreamReset(newEpoch);
       if (outcome.demotedActingPrimaryId !== undefined) {
@@ -499,13 +501,9 @@ export class ServerCoordinator {
     );
 
     if (outcome.session.role !== "SECONDARY_STANDBY") {
-      let lastAckPtsUs: bigint | null = null;
-      if (preserveBufferHold) {
-        const sync = this.deps.session.getPrimarySyncMetadata();
-        if (sync.primaryRenderedPts !== null) {
-          lastAckPtsUs = BigInt(Math.round(sync.primaryRenderedPts));
-        }
-      }
+      const lastAckPtsUs = preserveBufferHold
+        ? this.deps.session.getPrimaryConfirmedPtsUs(activeEpoch)
+        : null;
       this.deps.streaming.handleSessionActivated(outcome.session.id, activeEpoch, lastAckPtsUs);
     }
   }
@@ -554,20 +552,6 @@ export class ServerCoordinator {
           command.renderedPtsUs,
           command.videoBufferedMs,
           command.audioBufferedMs,
-        );
-        const powerState = this.deps.power.getStatus().state;
-        const streamingKind = this.deps.streaming.getState().kind;
-        const mode: PrimaryPlaybackMode =
-          powerState === "BUFFER_HOLD"
-            ? "BUFFER_HOLD"
-            : streamingKind === "STANDBY"
-              ? "LIVE"
-              : streamingKind;
-        this.deps.session.recordPrimaryFeedback(
-          session.id,
-          command.renderedPtsUs,
-          this.deps.settings.getCurrent().stream.targetBufferMs,
-          mode,
         );
         return;
       }

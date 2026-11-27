@@ -1,5 +1,6 @@
 import {
   encodeServerControlFrame,
+  isCurrentStreamEpoch,
   isValidPin,
   PROTOCOL_TIMING,
   type PrimaryPlaybackMode,
@@ -491,6 +492,7 @@ export class SessionService implements SessionServicePort {
   // Spec: docs/specs/02-session-multidisplay.md#2.4
   recordPrimaryFeedback(
     sessionId: SessionConnectionId,
+    streamEpoch: number,
     renderedPtsUs: number,
     targetBufferMs: number,
     mode: PrimaryPlaybackMode,
@@ -499,12 +501,28 @@ export class SessionService implements SessionServicePort {
     if (authority === null || authority.id !== sessionId) {
       return;
     }
-    this.deps.registry.recordPrimaryFeedback(renderedPtsUs, targetBufferMs, mode);
+    if (
+      !isCurrentStreamEpoch(streamEpoch, this.getStreamEpoch()) ||
+      !Number.isFinite(renderedPtsUs)
+    ) {
+      return;
+    }
+    this.deps.registry.recordPrimaryFeedback(streamEpoch, renderedPtsUs, targetBufferMs, mode);
+  }
+
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  clearPrimaryFeedback(): void {
+    this.deps.registry.clearPrimaryFeedback();
+  }
+
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  getPrimaryConfirmedPtsUs(activeStreamEpoch: number): bigint | null {
+    return this.deps.registry.getPrimaryConfirmedPtsUs(activeStreamEpoch);
   }
 
   // Spec: docs/specs/02-session-multidisplay.md#2.4
   getPrimarySyncMetadata(): PrimarySyncMetadata {
-    return this.deps.registry.getPrimarySyncMetadata();
+    return this.deps.registry.getPrimarySyncMetadata(this.getStreamEpoch());
   }
 
   // Spec: docs/specs/01-auth-security.md#2.2

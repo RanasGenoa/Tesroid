@@ -822,6 +822,7 @@ describe("server/domains/browser (Spec 06)", () => {
       hasActivePrimaryOrActing: () => true,
       demoteAllStreamingToStandby: () => {},
       promoteStandbyToStreaming: () => {},
+      clearPrimaryFeedback: () => {},
     };
 
     let powerRef: PowerService | undefined;

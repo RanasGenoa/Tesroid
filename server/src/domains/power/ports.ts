@@ -31,6 +31,7 @@ export interface PowerSessionPort {
   hasActivePrimaryOrActing(): boolean;
   demoteAllStreamingToStandby(streamEpoch: number): void;
   promoteStandbyToStreaming(streamEpoch: number): void;
+  clearPrimaryFeedback(): void;
 }
 
 export type HoldExitReason = "DRAINED" | "INTERACTION" | "NEW_PRIMARY" | "LIVE_FALLBACK" | "RESET";

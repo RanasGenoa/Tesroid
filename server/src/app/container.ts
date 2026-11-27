@@ -276,9 +276,10 @@ export function createAppContainer(
       },
       encoderHooks: {
         advanceEpochAndReset: async () => {
+          const newEpoch = encoder.advanceEpochAndResetClock();
+          session.clearPrimaryFeedback();
           await encoder.stopAll();
           encoder.clearTimelineComp();
-          const newEpoch = encoder.advanceEpochAndResetClock();
           await encoder.ensureDualRunning();
           return newEpoch;
         },

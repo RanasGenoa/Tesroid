@@ -63,10 +63,12 @@ export interface SessionServicePort extends PowerSessionPort {
   getAllSessions(): readonly ClientSessionRecord[];
   recordPrimaryFeedback(
     sessionId: SessionConnectionId,
+    streamEpoch: number,
     renderedPtsUs: number,
     targetBufferMs: number,
     mode: PrimaryPlaybackMode,
   ): void;
+  getPrimaryConfirmedPtsUs(activeStreamEpoch: number): bigint | null;
   getPrimarySyncMetadata(): PrimarySyncMetadata;
   closeAllWithPolicyViolation(reason: string): void;
 }

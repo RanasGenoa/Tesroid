@@ -211,6 +211,7 @@ export class PowerService implements PowerControllerPort {
       this.deps.browser.setMonitoringPaused(false);
       this.deps.encoder.clearTimelineComp();
       const epoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
       this.applyFsm({ type: "STARTUP_SUCCEEDED" });
       this.deps.streaming.broadcastPowerState(this.state, epoch);
@@ -255,6 +256,7 @@ export class PowerService implements PowerControllerPort {
     }
 
     this.deps.streaming.clearBufferAndQueues();
+    this.deps.session.clearPrimaryFeedback();
     this.deps.streaming.onPowerSleep();
     this.setState(transition.nextState);
 
@@ -296,6 +298,7 @@ export class PowerService implements PowerControllerPort {
       this.deps.browser.setMonitoringPaused(false);
       this.deps.encoder.clearTimelineComp();
       const epoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
       this.applyFsm({ type: "STARTUP_SUCCEEDED" });
       this.deps.streaming.broadcastPowerState(this.state, epoch);
@@ -335,6 +338,7 @@ export class PowerService implements PowerControllerPort {
       await this.deps.browser.restartBrowser();
       this.deps.browser.setMonitoringPaused(false);
       const epoch = this.deps.encoder.advanceEpochAndResetClock();
+      this.deps.session.clearPrimaryFeedback();
       await this.deps.encoder.ensureDualRunning();
 
       this.applyFsm({ type: "RESTART_SUCCEEDED" });
@@ -388,6 +392,7 @@ export class PowerService implements PowerControllerPort {
       this.deps.encoder.clearTimelineComp();
     }
     const epoch = this.deps.encoder.advanceEpochAndResetClock();
+    this.deps.session.clearPrimaryFeedback();
     await this.deps.encoder.ensureDualRunning();
 
     this.deps.streaming.onPowerHoldExited(epoch);

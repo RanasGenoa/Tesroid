@@ -168,24 +168,80 @@ describe("shared/geometry (Spec 03, 05, 06, 10)", () => {
     expect(stalled.burstIntervalMs).toBe(10);
   });
 
-  it("Spec 03 AC-03: calculates Buffer-Hold unconsumed occupancy max(time/60s, bytes/48MiB) against fixed 85% trigger and 10% resume thresholds", () => {
+  it("Spec 03 AC-03: calculates Buffer-Hold unconsumed occupancy from primary confirmed PTS (0 when null/unreceived) against fixed 85% trigger and 10% resume thresholds", () => {
     const maxBytes = 48 * 1024 * 1024;
     expect(BUFFER_HOLD_CONSTANTS.triggerOccupancyRatio).toBe(0.85);
     expect(BUFFER_HOLD_CONSTANTS.resumeOccupancyRatio).toBe(0.1);
 
+    // Unreceived confirmed PTS or empty buffer always returns 0 regardless of buffered bytes.
+    expect(
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 55_000_000n,
+        primaryConfirmedPtsUs: null,
+        unconsumedBytes: maxBytes,
+        maxSeconds: 60,
+        maxBytes,
+      }),
+    ).toBe(0);
+    expect(
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: null,
+        primaryConfirmedPtsUs: 1_000_000n,
+        unconsumedBytes: 10_000,
+        maxSeconds: 60,
+        maxBytes,
+      }),
+    ).toBe(0);
+
     // Time-driven >= 85% (51s / 60s)
-    expect(calculateBufferHoldOccupancy(51_000, 60, 1_024, maxBytes)).toBeCloseTo(0.85, 5);
+    expect(
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 52_000_000n,
+        primaryConfirmedPtsUs: 1_000_000n,
+        unconsumedBytes: 1_024,
+        maxSeconds: 60,
+        maxBytes,
+      }),
+    ).toBeCloseTo(0.85, 5);
     // Byte-driven >= 85% (40.8 MiB / 48 MiB)
     expect(
-      calculateBufferHoldOccupancy(5_000, 60, Math.ceil(maxBytes * 0.85), maxBytes),
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 10_000_000n,
+        primaryConfirmedPtsUs: 5_000_000n,
+        unconsumedBytes: Math.ceil(maxBytes * 0.85),
+        maxSeconds: 60,
+        maxBytes,
+      }),
     ).toBeGreaterThanOrEqual(0.85);
     // Drained <= 10% (6s / 60s and 4.8 MiB / 48 MiB)
     expect(
-      calculateBufferHoldOccupancy(6_000, 60, Math.floor(maxBytes * 0.1), maxBytes),
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 52_000_000n,
+        primaryConfirmedPtsUs: 46_000_000n,
+        unconsumedBytes: Math.floor(maxBytes * 0.1),
+        maxSeconds: 60,
+        maxBytes,
+      }),
     ).toBeLessThanOrEqual(0.1);
-    // Guard against zero/non-finite inputs
-    expect(calculateBufferHoldOccupancy(-100, 60, Number.NaN, maxBytes)).toBe(0);
-    expect(calculateBufferHoldOccupancy(10_000, 0, 1_000, 0)).toBe(0);
+    // Confirmed PTS >= latest generated PTS clamps time ratio to 0 and guards zero/NaN caps
+    expect(
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 5_000_000n,
+        primaryConfirmedPtsUs: 6_000_000n,
+        unconsumedBytes: Number.NaN,
+        maxSeconds: 60,
+        maxBytes,
+      }),
+    ).toBe(0);
+    expect(
+      calculateBufferHoldOccupancy({
+        latestGeneratedPtsUs: 10_000_000n,
+        primaryConfirmedPtsUs: 1_000_000n,
+        unconsumedBytes: 1_000,
+        maxSeconds: 0,
+        maxBytes: 0,
+      }),
+    ).toBe(0);
   });
 
   it("Spec 03 AC-05: computes serverRemainingBufferMs accounting for max(clientVideoBufferedMs, clientAudioBufferedMs)", () => {

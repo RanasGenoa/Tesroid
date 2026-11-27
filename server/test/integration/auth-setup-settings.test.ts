@@ -146,6 +146,8 @@ function createBoundarySessionFake(): {
       getStreamingSecondaries: () => [],
       getAllSessions: () => [],
       recordPrimaryFeedback: () => {},
+      clearPrimaryFeedback: () => {},
+      getPrimaryConfirmedPtsUs: () => null,
       getPrimarySyncMetadata: () => ({
         primaryRenderedPts: null,
         primaryFeedbackAgeMs: null,

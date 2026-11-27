@@ -47,12 +47,10 @@ export interface StreamingControllerDeps {
   readonly idleToBufferSeconds?: number;
 }
 
-interface PrimaryFeedbackSnapshot {
+interface ClientBufferSnapshot {
   readonly streamEpoch: number;
-  readonly renderedPtsUs: number;
   readonly videoBufferedMs: number;
   readonly audioBufferedMs: number;
-  readonly receivedAtMs: number;
 }
 
 interface TransitionOptions {
@@ -95,9 +93,7 @@ export class StreamingController implements StreamingControlPort {
 
   private state: StreamingState = createInitialStreamingState();
   private interactionTimer: TimerHandle | null = null;
-  private lastPrimaryFeedback: PrimaryFeedbackSnapshot | null = null;
-  private lastSentPrimaryPts: { readonly streamEpoch: number; readonly ptsUs: bigint } | null =
-    null;
+  private lastClientBuffers: ClientBufferSnapshot | null = null;
   private lastInteractionAtMs: number | null = null;
 
   // Spec: docs/specs/03-streaming-transport.md#2.2
@@ -180,7 +176,6 @@ export class StreamingController implements StreamingControlPort {
           }
           if (decision.send) {
             primary.transport.sendBinary(frameBytes);
-            this.lastSentPrimaryPts = { streamEpoch: packet.streamEpoch, ptsUs: packet.ptsUs };
           }
         }
       }
@@ -229,18 +224,41 @@ export class StreamingController implements StreamingControlPort {
     }
 
     const nowMs = this.deps.clock.nowMs();
-    this.lastPrimaryFeedback = {
+    const targetBufferMs = this.deps.settings.getCurrent().stream.targetBufferMs;
+    this.lastClientBuffers = {
       streamEpoch,
-      renderedPtsUs,
       videoBufferedMs: Math.max(0, Number.isFinite(videoBufferedMs) ? videoBufferedMs : 0),
       audioBufferedMs: Math.max(0, Number.isFinite(audioBufferedMs) ? audioBufferedMs : 0),
-      receivedAtMs: nowMs,
     };
+
+    this.deps.session.recordPrimaryFeedback(
+      sessionId,
+      streamEpoch,
+      renderedPtsUs,
+      targetBufferMs,
+      toPrimaryPlaybackMode(this.state) ?? "LIVE",
+    );
 
     if (selectQueueKind(this.state) === "CATCHUP") {
       this.deps.catchupPacer.recordProgress({ renderedPtsUs, nowMs });
     }
+
+    const kindBeforeEval = this.state.kind;
     this.evaluateBufferHoldOccupancy();
+
+    // Update mode in SessionRegistry only when HOLD_THRESHOLD_REACHED kept the same streamEpoch.
+    if (this.state.kind !== kindBeforeEval && this.state.streamEpoch === streamEpoch) {
+      const updatedMode = toPrimaryPlaybackMode(this.state);
+      if (updatedMode !== null) {
+        this.deps.session.recordPrimaryFeedback(
+          sessionId,
+          streamEpoch,
+          renderedPtsUs,
+          targetBufferMs,
+          updatedMode,
+        );
+      }
+    }
   }
 
   // Spec: docs/specs/03-streaming-transport.md#2.2
@@ -338,28 +356,26 @@ export class StreamingController implements StreamingControlPort {
   buildPongPayload(clientTimestampMs: number): Uint8Array {
     const sync = this.deps.session.getPrimarySyncMetadata();
     const latestMediaPtsUs = this.deps.ringBuffer.getStats().latestMediaPtsUs ?? 0n;
+    const confirmedPtsUs = this.deps.session.getPrimaryConfirmedPtsUs(this.state.streamEpoch);
+    const clientBuffers =
+      this.lastClientBuffers !== null &&
+      this.lastClientBuffers.streamEpoch === this.state.streamEpoch
+        ? this.lastClientBuffers
+        : null;
 
     let serverLagMs = 0;
-    if (
-      this.lastPrimaryFeedback !== null &&
-      this.lastPrimaryFeedback.streamEpoch === this.state.streamEpoch &&
-      latestMediaPtsUs > 0n
-    ) {
-      serverLagMs = Math.max(
-        0,
-        (Number(latestMediaPtsUs) - this.lastPrimaryFeedback.renderedPtsUs) / 1_000,
-      );
+    if (confirmedPtsUs !== null && latestMediaPtsUs > confirmedPtsUs) {
+      serverLagMs = Number(latestMediaPtsUs - confirmedPtsUs) / 1_000;
     }
 
     const serverRemainingBufferMs =
-      this.lastPrimaryFeedback !== null &&
-      this.lastPrimaryFeedback.streamEpoch === this.state.streamEpoch
+      confirmedPtsUs !== null && clientBuffers !== null
         ? calculateServerRemainingBufferMs(
             serverLagMs,
-            this.lastPrimaryFeedback.videoBufferedMs,
-            this.lastPrimaryFeedback.audioBufferedMs,
+            clientBuffers.videoBufferedMs,
+            clientBuffers.audioBufferedMs,
           )
-        : 0;
+        : Math.round(serverLagMs);
 
     return encodeServerControlFrame({
       type: "PONG",
@@ -402,8 +418,8 @@ export class StreamingController implements StreamingControlPort {
     for (const hysteresis of this.socketHysteresis.values()) {
       hysteresis.reset();
     }
-    this.lastPrimaryFeedback = null;
-    this.lastSentPrimaryPts = null;
+    this.lastClientBuffers = null;
+    this.deps.session.clearPrimaryFeedback();
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.2
@@ -461,8 +477,14 @@ export class StreamingController implements StreamingControlPort {
 
   private applyTransition(event: StreamingEvent, options?: TransitionOptions): void {
     const prevKind = this.state.kind;
+    const prevEpoch = this.state.streamEpoch;
     const { nextState, effects } = transitionStreamingState(this.state, event);
     this.state = nextState;
+
+    if (nextState.streamEpoch !== prevEpoch) {
+      this.lastClientBuffers = null;
+      this.deps.session.clearPrimaryFeedback();
+    }
 
     const hasPowerResumeEffect = effects.some((effect) => effect.type === "REQUEST_POWER_RESUME");
 
@@ -545,30 +567,24 @@ export class StreamingController implements StreamingControlPort {
   }
 
   private evaluateBufferHoldOccupancy(): void {
+    const primaryConfirmedPtsUs = this.deps.session.getPrimaryConfirmedPtsUs(
+      this.state.streamEpoch,
+    );
+    if (primaryConfirmedPtsUs === null) {
+      return;
+    }
+
+    const latestGeneratedPtsUs = this.deps.ringBuffer.getStats().latestMediaPtsUs;
+    const unconsumedBytes = this.deps.ringBuffer.getUnconsumedBytesAfter(primaryConfirmedPtsUs);
+    const occupancy = calculateBufferHoldOccupancy({
+      latestGeneratedPtsUs,
+      primaryConfirmedPtsUs,
+      unconsumedBytes,
+      maxSeconds: this.deps.ringBuffer.getMaxSeconds(),
+      maxBytes: this.deps.ringBuffer.getMaxBytes(),
+    });
+
     if (this.state.kind === "LIVE" || this.state.kind === "CATCHUP") {
-      const feedback =
-        this.lastPrimaryFeedback !== null &&
-        this.lastPrimaryFeedback.streamEpoch === this.state.streamEpoch
-          ? this.lastPrimaryFeedback
-          : null;
-      const sent =
-        this.lastSentPrimaryPts !== null &&
-        this.lastSentPrimaryPts.streamEpoch === this.state.streamEpoch
-          ? this.lastSentPrimaryPts.ptsUs
-          : null;
-
-      const consumedPtsUs = feedback !== null ? BigInt(Math.round(feedback.renderedPtsUs)) : sent;
-      const unconsumed = this.deps.ringBuffer.getUnconsumedStats(consumedPtsUs);
-      const clientBufferedMs =
-        feedback !== null ? Math.max(feedback.videoBufferedMs, feedback.audioBufferedMs) : 0;
-      const effectiveDurationMs = Math.max(unconsumed.unconsumedDurationMs, clientBufferedMs);
-
-      const occupancy = calculateBufferHoldOccupancy(
-        effectiveDurationMs,
-        this.deps.ringBuffer.getMaxSeconds(),
-        unconsumed.unconsumedBytes,
-        this.deps.ringBuffer.getMaxBytes(),
-      );
       if (occupancy >= BUFFER_HOLD_CONSTANTS.triggerOccupancyRatio) {
         this.dispatchEvent({
           type: "HOLD_THRESHOLD_REACHED",
@@ -582,34 +598,6 @@ export class StreamingController implements StreamingControlPort {
       if (this.deps.session.getPrimaryAuthority() === null) {
         return;
       }
-      const sentPtsUs =
-        this.lastSentPrimaryPts !== null &&
-        this.lastSentPrimaryPts.streamEpoch === this.state.streamEpoch
-          ? this.lastSentPrimaryPts.ptsUs
-          : null;
-      const feedbackPtsUs =
-        this.lastPrimaryFeedback !== null &&
-        this.lastPrimaryFeedback.streamEpoch === this.state.streamEpoch
-          ? BigInt(Math.round(this.lastPrimaryFeedback.renderedPtsUs))
-          : null;
-
-      if (sentPtsUs === null && feedbackPtsUs === null) {
-        return;
-      }
-
-      const consumedPtsUs =
-        sentPtsUs !== null && feedbackPtsUs !== null
-          ? sentPtsUs > feedbackPtsUs
-            ? sentPtsUs
-            : feedbackPtsUs
-          : (sentPtsUs ?? feedbackPtsUs);
-      const unconsumed = this.deps.ringBuffer.getUnconsumedStats(consumedPtsUs);
-      const occupancy = calculateBufferHoldOccupancy(
-        unconsumed.unconsumedDurationMs,
-        this.deps.ringBuffer.getMaxSeconds(),
-        unconsumed.unconsumedBytes,
-        this.deps.ringBuffer.getMaxBytes(),
-      );
       if (occupancy <= BUFFER_HOLD_CONSTANTS.resumeOccupancyRatio) {
         this.applyTransition(
           {
@@ -644,14 +632,17 @@ export class StreamingController implements StreamingControlPort {
           return false;
         }
 
-        if (
-          this.lastPrimaryFeedback !== null &&
-          this.lastPrimaryFeedback.streamEpoch === this.state.streamEpoch
-        ) {
-          const aheadPtsMs = (Number(entry.ptsUs) - this.lastPrimaryFeedback.renderedPtsUs) / 1_000;
+        const confirmedPtsUs = this.deps.session.getPrimaryConfirmedPtsUs(this.state.streamEpoch);
+        const clientBuffers =
+          this.lastClientBuffers !== null &&
+          this.lastClientBuffers.streamEpoch === this.state.streamEpoch
+            ? this.lastClientBuffers
+            : null;
+        if (confirmedPtsUs !== null && clientBuffers !== null) {
+          const aheadPtsMs = (Number(entry.ptsUs) - Number(confirmedPtsUs)) / 1_000;
           const clientBufferedMs = Math.max(
-            this.lastPrimaryFeedback.videoBufferedMs,
-            this.lastPrimaryFeedback.audioBufferedMs,
+            clientBuffers.videoBufferedMs,
+            clientBuffers.audioBufferedMs,
           );
           if (Math.max(aheadPtsMs, clientBufferedMs) > profile.effectiveWindowMs) {
             return false;
@@ -659,16 +650,10 @@ export class StreamingController implements StreamingControlPort {
         }
 
         primary.transport.sendBinary(entry.frameBytes);
-        this.lastSentPrimaryPts = { streamEpoch: entry.streamEpoch, ptsUs: entry.ptsUs };
-        if (this.state.kind === "BUFFER_HOLD") {
-          this.evaluateBufferHoldOccupancy();
-        }
         return true;
       },
       () => {
-        if (this.state.kind === "BUFFER_HOLD") {
-          this.evaluateBufferHoldOccupancy();
-        } else {
+        if (this.state.kind !== "BUFFER_HOLD") {
           this.dispatchEvent({ type: "CATCHUP_DRAINED" });
         }
       },

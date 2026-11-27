@@ -75,17 +75,27 @@ export function calculateLiveWatermarks(videoBitrateBps: number): LiveWatermarks
   return { highWaterBytes, lowWaterBytes };
 }
 
+export interface UnconsumedOccupancyInput {
+  readonly latestGeneratedPtsUs: bigint | null;
+  readonly primaryConfirmedPtsUs: bigint | null;
+  readonly unconsumedBytes: number;
+  readonly maxSeconds: number;
+  readonly maxBytes: number;
+}
+
 // Spec: docs/specs/03-streaming-transport.md#2.4
-export function calculateBufferHoldOccupancy(
-  unconsumedDurationMs: number,
-  maxSeconds: number,
-  unconsumedBytes: number,
-  maxBytes: number,
-): number {
-  const maxDurationMs = nonNegativeFinite(maxSeconds) * 1_000;
-  const maxByteCap = nonNegativeFinite(maxBytes);
-  const timeRatio = maxDurationMs > 0 ? nonNegativeFinite(unconsumedDurationMs) / maxDurationMs : 0;
-  const byteRatio = maxByteCap > 0 ? nonNegativeFinite(unconsumedBytes) / maxByteCap : 0;
+export function calculateBufferHoldOccupancy(input: UnconsumedOccupancyInput): number {
+  if (input.primaryConfirmedPtsUs === null || input.latestGeneratedPtsUs === null) {
+    return 0;
+  }
+  const maxDurationUs = nonNegativeFinite(input.maxSeconds) * 1_000_000;
+  const maxByteCap = nonNegativeFinite(input.maxBytes);
+  const unconsumedDurationUs =
+    input.latestGeneratedPtsUs > input.primaryConfirmedPtsUs
+      ? Number(input.latestGeneratedPtsUs - input.primaryConfirmedPtsUs)
+      : 0;
+  const timeRatio = maxDurationUs > 0 ? unconsumedDurationUs / maxDurationUs : 0;
+  const byteRatio = maxByteCap > 0 ? nonNegativeFinite(input.unconsumedBytes) / maxByteCap : 0;
   return Math.max(0, timeRatio, byteRatio);
 }
 

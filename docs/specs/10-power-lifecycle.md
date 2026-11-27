@@ -16,7 +16,7 @@
 - **`STOPPED`**: 仮想ブラウザおよびエンコーダが未起動または完全停止している初期/終了状態。
 - **`STARTING`**: 仮想ディスプレイ・仮想オーディオ・ブラウザ・エンコーダを起動している遷移中状態。
 - **`ACTIVE`**: ブラウザおよび映像・音声エンコーダがともに稼働し、通常配信が可能な状態。
-- **`BUFFER_HOLD`**: クライアント未接続時および極端な滞留時のリングバッファ溢れ・送出漏れを防止するため、未消費占有率 `>= 85%` 到達でブラウザを凍結（`SIGSTOP`）・エンコーダを一時停止してサーバー生成を `0.0x` に落としている状態。生成停止のみを意味し、再接続したクライアントへの既生成バッファ送出（CATCHUP 排水）は継続して未消費占有率 `<= 10%` で `ACTIVE` へ自動復帰する。ユーザー向け電源表示としては稼働中扱い（HUD に `HOLD` 表示）を維持し、自動スリープとは異なる有効期限タイマーで管理される。
+- **`BUFFER_HOLD`**: クライアント未接続時および極端な滞留時のリングバッファ溢れ・送出漏れを防止するため、`SessionRegistry` が保持する現世代プライマリ確認済み PTS（音声実再生地点）基準の未消費占有率 `>= 85%` 到達でブラウザを凍結（`SIGSTOP`）・エンコーダを一時停止してサーバー生成を `0.0x` に落としている状態。生成停止のみを意味し、再接続したクライアントへの既生成バッファ送出（CATCHUP 排水）は継続して確認済み PTS 基準の未消費占有率 `<= 10%` で `ACTIVE` へ自動復帰する。ユーザー向け電源表示としては稼働中扱い（HUD に `HOLD` 表示）を維持し、自動スリープとは異なる有効期限タイマーで管理される。
 - **`SLEEP_PAUSED`**: 一定時間のクライアント不在またはユーザーの手動停止により、エンコーダ停止・ブラウザ凍結（`SIGSTOP`）・リングバッファ消去を行って CPU/GPU 負荷を 0% に落としている省電力状態。
 - **`RESTARTING`**: ブラウザまたは全パイプラインのクリーン再起動を実行中の遷移状態。
 - **`ERROR`**: 起動不能または復旧不能な異常状態。
@@ -36,7 +36,7 @@
 - **対 仮想ブラウザドメイン ([06-browser-input-cdp.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/06-browser-input-cdp.md))**: プロセスツリー凍結（`SIGSTOP`）、復帰（`SIGCONT`）、再起動、ページ監視の一時停止/再開を指示する。
 - **対 エンコーダドメイン ([05-encoder-gpu.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/05-encoder-gpu.md))**: 映像・音声エンコーダの停止、双方の稼働保証付き起動（片肺防止：`video && audio` 両稼働を必須条件とする）、タイムライン補償の記録/リセットおよび新 `streamEpoch` の発行を指示する。
 - **対 ストリーミング転送ドメイン ([03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md))**: 電源 FSM とストリーミング状態機械は互いの boolean フラグを直接読み書きせず、電源ドメインがストリーミング側の単一遷移関数へ明示イベント（`ENTER_BUFFER_HOLD`, `EXIT_BUFFER_HOLD`, `POWER_SLEEP`, `SESSION_ACTIVATED` 等）を投入して状態同期し、ストリーミング側からの宣言的 Hold/再開要求を受けて電源状態遷移およびクライアントへの `BUFFER_HOLD` / `BROWSER_STATUS` 通知を実行する。
-- **対 セッション管理ドメイン ([02-session-multidisplay.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/02-session-multidisplay.md))**: プライマリ接続・代理昇格・全プライマリ離脱・再接続のイベントを受信し、スリープ解除またはタイマー武装を実行する。また `SLEEP_PAUSED` 遷移時に視聴中セカンダリを待機状態（`SECONDARY_STANDBY`）へ移行させる。
+- **対 セッション管理ドメイン ([02-session-multidisplay.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/02-session-multidisplay.md))**: プライマリ接続・代理昇格・全プライマリ離脱・再接続のイベントを受信し、スリープ解除またはタイマー武装を実行する。`SLEEP_PAUSED` 遷移時に視聴中セカンダリを待機状態（`SECONDARY_STANDBY`）へ移行させ、また `streamEpoch` 更新およびスリープ移行時には `SessionRegistry` のプライマリ確認済み PTS 基準点を即座に未受信（`null`）へリセットする。
 
 ### 2.4 タイマー排他と自動スリープ／Buffer-Hold 期限仕様
 - **タイマー厳格排他**: 自動スリープタイマー（`autoSleepTimer`）と Buffer-Hold 有効期限タイマー（`holdExpireTimer`）は **同時に 2 つ以上稼働させてはならない**。

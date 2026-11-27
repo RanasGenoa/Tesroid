@@ -98,6 +98,9 @@ function createPowerPortFakes() {
     promoteStandbyToStreaming: (streamEpoch: number) => {
       calls.push(`session:promote(${streamEpoch})`);
     },
+    clearPrimaryFeedback: () => {
+      calls.push("session:clearPrimaryFeedback");
+    },
   };
 
   return {
@@ -177,7 +180,9 @@ describe("server/domains/power (Spec 10)", () => {
     expect(started.state).toBe("ACTIVE");
     expect(fakes.isDualRunning()).toBe(true);
     expect(fakes.isMonitoringPaused()).toBe(false);
+    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
 
+    fakes.calls.length = 0;
     const slept = await service.sleep();
     expect(slept.ok).toBe(true);
     expect(slept.state).toBe("SLEEP_PAUSED");
@@ -185,21 +190,26 @@ describe("server/domains/power (Spec 10)", () => {
     expect(fakes.isMonitoringPaused()).toBe(true);
     expect(fakes.calls).toContain("browser:freeze");
     expect(fakes.calls).toContain("streaming:clearBuffer");
+    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
     expect(fakes.calls).toContain(`session:demote(${slept.streamEpoch})`);
 
     fakes.setHasActiveSession(true);
+    fakes.calls.length = 0;
     const resumed = await service.resume();
     expect(resumed.ok).toBe(true);
     expect(resumed.state).toBe("ACTIVE");
     expect(resumed.streamEpoch).toBeGreaterThan(slept.streamEpoch);
     expect(fakes.isDualRunning()).toBe(true);
+    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
     expect(fakes.calls).toContain(`session:promote(${resumed.streamEpoch})`);
 
+    fakes.calls.length = 0;
     const restarted = await service.restartBrowser();
     expect(restarted.ok).toBe(true);
     expect(restarted.state).toBe("ACTIVE");
     expect(restarted.streamEpoch).toBeGreaterThan(resumed.streamEpoch);
     expect(fakes.isDualRunning()).toBe(true);
+    expect(fakes.calls).toContain("session:clearPrimaryFeedback");
 
     await service.sleep();
     fakes.calls.length = 0;

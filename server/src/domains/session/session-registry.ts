@@ -1,4 +1,9 @@
-import type { PrimaryPlaybackMode, PrimarySyncMetadata, SessionRole } from "@tesroid/shared";
+import {
+  isCurrentStreamEpoch,
+  type PrimaryPlaybackMode,
+  type PrimarySyncMetadata,
+  type SessionRole,
+} from "@tesroid/shared";
 import type { Clock, TimerHandle } from "../../infra/index.js";
 import type { ClientSessionRecord, SessionConnectionId } from "./ports.js";
 
@@ -8,6 +13,7 @@ export interface SessionRegistryDeps {
 }
 
 interface StoredPrimaryFeedback {
+  readonly streamEpoch: number;
   readonly renderedPtsUs: number;
   readonly targetBufferMs: number;
   readonly mode: PrimaryPlaybackMode;
@@ -136,11 +142,13 @@ export class SessionRegistry {
 
   // Spec: docs/specs/02-session-multidisplay.md#2.4
   recordPrimaryFeedback(
+    streamEpoch: number,
     renderedPtsUs: number,
     targetBufferMs: number,
     mode: PrimaryPlaybackMode,
   ): void {
     this.primaryFeedback = {
+      streamEpoch,
       renderedPtsUs,
       targetBufferMs,
       mode,
@@ -153,18 +161,36 @@ export class SessionRegistry {
     this.primaryFeedback = null;
   }
 
+  // Spec: docs/specs/03-streaming-transport.md#2.4
+  getPrimaryConfirmedPtsUs(activeStreamEpoch: number): bigint | null {
+    if (
+      this.primaryFeedback === null ||
+      !isCurrentStreamEpoch(this.primaryFeedback.streamEpoch, activeStreamEpoch)
+    ) {
+      return null;
+    }
+    return BigInt(Math.round(this.primaryFeedback.renderedPtsUs));
+  }
+
   // Spec: docs/specs/02-session-multidisplay.md#2.4
-  getPrimarySyncMetadata(): PrimarySyncMetadata {
+  getPrimarySyncMetadata(activeStreamEpoch?: number): PrimarySyncMetadata {
+    const feedbackForCurrentEpoch =
+      this.primaryFeedback !== null &&
+      (activeStreamEpoch === undefined ||
+        isCurrentStreamEpoch(this.primaryFeedback.streamEpoch, activeStreamEpoch))
+        ? this.primaryFeedback
+        : null;
+
     if (this.isReloadGraceActive()) {
       // Nullify PTS and age during reload grace so secondaries do not extrapolate stale timestamps.
       return {
         primaryRenderedPts: null,
         primaryFeedbackAgeMs: null,
-        primaryTargetBufferMs: this.primaryFeedback?.targetBufferMs ?? 0,
-        primaryMode: this.primaryFeedback?.mode ?? null,
+        primaryTargetBufferMs: feedbackForCurrentEpoch?.targetBufferMs ?? 0,
+        primaryMode: feedbackForCurrentEpoch?.mode ?? null,
       };
     }
-    if (this.primaryFeedback === null) {
+    if (feedbackForCurrentEpoch === null) {
       return {
         primaryRenderedPts: null,
         primaryFeedbackAgeMs: null,
@@ -173,13 +199,13 @@ export class SessionRegistry {
       };
     }
     return {
-      primaryRenderedPts: this.primaryFeedback.renderedPtsUs,
+      primaryRenderedPts: feedbackForCurrentEpoch.renderedPtsUs,
       primaryFeedbackAgeMs: Math.max(
         0,
-        this.deps.clock.nowMs() - this.primaryFeedback.recordedAtMs,
+        this.deps.clock.nowMs() - feedbackForCurrentEpoch.recordedAtMs,
       ),
-      primaryTargetBufferMs: this.primaryFeedback.targetBufferMs,
-      primaryMode: this.primaryFeedback.mode,
+      primaryTargetBufferMs: feedbackForCurrentEpoch.targetBufferMs,
+      primaryMode: feedbackForCurrentEpoch.mode,
     };
   }
 
