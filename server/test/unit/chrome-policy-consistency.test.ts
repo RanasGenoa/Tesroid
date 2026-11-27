@@ -20,8 +20,12 @@ describe("仕様 06 AC-06 managed policy による infobar 恒久抑止", () => 
     if (write === undefined) {
       throw new Error("unreachable");
     }
-    expect(write[2]).toBe("/etc/opt/chrome/policies/managed/tesroid.json");
-    expect(JSON.parse(write[1] as string)).toEqual({
+    const [, policyJson, policyPath] = write;
+    if (policyJson === undefined || policyPath === undefined) {
+      throw new Error("baked managed policy path or JSON is missing");
+    }
+    expect(policyPath).toBe("/etc/opt/chrome/policies/managed/tesroid.json");
+    expect(JSON.parse(policyJson)).toEqual({
       CommandLineFlagSecurityWarningsEnabled: false,
     });
   });
