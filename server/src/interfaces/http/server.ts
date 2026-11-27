@@ -8,6 +8,7 @@ import { registerWebSocketGateway } from "../ws/ws-gateway.js";
 import { registerAuthAndSettingsRoutes } from "./routes-auth-settings.js";
 import { registerObservabilityRoutes } from "./routes-observability.js";
 import { registerPowerAndStreamRoutes } from "./routes-power-stream.js";
+import { registerStaticFrontend } from "./static.js";
 
 // Spec: docs/architecture.md#1.3
 export function createHttpServer(container: AppContainer): FastifyInstance {
@@ -46,6 +47,7 @@ export function createHttpServer(container: AppContainer): FastifyInstance {
   registerPowerAndStreamRoutes(app, container);
   registerObservabilityRoutes(app, container);
   registerWebSocketGateway(app, container);
+  registerStaticFrontend(app, container.env.clientDistPath);
   return app;
 }
 

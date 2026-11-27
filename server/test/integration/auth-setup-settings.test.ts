@@ -38,6 +38,7 @@ function makeEnv(dataDir: string): ServerEnvConfig {
     vaapiDevice: null,
     libvaDriverName: null,
     telemetryLogDir: path.join(dataDir, "telemetry"),
+    clientDistPath: path.resolve(dataDir, "client-dist-unused"),
     bufferHoldExpireMinutes: SERVER_ENV_DEFAULTS.bufferHoldExpireMinutes,
     playbackBufferSeconds: SERVER_ENV_DEFAULTS.playbackBufferSeconds,
     playbackBufferMaxBytes: SERVER_ENV_DEFAULTS.playbackBufferMaxBytes,

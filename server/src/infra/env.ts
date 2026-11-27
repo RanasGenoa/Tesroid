@@ -11,6 +11,7 @@ export interface ServerEnvConfig {
   readonly vaapiDevice: string | null;
   readonly libvaDriverName: string | null;
   readonly telemetryLogDir: string;
+  readonly clientDistPath: string;
   readonly bufferHoldExpireMinutes: number;
   readonly playbackBufferSeconds: number;
   readonly playbackBufferMaxBytes: number;
@@ -98,6 +99,8 @@ export function parseServerEnv(raw: Readonly<Record<string, string | undefined>>
     vaapiDevice: readOptionalExplicitSetting(raw.VAAPI_DEVICE),
     libvaDriverName: readOptionalExplicitSetting(raw.LIBVA_DRIVER_NAME),
     telemetryLogDir,
+    // 既定はイメージ/開発の作業ディレクトリ基準（/app/client/dist、repo ルート client/dist）で単一の配置規約とする。
+    clientDistPath: path.resolve("client/dist"),
     bufferHoldExpireMinutes: parseBoundedInt(
       raw.BUFFER_HOLD_EXPIRE_MINUTES,
       SERVER_ENV_DEFAULTS.bufferHoldExpireMinutes,
