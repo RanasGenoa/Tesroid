@@ -23,7 +23,7 @@ interface PendingCommand {
 
 interface CdpNavigationHistory {
   readonly currentIndex: number;
-  readonly entries: readonly { readonly id: string }[];
+  readonly entries: readonly { readonly id: number }[];
 }
 
 interface CdpEvaluateResponse {
@@ -89,6 +89,8 @@ export class NodeCdpClient {
 
   private socket: CdpSocketLike | null = null;
   private connecting: Promise<void> | null = null;
+  // disconnect() の直後に onopen が届く競合を構造的に退避させるための接続世代（仕様 06 §2.2 の切断後残留防止）。
+  private connectGeneration = 0;
   private nextCommandId = 1;
   private readonly pending = new Map<number, PendingCommand>();
 
@@ -117,6 +119,7 @@ export class NodeCdpClient {
   }
 
   async disconnect(): Promise<void> {
+    this.connectGeneration += 1;
     const socket = this.socket;
     this.detachSocket(socket);
     socket?.close();
@@ -196,15 +199,19 @@ export class NodeCdpClient {
   }
 
   private async openPageTarget(port: number): Promise<void> {
+    const attemptGeneration = this.connectGeneration;
     const targets = await this.fetchJson(`http://127.0.0.1:${port}/json/list`);
+    if (attemptGeneration !== this.connectGeneration) {
+      throw new Error("CDP connection attempt superseded by disconnect");
+    }
     const targetUrl = findPageTargetSocketUrl(targets);
     if (targetUrl === null) {
       throw new Error(`No CDP page target found on port ${port}`);
     }
-    await this.openAndAttach(targetUrl);
+    await this.openAndAttach(targetUrl, attemptGeneration);
   }
 
-  private openAndAttach(url: string): Promise<void> {
+  private openAndAttach(url: string, attemptGeneration: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const socket = this.openSocket(url);
       let settled = false;
@@ -213,6 +220,11 @@ export class NodeCdpClient {
           return;
         }
         settled = true;
+        if (attemptGeneration !== this.connectGeneration) {
+          socket.close();
+          reject(new Error("CDP connection attempt superseded by disconnect"));
+          return;
+        }
         this.socket = socket;
         resolve();
       };

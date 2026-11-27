@@ -175,7 +175,7 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     socket.respondTo(
       {
         currentIndex: 2,
-        entries: [{ id: "e0" }, { id: "e1" }, { id: "e2" }],
+        entries: [{ id: 0 }, { id: 1 }, { id: 2 }],
       },
       2,
     );
@@ -183,7 +183,7 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     expect(socket.sent[3]).toEqual({
       id: expect.any(Number),
       method: "Page.navigateToHistoryEntry",
-      params: { entryId: "e1" },
+      params: { entryId: 1 },
     });
     socket.respondTo({}, 3);
     await goBack;
@@ -192,7 +192,7 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     socket.respondTo(
       {
         currentIndex: 1,
-        entries: [{ id: "e0" }, { id: "e1" }, { id: "e2" }],
+        entries: [{ id: 0 }, { id: 1 }, { id: 2 }],
       },
       4,
     );
@@ -200,7 +200,7 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     expect(socket.sent[5]).toEqual({
       id: expect.any(Number),
       method: "Page.navigateToHistoryEntry",
-      params: { entryId: "e2" },
+      params: { entryId: 2 },
     });
     socket.respondTo({}, 5);
     await goForward;
@@ -211,11 +211,11 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     const socket = await connectFixture(fixture);
 
     const goBack = fixture.client.goBack();
-    socket.respondTo({ currentIndex: 0, entries: [{ id: "e0" }] }, socket.sent.length - 1);
+    socket.respondTo({ currentIndex: 0, entries: [{ id: 0 }] }, socket.sent.length - 1);
     await goBack;
 
     const goForward = fixture.client.goForward();
-    socket.respondTo({ currentIndex: 0, entries: [{ id: "e0" }] }, socket.sent.length - 1);
+    socket.respondTo({ currentIndex: 0, entries: [{ id: 0 }] }, socket.sent.length - 1);
     await goForward;
 
     expect(socket.sent.map((command) => command.method)).toEqual([
@@ -335,19 +335,61 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: 切断時の安全
     expect(fixture.client.isConnected()).toBe(false);
   });
 
-  it("connect 失敗後も再接続として再 connect すると接続が確立する", async () => {
-    const fixture = createAdapterFixture({ fetchThrows: true });
-    await expect(fixture.client.connect(9222)).rejects.toThrow();
+  it("connect 試行中の disconnect に対し後発の onopen は破棄され接続は残留しない", async () => {
+    const sockets: FakeCdpSocket[] = [];
+    const gate: { resolve?: (value: unknown) => void } = {};
+    const targetGate = new Promise<unknown>((resolve) => {
+      gate.resolve = resolve;
+    });
+    const client = new NodeCdpClient({
+      openSocket: () => {
+        // onopen を手動発火させることで disconnect 後の後着 onopen 競合順序をテスト側で支配する。
+        const socket = new FakeCdpSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetchJson: () => targetGate,
+    });
 
-    const retryClient = new NodeCdpClient({
-      openSocket: (url) => {
+    const connecting = client.connect(9222);
+    const resolveTargets = gate.resolve;
+    if (resolveTargets === undefined) {
+      throw new Error("expected pending target lookup");
+    }
+    resolveTargets(PAGE_TARGETS);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const socket = sockets[0];
+    if (socket === undefined) {
+      throw new Error("expected created CDP socket");
+    }
+    await client.disconnect();
+    socket.onopen?.();
+    await expect(connecting).rejects.toThrow();
+    expect(socket.closed).toBe(true);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it("connect 失敗後は同インスタンスでの再 connect により接続が確立する", async () => {
+    let fetchAttempts = 0;
+    const client = new NodeCdpClient({
+      openSocket: () => {
         const socket = new FakeCdpSocket();
         queueMicrotask(() => socket.onopen?.());
         return socket;
       },
-      fetchJson: async () => PAGE_TARGETS,
+      fetchJson: async () => {
+        fetchAttempts += 1;
+        if (fetchAttempts === 1) {
+          throw new Error("chrome not reachable");
+        }
+        return PAGE_TARGETS;
+      },
     });
-    await retryClient.connect(9222);
-    expect(retryClient.isConnected()).toBe(true);
+    await expect(client.connect(9222)).rejects.toThrow("chrome not reachable");
+    expect(client.isConnected()).toBe(false);
+
+    await client.connect(9222);
+    expect(client.isConnected()).toBe(true);
   });
 });
