@@ -11,7 +11,7 @@
 ## 2. 機能要件（入力・処理・出力・状態遷移）
 
 ### 2.1 単一多重化バイナリ WebSocket プロトコル & 単調増加世代 ID (`streamEpoch`)
-- **接続仕様**: 単一エンドポイント `/ws`（バイナリ `arraybuffer`、ソケット `TCP_NODELAY` 有効）。
+- **接続仕様**: 単一エンドポイント `/ws`（バイナリ `arraybuffer`、ソケット `TCP_NODELAY` 有効）。クライアントは WS URL を必ずページ origin から導出する（`http` → `ws`、`https` → `wss`、同一ホスト・パス `/ws`）。
 - **最重要仕様 — 単調増加ストリーム世代 ID (`streamEpoch`)**:
   - サーバーは配信セッション開始・再起動・同期リセット・電源復帰のたびに **1 ずつ単調増加する符号なし 32bit 整数 `streamEpoch`** を発行する。
   - すべてのメディアパケットおよびストリーム状態制御メッセージへ最新の `streamEpoch` を付与する。
@@ -144,6 +144,10 @@
   - **Given** `STANDBY` / `INTERACTIVE` / `LIVE` / `CATCHUP` / `BUFFER_HOLD` を表現する単一純粋遷移関数と純粋セレクタ（`shouldSuppressMediaSend`, `shouldPauseGeneration`）
   - **When** `LIVE` 中のソケット輻輳、`CATCHUP` 中のユーザー操作、`STANDBY` 中のメディア・操作イベント、`INTERACTIVE` の `4,000 ms` 経過、`BUFFER_HOLD` 中の CATCHUP 再接続・排水・操作・手動停止・リセットを順次投入する
   - **Then** すべての遷移が単一遷移関数のみで決定論的に解決され、`LIVE` 輻輳では `CATCHUP` へ遷移せず、`CATCHUP` 中の操作は即 `INTERACTIVE`（`CATCHUP` キュー破棄＋新 `streamEpoch`）へ遷移し、`STANDBY` では送出・生成・操作がすべて抑止され、`BUFFER_HOLD` は生成停止を維持したまま CATCHUP 送出を継続し、`INTERACTIVE` は `4,000 ms` 経過で `LIVE` へ自動復帰する。
+- **AC-07 (WS URL の同一 origin 導出)**:
+  - **Given** クライアントページが `http` または `https` の origin で読み込まれている
+  - **When** クライアントが WS 接続を確立する（認証・再接続を問わず）
+  - **Then** 接続先はその origin から導出した `ws://<同一ホスト>/ws`（`https` の場合は `wss:`）であり、別 origin（フォールバックの `127.0.0.1` 等）へは接続しない。この導出は `location` オブジェクトのプロパティ提示方法に依存してはならず、`location` がアクセッサプロパティ（値ディスクリプタの読み出しが `undefined`）であるブラウザで機能する。
 
 ---
 

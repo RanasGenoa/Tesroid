@@ -299,9 +299,10 @@ export function nextAllowedFps(currentFps: number, allowedFps: readonly number[]
 }
 
 function defaultWsUrl(): string {
-  const loc = Object.getOwnPropertyDescriptor(globalThis, "location")?.value as
-    | { readonly protocol?: string; readonly host?: string }
-    | undefined;
+  // 実ブラウザの location はアクセッサプロパティであり、値ディスクリプタ経由の読み出しでは必ず undefined になる（仕様 03 AC-07）
+  const loc = (
+    globalThis as { readonly location?: { readonly protocol?: string; readonly host?: string } }
+  ).location;
   if (loc !== undefined && typeof loc.host === "string" && loc.host.length > 0) {
     const wsProtocol = loc.protocol === "https:" ? "wss:" : "ws:";
     return `${wsProtocol}//${loc.host}/ws`;
