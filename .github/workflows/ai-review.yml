@@ -105,14 +105,36 @@ jobs:
           ================================================================================
 
           ## 重点レビュー観点 (AGENTS.md 厳守)
-          以下の項目に違反がある場合は【CRITICAL】判定としてください：
-          1. 【車載制約】クライアント側 (client/) で <video> タグが追加・使用されていないか？（テスラ車載OSのDレンジ動画停止ガードを回避するため、必ず <canvas desynchronized> + WebCodecs API を維持すること）
-          2. 【描画制約】Xvfb 環境の Chrome 起動引数に --enable-gpu-rasterization や --enable-zero-copy が追加されていないか？（Mesa llvmpipe と VAAPI が競合して画面下部が黒くフリーズするのを防ぐため）
-          3. 【入力制約】タッチ入力が mousedown 1 などのマウスエミュレーションに戻っていないか？（CdpTouchBridge による CDP Input.dispatchTouchEvent を維持すること）
-          4. 【通信制約】WebSocket バックプレッシャーが単一閾値でフレームドロップされていないか？（High: 768KB, Low: 128KB のヒステリシスを保つこと）
-          5. 【セキュリティ】平文パスワード、SSH鍵、固定IP、ホスト固有パスがハードコードされていないか？
-          6. 【品質】TypeScript 型安全性、Promise 未処理、リソース解放漏れがないか？
-          7. 【タッチオンリー制約】クライアント側 (client/) で物理キーボード操作（Escape キーでのモーダル閉じ、キーボードショートカット、keydown リスナー依存）やマウス操作（hover 専用 UI、右クリックメニュー、マウスドラッグ）を必須・前提とする実装が含まれていないか？（テスラ車載画面は完全タッチオンリーであり、リモート文字・キー入力もタッチ操作可能な HUD 仮想キーボード `<input>` 経由の CDP 注入のみで行うこと。なお、レビュアー自身も Escape キー閉じ等の物理キーボードショートカットやマウス専用操作の追加を提案してはならない）
+          以下の項目に違反がある場合は【CHANGES_REQUESTED】判定とし、重要指摘事項に CRITICAL / HIGH として記載してください。
+          参照記号は AGENTS.md の節番号です。
+
+          ### A. 車載絶対不変条件 (§4)
+          1. 【描画】クライアント側 (client/) で <video> タグが追加・使用されていないか？（テスラ車載OSのDレンジ動画停止ガード回避のため <canvas desynchronized> + WebCodecs を維持）
+          2. 【描画】Xvfb 環境の Chrome 起動引数に --enable-gpu-rasterization / --enable-zero-copy / --disable-gpu-vsync が追加されていないか？（Mesa llvmpipe と VAAPI の競合で画面凍結するため、2D DOM は CPU Skia、動画デコードのみ VAAPI + Av1Decoder 無効を維持）
+          3. 【入力】タッチ入力がマウスエミュレーション（mousedown 等）や X11 フォールバック（xdotool 等）に戻っていないか？入力は CDP（Input.dispatchTouchEvent 等）専用とし、CDP 未接続時の入力は安全に破棄すること。物理キーボード前提（Escape 閉じ・ショートカット・keydown 依存）やマウス前提（hover 専用露出・右クリック・ドラッグ）の実装禁止。リモート文字・キー入力も HUD 仮想キーボード `<input>` 経由の CDP 注入のみ。レビュアー自身がこれらの追加を提案してはならない。
+          4. 【通信】WebSocket バックプレッシャーが単一閾値化していないか？（High: 768KB / Low: 128KB のヒステリシス、H.264 サーバー側 AVCC 事前パッキングを維持）
+          5. 【状態機械】ストリーミング状態 (STANDBY/INTERACTIVE/LIVE/CATCHUP/BUFFER_HOLD) を独立 boolean フラグ群で表現・分散保持していないか？単一の純粋遷移関数 transitionStreamingState と純粋セレクタへ集約し、bool 状態フラグの新設は即 FAIL。
+          6. 【電源・配信不変条件】autoSleepTimer と holdExpireTimer の同時稼働、ACTIVE 復帰時の映像・音声エンコーダ双方の未保証、LIVE 配信時のソケット輻輳での CATCHUP 遷移、セカンダリ回線輻輳のプライマリ・エンコーダへの波及がないか？
+          7. 【保存】車載 localStorage による設定・拡大率・バッファ深度等の保存がないか？（設定はサーバー保存へ一元化、sessionStorage は再接続用 token/role のみ）
+          8. 【GPU境界】/etc/libva.conf へのドライバ名ハードコード、GALLIUM_DRIVER=d3d12 の Chrome への付与がないか？（FFmpeg / vainfo サブプロセス限定）
+          9. 【コンテナ基盤】no-systemd APT Pinning・dbus-x11・--no-install-recommends の削除、Google Chrome 同梱イメージの公開（INSTALL_CHROME=false 違反）、TUNNEL_TOKEN のコマンドライン引数渡しや子プロセス環境残存がないか？
+          10. 【秘匿】平文 PIN・トークン・API キー・SSH 鍵・プライベート固定 IP・ホスト固有絶対パスがコード・ログ・公開文書にハードコードされていないか？（<SERVER_IP> 等プレースホルダーへ）
+
+          ### B. SDD 手続き (§1・§3.3・§5)
+          11. 【仕様先行】機能追加・仕様変更のコード変更は同一 diff に docs/specs/（必要に応じ docs/architecture.md）の先行更新を含むか？緊急修正も「要確認事項」への暫定記録なしのマージは不可。純粋 refactor/chore のみ仕様差分なしで可。
+          12. 【AC 追跡性】新規・変更テストの最上位 describe に仕様書 AC 番号が含まれるか？PR 本文の「AC ↔ テストファイル」対応表と diff を照合し、対応 AC のない変更はスコープクリープとして指摘すること。
+          13. 【テスト禁止パターン】同一プロセス内ドメインモジュールの vi.mock 差し替え（許容は外部 OS/I/O 境界 Port の Fake と Clock のみ）、private 状態の確認、toHaveBeenCalledTimes(n) 等の手順テスト、型で保証される自明テストの追加がないか？
+
+          ### C. DDD アーキテクチャ (§3.1・§6.2〜§6.5)
+          14. 【依存方向】docs/architecture.md §2.1 依存マトリクスに反する逆方向依存・ドメイン跨ぎ直参照がないか？ドメイン間は app/ 配線の狭い Port 経由のみ。グローバル可変シングルトンの新設がないか？
+          15. 【SSOT】プロトコル定数・設定スキーマ・既定値・品質 3 択/プリセット定義・寸法アライメント式が shared/ で唯一定義され、server/ や client/ に二重定義されていないか？
+          16. 【用語集 §6.2】禁止別名を使っていないか？（generationId / epochId、isLive 等の bool 群、buffering を CATCHUP の別名に使用、main/sub/master、ブラウザ再起動の restart 呼称、pause/stall を BUFFER_HOLD の別名に使用）
+          17. 【集約境界】状態変更が集約ルート・単一遷移関数へのイベント投入経由ではなく、周辺実装へ直接書き込まれていないか？
+
+          ### D. コメント・コミット規約 (§3.1・§3.2)
+          18. 「What」説明コメント、修正経緯コメント（以前は〜 / Issue # / PR # / Phase N / 互換性維持のため暫定）、取り消しコードのコメントアウト残置、所有者・方針のない TODO/FIXME を追加していないか？書いてよいのはハードウェア制約・車載仕様由来の「Why」1〜2 行のみ。
+          19. 【同時削除】仕様変更で不要になった旧コード・旧テスト・旧修正経緯コメントが同一 diff で同時削除されているか？残置は指摘すること。
+          20. 【TS 規律】any / @ts-ignore / @ts-expect-error の安易な使用、未処理の Promise、リソース（デコーダフレーム・ストリーム・タイマ）解放漏れがないか？純粋計算と I/O の分離が破られていないか？
 
           ## 出力フォーマット (Markdown 形式)
           ### 1. 総合判定
