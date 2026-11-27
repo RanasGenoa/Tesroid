@@ -21,6 +21,7 @@ import type {
 } from "../domains/browser/ports.js";
 import { EncoderService, NodeGpuHardwareProbe } from "../domains/encoder/index.js";
 import type { EncoderControlPort, GpuHardwareProbePort } from "../domains/encoder/ports.js";
+import { MetricsRingBuffer, TelemetryStore } from "../domains/observability/index.js";
 import type { MetricsServicePort, TelemetryServicePort } from "../domains/observability/ports.js";
 import { PowerService, PowerTimers } from "../domains/power/index.js";
 import type { PowerControllerPort } from "../domains/power/ports.js";
@@ -35,6 +36,7 @@ import {
   type Clock,
   type JsonlStore,
   NodeAtomicJsonStore,
+  NodeJsonlStore,
   NodeProcessExit,
   NodeProcessRunner,
   NodeProcessTreeController,
@@ -107,43 +109,6 @@ function createDisconnectedCdpFallback(): CdpClientPort {
   };
 }
 
-function createNoopMetricsFallback(): MetricsServicePort {
-  return {
-    recordSample: () => {},
-    getSummary: () => ({
-      sampleCount: 0,
-      durationSec: 0,
-      currentFps: 0,
-      avgFps: 0,
-      minFps: 0,
-      maxFps: 0,
-      avgRttMs: 0,
-      maxRttMs: 0,
-      totalDroppedFrames: 0,
-      totalDecoderErrors: 0,
-      avgBitrateKbps: 0,
-      avgAvDriftMs: 0,
-      minAvDriftMs: 0,
-      maxAvDriftMs: 0,
-      lastUpdated: null,
-    }),
-    getHistory: () => [],
-    clear: () => {},
-  };
-}
-
-function createNoopTelemetryFallback(): TelemetryServicePort {
-  return {
-    initialize: async () => {},
-    getCurrentSessionId: () => "",
-    appendBatch: async () => 0,
-    listSessions: async () => [],
-    readSessionNdjson: async () => null,
-    readLatestSessionNdjson: async () => null,
-    deleteAllSessions: async () => {},
-  };
-}
-
 // Spec: docs/architecture.md#1.2
 export function createAppContainer(
   env: ServerEnvConfig,
@@ -151,6 +116,7 @@ export function createAppContainer(
 ): AppContainer {
   const clock = overrides?.clock ?? new SystemClock();
   const jsonStore = overrides?.jsonStore ?? new NodeAtomicJsonStore();
+  const jsonlStore = overrides?.jsonlStore ?? new NodeJsonlStore();
   const processRunner = overrides?.processRunner ?? new NodeProcessRunner();
   const processTree = overrides?.processTree ?? new NodeProcessTreeController({ processRunner });
   const processExit = overrides?.processExit ?? new NodeProcessExit();
@@ -205,8 +171,15 @@ export function createAppContainer(
       explicitVaapiDriver: env.libvaDriverName,
     });
 
-  const metrics = overrides?.metrics ?? createNoopMetricsFallback();
-  const telemetry = overrides?.telemetry ?? createNoopTelemetryFallback();
+  const metrics = overrides?.metrics ?? new MetricsRingBuffer();
+  const telemetry =
+    overrides?.telemetry ??
+    new TelemetryStore({
+      clock,
+      settings,
+      jsonlStore,
+      logDir: env.telemetryLogDir,
+    });
 
   let sessionRef: SessionServicePort | undefined;
   const shutdownHandler: LockoutShutdownHandler = overrides?.lockoutShutdownHandler ?? {
@@ -315,10 +288,6 @@ export function createAppContainer(
     })();
   powerRef = power;
 
-  const unsubscribePackets = encoder.subscribePackets((packet) => {
-    streaming.ingestEncodedPacket(packet);
-  });
-
   const coordinator = new ServerCoordinator({
     clock,
     env,
@@ -331,6 +300,11 @@ export function createAppContainer(
     power,
     metrics,
     telemetry,
+  });
+
+  const unsubscribePackets = encoder.subscribePackets((packet) => {
+    streaming.ingestEncodedPacket(packet);
+    coordinator.recordEncodedPacket(packet);
   });
 
   return {

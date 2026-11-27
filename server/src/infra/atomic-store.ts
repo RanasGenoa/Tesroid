@@ -97,37 +97,103 @@ export class NodeAtomicJsonStore implements AtomicJsonStore {
 
 export class NodeJsonlStore implements JsonlStore {
   // Spec: docs/specs/08-observability.md#2.2
-  ensureDir(dirPath: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async ensureDir(dirPath: string): Promise<void> {
+    await fs.mkdir(dirPath, { recursive: true });
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  appendLine(filePath: string, line: string): Promise<number> {
-    throw new Error("NOT_IMPLEMENTED");
+  async appendLine(filePath: string, line: string): Promise<number> {
+    const payload = line.endsWith("\n") ? line : `${line}\n`;
+    await fs.appendFile(filePath, payload, { encoding: "utf8", mode: 0o600 });
+    return Buffer.byteLength(payload, "utf8");
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  statFile(filePath: string): Promise<JsonlFileInfo | null> {
-    throw new Error("NOT_IMPLEMENTED");
+  async statFile(filePath: string): Promise<JsonlFileInfo | null> {
+    try {
+      const [stat, text] = await Promise.all([fs.stat(filePath), fs.readFile(filePath, "utf8")]);
+      const lineCount = text.split("\n").filter((entry) => entry.length > 0).length;
+      const createdAtMs = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+      return {
+        fileName: path.basename(filePath),
+        sizeBytes: stat.size,
+        lineCount,
+        createdAtMs,
+        updatedAtMs: stat.mtimeMs,
+      };
+    } catch (error) {
+      if (isEnoentError(error)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  listFiles(dirPath: string, extension: string): Promise<readonly JsonlFileInfo[]> {
-    throw new Error("NOT_IMPLEMENTED");
+  async listFiles(dirPath: string, extension: string): Promise<readonly JsonlFileInfo[]> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch (error) {
+      if (isEnoentError(error)) {
+        return [];
+      }
+      throw error;
+    }
+
+    const results: JsonlFileInfo[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(extension)) {
+        continue;
+      }
+      const info = await this.statFile(path.join(dirPath, entry.name));
+      if (info !== null) {
+        results.push(info);
+      }
+    }
+    return results;
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  readFileText(filePath: string): Promise<string | null> {
-    throw new Error("NOT_IMPLEMENTED");
+  async readFileText(filePath: string): Promise<string | null> {
+    try {
+      return await fs.readFile(filePath, "utf8");
+    } catch (error) {
+      if (isEnoentError(error)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  deleteFile(filePath: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async deleteFile(filePath: string): Promise<void> {
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if (!isEnoentError(error)) {
+        throw error;
+      }
+    }
   }
 
   // Spec: docs/specs/08-observability.md#2.2
-  deleteAllFiles(dirPath: string, extension: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async deleteAllFiles(dirPath: string, extension: string): Promise<void> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch (error) {
+      if (isEnoentError(error)) {
+        return;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(extension)) {
+        continue;
+      }
+      await this.deleteFile(path.join(dirPath, entry.name));
+    }
   }
 }

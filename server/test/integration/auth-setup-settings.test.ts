@@ -51,7 +51,7 @@ function createBoundaryBrowserFake(options?: { failScale?: boolean }): {
 } {
   const scaleCalls: number[] = [];
   const notUsed = (): never => {
-    throw new Error("NOT_IMPLEMENTED");
+    throw new Error("UNEXPECTED_CALL");
   };
   return {
     scaleCalls,
@@ -95,7 +95,7 @@ function createBoundaryEncoderFake(
     dimensionsChanged: boolean;
   }> = [];
   const notUsed = (): never => {
-    throw new Error("NOT_IMPLEMENTED");
+    throw new Error("UNEXPECTED_CALL");
   };
   return {
     applyCalls,
@@ -129,7 +129,7 @@ function createBoundarySessionFake(): {
 } {
   const policyViolationReasons: Array<{ code: number; reason: string }> = [];
   const notUsed = (): never => {
-    throw new Error("NOT_IMPLEMENTED");
+    throw new Error("UNEXPECTED_CALL");
   };
   return {
     policyViolationReasons,

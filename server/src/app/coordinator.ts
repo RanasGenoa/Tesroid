@@ -1,29 +1,35 @@
 import {
   type AlignedDimensions,
+  AUDIO_FLAG,
   alignLayoutDimensions,
   CHANNEL_ID,
   decodeAuthFrame,
   decodeClientControlFrame,
+  decodeMetricsFrame,
   decodeResizeFrame,
   decodeTouchFrame,
   encodeServerControlFrame,
   expandSetupQualityPreset,
   type HealthResponse,
   isInputAllowed,
+  METRICS_LIMITS,
   type PowerActionResult,
   PROTOCOL_TIMING,
   type PublicAppSettings,
   type SettingsUpdateInput,
   type SetupRequestInput,
   type SystemStatusResponse,
+  TELEMETRY_LIMITS,
+  type TelemetryEventInput,
   toPublicSettings,
+  VIDEO_FLAG,
   validateSettingsUpdate,
   validateSetupRequest,
   WS_CLOSE_CODE,
 } from "@tesroid/shared";
 import type { AuthServicePort } from "../domains/auth/ports.js";
 import type { BrowserControlPort } from "../domains/browser/ports.js";
-import type { EncoderControlPort } from "../domains/encoder/ports.js";
+import type { EncodedMediaPacket, EncoderControlPort } from "../domains/encoder/ports.js";
 import type { MetricsServicePort, TelemetryServicePort } from "../domains/observability/ports.js";
 import type { PowerControllerPort } from "../domains/power/ports.js";
 import type {
@@ -59,17 +65,28 @@ export class ServerCoordinator {
   private pendingResize: AlignedDimensions | null = null;
   private lastResizeAppliedAtMs: number | null = null;
   private resizeQueue: Promise<void> = Promise.resolve();
+  private readonly startedAtMonotonicMs: number;
+  private lastStatsAtMonotonicMs: number;
+  private videoFramesInWindow = 0;
+  private videoBytesInWindow = 0;
+  private audioPacketsInWindow = 0;
+  private serverStatsTimer: TimerHandle | null = null;
 
   // Spec: docs/architecture.md#1.2
   constructor(deps: CoordinatorDeps) {
     this.deps = deps;
+    const nowMono = deps.clock.monotonicMs();
+    this.startedAtMonotonicMs = nowMono;
+    this.lastStatsAtMonotonicMs = nowMono;
   }
 
   // Spec: docs/specs/01-auth-security.md#2.2
   async initialize(): Promise<void> {
     await this.deps.auth.assertNotLockedAtStartup();
     await this.deps.settings.load();
+    await this.deps.telemetry.initialize();
     this.deps.auth.startTokenSweep();
+    this.startServerStatsTimer();
   }
 
   // Spec: docs/specs/01-auth-security.md#2.1
@@ -322,6 +339,25 @@ export class ServerCoordinator {
         );
         return;
       }
+      case CHANNEL_ID.METRICS: {
+        try {
+          const sample = decodeMetricsFrame(payload);
+          this.deps.metrics.recordSample(sample);
+        } catch {
+          // Ignore malformed metrics frames.
+        }
+        return;
+      }
+      case CHANNEL_ID.TELEMETRY: {
+        if (!this.deps.settings.getCurrent().stream.telemetryEnabled) {
+          return;
+        }
+        if (payload.byteLength > TELEMETRY_LIMITS.maxPayloadBytes) {
+          return;
+        }
+        await this.handleTelemetryPayload(payload.subarray(1));
+        return;
+      }
       default:
         return;
     }
@@ -341,8 +377,33 @@ export class ServerCoordinator {
   }
 
   // Spec: docs/specs/08-observability.md#2.1
+  recordEncodedPacket(packet: EncodedMediaPacket): void {
+    if (packet.mediaType === "video") {
+      this.videoBytesInWindow += packet.payload.byteLength;
+      if ((packet.flags & VIDEO_FLAG.CONFIG) === 0) {
+        this.videoFramesInWindow += 1;
+      }
+      return;
+    }
+    if ((packet.flags & AUDIO_FLAG.CONFIG) === 0) {
+      this.audioPacketsInWindow += 1;
+    }
+  }
+
+  // Spec: docs/specs/08-observability.md#2.1
   getHealthStatus(): HealthResponse {
-    throw new Error("NOT_IMPLEMENTED");
+    const powerState = this.deps.power.getStatus().state;
+    const uptimeSec = Math.max(
+      0,
+      Math.floor((this.deps.clock.monotonicMs() - this.startedAtMonotonicMs) / 1_000),
+    );
+    return {
+      ok: powerState !== "ERROR",
+      uptimeSec,
+      timestamp: new Date(this.deps.clock.nowMs()).toISOString(),
+      powerState,
+      encoder: this.deps.encoder.getHealthStatus(),
+    };
   }
 
   // Spec: docs/specs/10-power-lifecycle.md#2.4
@@ -351,11 +412,68 @@ export class ServerCoordinator {
       this.deps.clock.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
     }
+    if (this.serverStatsTimer !== null) {
+      this.deps.clock.clearInterval(this.serverStatsTimer);
+      this.serverStatsTimer = null;
+    }
     this.pendingResize = null;
     this.deps.auth.stopTokenSweep();
     this.deps.power.dispose();
     this.deps.streaming.dispose();
     this.pendingTransports.clear();
+  }
+
+  private startServerStatsTimer(): void {
+    if (this.serverStatsTimer !== null) {
+      this.deps.clock.clearInterval(this.serverStatsTimer);
+    }
+    this.lastStatsAtMonotonicMs = this.deps.clock.monotonicMs();
+    this.serverStatsTimer = this.deps.clock.setInterval(() => {
+      const nowMonoMs = this.deps.clock.monotonicMs();
+      const elapsedSec = Math.max(0.001, (nowMonoMs - this.lastStatsAtMonotonicMs) / 1_000);
+      const encodeFps = Math.round((this.videoFramesInWindow / elapsedSec) * 10) / 10;
+      const sendBitrateKbps = Math.round((this.videoBytesInWindow * 8) / (elapsedSec * 1_000));
+      const audioPps = Math.round((this.audioPacketsInWindow / elapsedSec) * 10) / 10;
+
+      this.videoFramesInWindow = 0;
+      this.videoBytesInWindow = 0;
+      this.audioPacketsInWindow = 0;
+      this.lastStatsAtMonotonicMs = nowMonoMs;
+
+      if (this.deps.session.getAllSessions().length === 0) {
+        return;
+      }
+
+      this.deps.streaming.broadcastServerStats({
+        encodeFps,
+        sendBitrateKbps,
+        audioPps,
+        powerState: this.deps.power.getStatus().state,
+      });
+    }, METRICS_LIMITS.serverStatsIntervalMs);
+  }
+
+  private async handleTelemetryPayload(payload: Uint8Array): Promise<void> {
+    if (payload.byteLength === 0) {
+      return;
+    }
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(payload);
+      const parsed: unknown = JSON.parse(text);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed) ||
+        !("events" in parsed) ||
+        !Array.isArray((parsed as { readonly events?: unknown }).events)
+      ) {
+        return;
+      }
+      const events = (parsed as { readonly events: readonly TelemetryEventInput[] }).events;
+      await this.deps.telemetry.appendBatch(events);
+    } catch {
+      // Ignore malformed telemetry frames.
+    }
   }
 
   private async scheduleResize(aligned: AlignedDimensions): Promise<void> {

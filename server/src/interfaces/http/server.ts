@@ -1,11 +1,12 @@
 import { SharedValidationError } from "@tesroid/shared";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { AppContainer } from "../../app/index.js";
+import { type AppContainer, createAppContainer } from "../../app/index.js";
 import { AuthDomainError } from "../../domains/auth/errors.js";
 import { SettingsDomainError } from "../../domains/settings/errors.js";
-import type { ServerEnvConfig } from "../../infra/index.js";
+import { ProcessEnvReader, type ServerEnvConfig } from "../../infra/index.js";
 import { registerWebSocketGateway } from "../ws/ws-gateway.js";
 import { registerAuthAndSettingsRoutes } from "./routes-auth-settings.js";
+import { registerObservabilityRoutes } from "./routes-observability.js";
 import { registerPowerAndStreamRoutes } from "./routes-power-stream.js";
 
 // Spec: docs/architecture.md#1.3
@@ -43,14 +44,64 @@ export function createHttpServer(container: AppContainer): FastifyInstance {
 
   registerAuthAndSettingsRoutes(app, container);
   registerPowerAndStreamRoutes(app, container);
+  registerObservabilityRoutes(app, container);
   registerWebSocketGateway(app, container);
   return app;
 }
 
 // Spec: docs/architecture.md#1.3
-export function startServer(_env?: ServerEnvConfig): Promise<{
+export async function startServer(env?: ServerEnvConfig): Promise<{
   readonly app: FastifyInstance;
   readonly container: AppContainer;
 }> {
-  throw new Error("NOT_IMPLEMENTED");
+  const config = env ?? new ProcessEnvReader().read();
+  const container = createAppContainer(config);
+
+  try {
+    await container.coordinator.initialize();
+  } catch (error) {
+    await container.dispose();
+    throw error;
+  }
+
+  const app = createHttpServer(container);
+  let disposed = false;
+  const disposeOnce = async () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    await container.dispose();
+  };
+
+  let closing = false;
+  const onSignal = () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    void app.close().finally(() => {
+      void disposeOnce();
+    });
+  };
+
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  app.addHook("onClose", async () => {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+    await disposeOnce();
+  });
+
+  try {
+    await app.listen({ port: config.port, host: "0.0.0.0" });
+  } catch (error) {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+    await disposeOnce();
+    throw error;
+  }
+
+  return { app, container };
 }

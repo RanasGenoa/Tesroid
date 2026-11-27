@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { AlignedDimensions, EncoderBackend, SpecialKey, WsCloseCode } from "@tesroid/shared";
 import type { BrowserPageInfo, CdpClientPort } from "../../src/domains/browser/ports.js";
 import type { GpuHardwareProbePort } from "../../src/domains/encoder/ports.js";
@@ -167,39 +168,105 @@ export class FakeAtomicJsonStore implements AtomicJsonStore {
 }
 
 export class FakeJsonlStore implements JsonlStore {
-  // Spec: docs/architecture.md#4.2
-  ensureDir(dirPath: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  private readonly clock: Clock | null;
+  private readonly dirs = new Set<string>();
+  private readonly files = new Map<
+    string,
+    { content: string; createdAtMs: number; updatedAtMs: number }
+  >();
+  ensureDirCalls = 0;
+  appendCalls = 0;
+
+  constructor(clock?: Clock) {
+    this.clock = clock ?? null;
+  }
+
+  private nowMs(): number {
+    return this.clock?.nowMs() ?? Date.now();
   }
 
   // Spec: docs/architecture.md#4.2
-  appendLine(filePath: string, line: string): Promise<number> {
-    throw new Error("NOT_IMPLEMENTED");
+  async ensureDir(dirPath: string): Promise<void> {
+    this.ensureDirCalls += 1;
+    this.dirs.add(path.resolve(dirPath));
   }
 
   // Spec: docs/architecture.md#4.2
-  statFile(filePath: string): Promise<JsonlFileInfo | null> {
-    throw new Error("NOT_IMPLEMENTED");
+  async appendLine(filePath: string, line: string): Promise<number> {
+    this.appendCalls += 1;
+    const resolved = path.resolve(filePath);
+    const payload = line.endsWith("\n") ? line : `${line}\n`;
+    const now = this.nowMs();
+    const existing = this.files.get(resolved);
+    if (existing !== undefined) {
+      existing.content += payload;
+      existing.updatedAtMs = now;
+    } else {
+      this.files.set(resolved, {
+        content: payload,
+        createdAtMs: now,
+        updatedAtMs: now,
+      });
+    }
+    return Buffer.byteLength(payload, "utf8");
   }
 
   // Spec: docs/architecture.md#4.2
-  listFiles(dirPath: string, extension: string): Promise<readonly JsonlFileInfo[]> {
-    throw new Error("NOT_IMPLEMENTED");
+  async statFile(filePath: string): Promise<JsonlFileInfo | null> {
+    const resolved = path.resolve(filePath);
+    const entry = this.files.get(resolved);
+    if (entry === undefined) {
+      return null;
+    }
+    return {
+      fileName: path.basename(resolved),
+      sizeBytes: Buffer.byteLength(entry.content, "utf8"),
+      lineCount: entry.content.split("\n").filter((item) => item.length > 0).length,
+      createdAtMs: entry.createdAtMs,
+      updatedAtMs: entry.updatedAtMs,
+    };
   }
 
   // Spec: docs/architecture.md#4.2
-  readFileText(filePath: string): Promise<string | null> {
-    throw new Error("NOT_IMPLEMENTED");
+  async listFiles(dirPath: string, extension: string): Promise<readonly JsonlFileInfo[]> {
+    const resolvedDir = path.resolve(dirPath);
+    const results: JsonlFileInfo[] = [];
+    for (const [filePath, entry] of this.files) {
+      if (path.dirname(filePath) === resolvedDir && filePath.endsWith(extension)) {
+        results.push({
+          fileName: path.basename(filePath),
+          sizeBytes: Buffer.byteLength(entry.content, "utf8"),
+          lineCount: entry.content.split("\n").filter((item) => item.length > 0).length,
+          createdAtMs: entry.createdAtMs,
+          updatedAtMs: entry.updatedAtMs,
+        });
+      }
+    }
+    return results;
   }
 
   // Spec: docs/architecture.md#4.2
-  deleteFile(filePath: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async readFileText(filePath: string): Promise<string | null> {
+    return this.files.get(path.resolve(filePath))?.content ?? null;
   }
 
   // Spec: docs/architecture.md#4.2
-  deleteAllFiles(dirPath: string, extension: string): Promise<void> {
-    throw new Error("NOT_IMPLEMENTED");
+  async deleteFile(filePath: string): Promise<void> {
+    this.files.delete(path.resolve(filePath));
+  }
+
+  // Spec: docs/architecture.md#4.2
+  async deleteAllFiles(dirPath: string, extension: string): Promise<void> {
+    const resolvedDir = path.resolve(dirPath);
+    for (const filePath of [...this.files.keys()]) {
+      if (path.dirname(filePath) === resolvedDir && filePath.endsWith(extension)) {
+        this.files.delete(filePath);
+      }
+    }
+  }
+
+  hasDir(dirPath: string): boolean {
+    return this.dirs.has(path.resolve(dirPath));
   }
 }
 
