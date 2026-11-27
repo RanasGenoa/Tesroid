@@ -24,12 +24,7 @@ import {
 import type { AppState, AppStore, SettingsTabId } from "../../state/index.js";
 import { el, getDoc, touchButton } from "../dom.js";
 import { escapeHtml } from "../escape.js";
-import {
-  openTouchPicker,
-  pickerControl,
-  type TouchPickerHandle,
-  type TouchPickerOption,
-} from "../touch-picker.js";
+import { pickerControl, TouchPickerHost, type TouchPickerOption } from "../touch-picker.js";
 
 export interface SettingsPollingTimerHandle {
   cancel(): void;
@@ -170,7 +165,7 @@ export class SettingsModalView {
   private generalStatusMessage: string | null = null;
   private resetPresetsArmedUntilMs: number | null = null;
   private clearLogsArmedUntilMs: number | null = null;
-  private activePicker: TouchPickerHandle | null = null;
+  private readonly pickerHost = new TouchPickerHost();
 
   // Spec: docs/specs/07-ui-hud-settings.md#2.4
   constructor(store: AppStore, options?: SettingsModalViewOptions) {
@@ -187,8 +182,7 @@ export class SettingsModalView {
   // Spec: docs/specs/07-ui-hud-settings.md#2.4
   unmount(): void {
     this.stopPolling();
-    this.activePicker?.dismiss();
-    this.activePicker = null;
+    this.pickerHost.dismiss();
     if (this.container !== null) {
       this.container.replaceChildren();
     }
@@ -804,23 +798,20 @@ export class SettingsModalView {
 
     const availablePresets: readonly VideoPerformancePreset[] =
       backend === "software" ? CPU_PERFORMANCE_PRESETS : GPU_PERFORMANCE_PRESETS;
-    const currentPresetValue: VideoPerformancePreset = isPresetCompatibleWithBackend(
-      draft.preset,
-      backend,
-    )
-      ? draft.preset
-      : "custom";
+    // 選択中値はタップ時に再評価する（maxSize 入力等の非再描画変更で draft.preset が変わっても古い値を提示しない）。
+    const currentPresetValue = (): VideoPerformancePreset =>
+      isPresetCompatibleWithBackend(draft.preset, backend) ? draft.preset : "custom";
     const presetControl = pickerControl(
       doc,
       "settings-video-preset",
-      PRESET_LABELS[currentPresetValue],
+      PRESET_LABELS[currentPresetValue()],
       () => {
         void this.openOptionPicker(
           doc,
           "settings-video-preset",
           "サーバー映像プリセット",
           availablePresets.map((p) => ({ label: PRESET_LABELS[p], value: p })),
-          currentPresetValue,
+          currentPresetValue(),
         ).then((value) => {
           if (value === null) {
             return;
@@ -1235,11 +1226,10 @@ export class SettingsModalView {
     this.generalStatusMessage = null;
     this.resetPresetsArmedUntilMs = null;
     this.clearLogsArmedUntilMs = null;
-    this.activePicker?.dismiss();
-    this.activePicker = null;
+    this.pickerHost.dismiss();
   }
 
-  // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-06) — 開いているピッカーは常に単一。
+  // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-06) — 開いているピッカーは host 側で常に単一。
   private openOptionPicker(
     doc: Document,
     testid: string,
@@ -1247,14 +1237,6 @@ export class SettingsModalView {
     options: readonly TouchPickerOption[],
     selectedValue: string,
   ): Promise<string | null> {
-    this.activePicker?.dismiss();
-    const handle = openTouchPicker(doc, { title, testid, options, selectedValue });
-    this.activePicker = handle;
-    void handle.closed.then(() => {
-      if (this.activePicker === handle) {
-        this.activePicker = null;
-      }
-    });
-    return handle.closed;
+    return this.pickerHost.open(doc, { title, testid, options, selectedValue });
   }
 }

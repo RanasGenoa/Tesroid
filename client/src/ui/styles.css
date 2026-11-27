@@ -429,8 +429,7 @@ body {
   gap: 4px;
 }
 
-.form-input,
-.form-picker {
+.form-input {
   min-height: 40px;
   padding: 6px 10px;
   border-radius: 8px;
@@ -440,6 +439,20 @@ body {
   font-size: 14px;
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* ピッカー起動コントロールは button のため長押しテキスト選択を禁止する */
+.form-picker {
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: #0d121a;
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: left;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Spec 07 §2.4: タッチ専用カスタムピッカー（ネイティブ select ポップアップの代替） */

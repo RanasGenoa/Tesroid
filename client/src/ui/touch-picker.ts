@@ -68,6 +68,29 @@ export function openTouchPicker(doc: Document, request: TouchPickerRequest): Tou
   return { closed, dismiss: () => finish(null) };
 }
 
+// Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-06) — 開いてもよいピッカーは常に単一。
+// view の unmount・ルート離脱時に dismiss() で body 残留を構造的に防ぐ。
+export class TouchPickerHost {
+  private active: TouchPickerHandle | null = null;
+
+  open(doc: Document, request: TouchPickerRequest): Promise<string | null> {
+    this.dismiss();
+    const handle = openTouchPicker(doc, request);
+    this.active = handle;
+    void handle.closed.then(() => {
+      if (this.active === handle) {
+        this.active = null;
+      }
+    });
+    return handle.closed;
+  }
+
+  dismiss(): void {
+    this.active?.dismiss();
+    this.active = null;
+  }
+}
+
 // Spec: docs/specs/07-ui-hud-settings.md#2.4
 // 現在値をラベルで表示し、タップでピッカーを開く統一コントロール（ネイティブ select の代替）。
 export function pickerControl(

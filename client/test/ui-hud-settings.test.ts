@@ -157,7 +157,6 @@ class MockElement {
   private _html = "";
   value = "";
   disabled = false;
-  selected = false;
   checked = false;
 
   constructor(tagName: string, ownerDocument: MockDocument) {
@@ -225,9 +224,6 @@ class MockElement {
     this.children.push(child);
     if (child instanceof MockElement) {
       child.parent = this;
-    }
-    if (this.tagName === "SELECT" && child instanceof MockElement && child.selected) {
-      this.value = child.value;
     }
     return child;
   }
@@ -1119,7 +1115,12 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
           walk(full);
         } else if (entry.name.endsWith(".ts")) {
           const source = fs.readFileSync(full, "utf8");
-          if (/el\(\s*doc,\s*"select"/.test(source) || source.includes("form-select")) {
+          if (
+            /el\(\s*doc,\s*"select"/.test(source) ||
+            source.includes('createElement("select")') ||
+            source.includes("<select") ||
+            source.includes("form-select")
+          ) {
             offenders.push(path.relative(clientDir, full));
           }
         }
