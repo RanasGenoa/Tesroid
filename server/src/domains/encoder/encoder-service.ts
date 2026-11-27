@@ -2,13 +2,12 @@ import {
   type AlignedDimensions,
   AUDIO_FLAG,
   alignEncodeDimensions,
+  clampAlignedDimensions,
   type EncoderBackend,
   type EncoderHealthStatus,
   type EncoderMode,
-  LAYOUT_ALIGNMENT,
   nextStreamEpoch,
   resolveClientProfile,
-  STREAM_BOUNDS,
   STREAM_EPOCH_INITIAL,
   type StreamSettings,
   snapFpsToAllowed,
@@ -51,26 +50,6 @@ export interface EncoderServiceDeps {
   readonly explicitVaapiDevice: string | null;
   readonly explicitVaapiDriver: string | null;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
-}
-
-function clampCaptureToMaxSize(layout: AlignedDimensions, maxSize: number): AlignedDimensions {
-  const effectiveMaxSize = Math.min(
-    STREAM_BOUNDS.maxSize.max,
-    Math.max(STREAM_BOUNDS.maxSize.min, Math.round(maxSize)),
-  );
-  const maxHeight = Math.min(LAYOUT_ALIGNMENT.maxHeightCap, effectiveMaxSize);
-  if (layout.width <= effectiveMaxSize && layout.height <= maxHeight) {
-    return { width: layout.width, height: layout.height };
-  }
-
-  const ratio = Math.min(effectiveMaxSize / layout.width, maxHeight / layout.height);
-  const width =
-    Math.max(LAYOUT_ALIGNMENT.minWidth, Math.round(layout.width * ratio)) &
-    ~(LAYOUT_ALIGNMENT.widthMultiple - 1);
-  const height =
-    Math.max(LAYOUT_ALIGNMENT.minHeight, Math.round(layout.height * ratio)) &
-    ~(LAYOUT_ALIGNMENT.heightMultiple - 1);
-  return { width, height };
 }
 
 function initialBackendForMode(mode: EncoderMode): EncoderBackend {
@@ -399,7 +378,7 @@ export class EncoderService implements EncoderControlPort {
   } {
     const profile = resolveClientProfile(stream.clientProfile);
     const snappedFps = snapFpsToAllowed(stream.fps, profile.allowedFps);
-    const capture = clampCaptureToMaxSize(layout, stream.maxSize);
+    const capture = clampAlignedDimensions(layout, stream.maxSize);
     const encode = alignEncodeDimensions(capture, profile.scale);
     const effectiveSettings: StreamSettings = {
       ...stream,

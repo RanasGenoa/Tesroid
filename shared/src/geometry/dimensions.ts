@@ -121,6 +121,31 @@ export function alignLayoutDimensions(input: ViewportInput): AlignedDimensions {
   };
 }
 
+// Spec: docs/specs/05-encoder-gpu.md#2.3
+export function clampAlignedDimensions(
+  layout: AlignedDimensions,
+  maxSize: number,
+): AlignedDimensions {
+  const effectiveMaxSize = clamp(
+    Math.round(maxSize),
+    STREAM_BOUNDS.maxSize.min,
+    STREAM_BOUNDS.maxSize.max,
+  );
+  const maxHeight = Math.min(LAYOUT_ALIGNMENT.maxHeightCap, effectiveMaxSize);
+  if (layout.width <= effectiveMaxSize && layout.height <= maxHeight) {
+    return { width: layout.width, height: layout.height };
+  }
+
+  const ratio = Math.min(effectiveMaxSize / layout.width, maxHeight / layout.height);
+  const width =
+    Math.max(LAYOUT_ALIGNMENT.minWidth, Math.round(layout.width * ratio)) &
+    ~(LAYOUT_ALIGNMENT.widthMultiple - 1);
+  const height =
+    Math.max(LAYOUT_ALIGNMENT.minHeight, Math.round(layout.height * ratio)) &
+    ~(LAYOUT_ALIGNMENT.heightMultiple - 1);
+  return { width, height };
+}
+
 // Spec: docs/specs/05-encoder-gpu.md#2.4
 export function alignEncodeDimensions(layout: AlignedDimensions, scale: number): AlignedDimensions {
   if (!isPositiveFinite(layout.width) || !isPositiveFinite(layout.height)) {

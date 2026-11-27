@@ -75,6 +75,7 @@ function createBoundaryBrowserFake(): BrowserControlPort {
     toggleFullscreen: async () => {},
     setDisplayScale: async () => {},
     resizeViewport: async () => {},
+    getCurrentViewport: () => ({ width: 1_280, height: 720 }),
     injectTouch: async () => {},
     injectText: async () => {},
     injectKey: async () => {},

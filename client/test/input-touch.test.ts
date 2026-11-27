@@ -425,4 +425,50 @@ describe("client/input (Spec 03, 06)", () => {
     expect(frames).toHaveLength(2);
     reporter.detach();
   });
+
+  it("Spec 06 §2.2: normalizes touch coordinates in effective layout dimensions after maxSize clamp", () => {
+    // 実車相当: 自ビューポート 1710×941 dpr=2、stream.maxSize=1280 → 有効寸法 1280×704 で正規化される。
+    const engine = new TouchInputEngine();
+    engine.updateStreamDimensions(1_710, 941, { dpr: 2, maxSize: 1_280 });
+
+    const down = engine.handlePointer(
+      { type: "down", pointerId: 1, clientX: 855, clientY: 470, button: 0, atMs: 100 },
+      { left: 0, top: 0, width: 1_710, height: 941 },
+    );
+    expect(down.frames[0]).toMatchObject({
+      action: TOUCH_ACTION.DOWN,
+      x: 640,
+      screenWidth: 1_280,
+      screenHeight: 704,
+    });
+    expect(down.frames[0]?.y).toBeGreaterThanOrEqual(351);
+    expect(down.frames[0]?.y).toBeLessThanOrEqual(353);
+
+    // maxSize 変更時は次の resize 報告を待たず再正規化する（SETTINGS_UPDATED 経路と同じ呼び出し）。
+    engine.handlePointer(
+      { type: "up", pointerId: 1, clientX: 855, clientY: 470, button: 0, atMs: 300 },
+      { left: 0, top: 0, width: 1_710, height: 941 },
+    );
+    engine.updateStreamDimensions(1_710, 941, { dpr: 2, maxSize: 960 });
+    const downAfter = engine.handlePointer(
+      { type: "down", pointerId: 2, clientX: 855, clientY: 470, button: 0, atMs: 500 },
+      { left: 0, top: 0, width: 1_710, height: 941 },
+    );
+    expect(downAfter.frames[0]).toMatchObject({
+      action: TOUCH_ACTION.DOWN,
+      x: 480,
+      screenWidth: 960,
+      screenHeight: 528,
+    });
+  });
+
+  it("Spec 06 §2.2: raw viewport dimensions without opts keep legacy identity behavior", () => {
+    const engine = new TouchInputEngine();
+    engine.updateStreamDimensions(1_280, 720);
+    const down = engine.handlePointer(
+      { type: "down", pointerId: 1, clientX: 640, clientY: 360, button: 0, atMs: 100 },
+      { left: 0, top: 0, width: 1_280, height: 720 },
+    );
+    expect(down.frames[0]).toMatchObject({ x: 640, y: 360, screenWidth: 1_280 });
+  });
 });
