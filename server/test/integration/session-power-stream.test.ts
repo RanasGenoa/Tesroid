@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   type AlignedDimensions,
   AUDIO_FLAG,
+  AUTH_SECURITY_CONSTANTS,
   CHANNEL_ID,
   type ClientControlMessage,
   decodeMediaFrame,
@@ -433,6 +434,48 @@ describe("Integration: Session, Power & Stream Reset (Spec 02, 03, 10)", () => {
       expect(authOk.settings.isSetupCompleted).toBe(true);
       expect(harness.browserFake.getStartCount()).toBe(1);
       expect(harness.encoderFake.isDualRunning()).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("Spec 01 AC-08: ignores a second auth frame on an established connection without conflict, close, or attempt decrement", async () => {
+    const harness = await startHarness();
+    try {
+      const client = await harness.connectClient();
+      await client.nextControl("AUTH_REQUIRED");
+      client.sendBinary(encodeAuthFrame({ kind: "PRIMARY_PIN", pin: "1234" }));
+      const authOk = await client.nextControl("AUTH_OK");
+
+      client.sendBinary(encodeAuthFrame({ kind: "PRIMARY_PIN", pin: "0000" }));
+
+      const outcome = await Promise.race([
+        client.closed.then(() => "closed" as const),
+        new Promise<"open">((resolve) => {
+          globalThis.setTimeout(() => resolve("open"), 300);
+        }),
+      ]);
+      expect(outcome).toBe("open");
+
+      for (const msg of client.drainControlMessages()) {
+        expect(msg.type).not.toBe("SESSION_CONFLICT");
+        expect(msg.type).not.toBe("AUTH_FAILED");
+      }
+
+      const status = await harness.app.inject({ method: "GET", url: "/api/status" });
+      const statusBody = status.json() as {
+        remainingAttempts: number;
+        consecutiveFailures: number;
+      };
+      expect(statusBody.consecutiveFailures).toBe(0);
+      expect(statusBody.remainingAttempts).toBe(AUTH_SECURITY_CONSTANTS.maxConsecutiveFailures);
+
+      const settings = await harness.app.inject({
+        method: "GET",
+        url: "/api/settings",
+        headers: { authorization: `Bearer ${authOk.token}` },
+      });
+      expect(settings.statusCode).toBe(200);
     } finally {
       await harness.cleanup();
     }

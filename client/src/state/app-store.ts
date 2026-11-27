@@ -456,6 +456,8 @@ export class AppStore {
   private state: AppState = createInitialAppState();
   private disposed = false;
   private pendingAuth: AuthPayload | null = null;
+  // 接続試行（ソケット生成）単位で認証フレームの送信済みを追う。AUTH_REQUIRED は同一接続で複数届き得るため、応答は 1 回に限定する（仕様 01 AC-08）
+  private authFrameSentOnCurrentConnection = false;
   private lastPongAtMs: number | null = null;
   private lastVideoFrameAtMs: number | null = null;
   private lastResumeClickedAtMs = -RESUME_DEBOUNCE_MS;
@@ -1038,11 +1040,13 @@ export class AppStore {
         if (this.disposed) {
           return;
         }
+        this.authFrameSentOnCurrentConnection = false;
         this.dispatch({ type: "SET_WS_STATUS", wsStatus: "CONNECTED" });
         this.dispatch({ type: "SET_LOCAL_BUFFER_SURVIVAL", active: false });
         const authPayload = this.resolveReconnectAuthPayload();
         if (authPayload !== null) {
           this.deps.transport.sendBinary(encodeAuthFrame(authPayload));
+          this.authFrameSentOnCurrentConnection = true;
         }
       },
       onBinaryMessage: (data) => {
@@ -1109,9 +1113,13 @@ export class AppStore {
 
     switch (message.type) {
       case "AUTH_REQUIRED": {
+        if (this.authFrameSentOnCurrentConnection) {
+          return;
+        }
         const authPayload = this.resolveReconnectAuthPayload();
         if (authPayload !== null) {
           this.deps.transport.sendBinary(encodeAuthFrame(authPayload));
+          this.authFrameSentOnCurrentConnection = true;
           return;
         }
         this.dispatch({

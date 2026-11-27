@@ -577,9 +577,12 @@ export class ServerCoordinator implements StreamingLifecyclePort {
     connectionId: SessionConnectionId,
     payload: Uint8Array,
   ): Promise<void> {
-    const transport =
-      this.pendingTransports.get(connectionId) ??
-      this.deps.session.getSession(connectionId)?.transport;
+    // セッション確立済みの接続へ届く 2 枚目以降の認証フレームは無視する（仕様 01 AC-08）
+    if (this.deps.session.getSession(connectionId) !== null) {
+      return;
+    }
+
+    const transport = this.pendingTransports.get(connectionId);
     if (transport === undefined) {
       return;
     }
