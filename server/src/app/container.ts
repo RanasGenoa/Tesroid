@@ -51,6 +51,10 @@ import { ServerCoordinator } from "./coordinator.js";
 const DEFAULT_BROWSER_VIEWPORT: AlignedDimensions = { width: 1280, height: 720 };
 const DEFAULT_CDP_PORT = 9222;
 
+// 仕様 06 §2.1: PulseAudio ネイティブソケットは /tmp/pulse-socket に固定。
+// イメージへ焼き込む /etc/pulse/tesroid.pa の socket= と必ず一致させること（pulse-socket-consistency テストで機械保証）。
+export const PULSE_SOCKET_PATH = "/tmp/pulse-socket";
+
 export interface AppContainerOverrides {
   readonly clock?: Clock;
   readonly jsonStore?: AtomicJsonStore;
@@ -136,7 +140,7 @@ export function createAppContainer(
     processExit,
   });
 
-  const pulseSocketPath = path.join(env.dataDir, "pulse-native");
+  const pulseSocketPath = PULSE_SOCKET_PATH;
   const cdp = overrides?.cdp ?? createDisconnectedCdpFallback();
   const browser =
     overrides?.browser ??

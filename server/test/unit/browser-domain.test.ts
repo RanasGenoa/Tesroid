@@ -354,7 +354,6 @@ describe("server/domains/browser (Spec 06)", () => {
       "--exit-idle-time=-1",
       "--disallow-exit",
       "--disable-shm",
-      "--flat-volumes=no",
       "-n",
       "-F",
       "/etc/pulse/tesroid.pa",

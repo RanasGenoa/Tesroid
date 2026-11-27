@@ -156,7 +156,7 @@ export function buildAudioFfmpegArgs(input: AudioEncodeArgsInput): readonly stri
     "-f",
     "pulse",
     "-i",
-    "default.monitor",
+    "default",
     "-ac",
     "2",
     "-ar",

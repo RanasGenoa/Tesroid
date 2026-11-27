@@ -140,6 +140,17 @@ async function createEncoderHarness(options?: {
 }
 
 describe("server/domains/encoder (Spec 05)", () => {
+  it("AC-04: 音声キャプチャ入力デバイス指定は -i default であり default.monitor を含まない", () => {
+    const args = buildAudioFfmpegArgs({
+      audioBitrateBps: 128_000,
+      pulseSocketPath: "/tmp/pulse-socket",
+    });
+    const inputIndex = args.indexOf("-i");
+    expect(args[inputIndex + 1]).toBe("default");
+    expect(args).not.toContain("default.monitor");
+    expect(args).not.toContain("virtual_sink.monitor");
+  });
+
   it("AC-01: prioritizes NVENC -> AMD radeonsi -> Intel iHD/i965 -> WSL2 d3d12 -> libx264 in auto mode and honors fixed ENCODER_MODE=nvenc/vaapi without fallback to software", async () => {
     expect(
       parseVainfoSupportsH264Encode(
