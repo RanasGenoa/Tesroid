@@ -219,12 +219,29 @@ class MockElement {
     return this.attributes.get(name) ?? null;
   }
 
+  parent: MockElement | null = null;
+
   appendChild(child: MockElement | MockTextNode): MockElement | MockTextNode {
     this.children.push(child);
+    if (child instanceof MockElement) {
+      child.parent = this;
+    }
     if (this.tagName === "SELECT" && child instanceof MockElement && child.selected) {
       this.value = child.value;
     }
     return child;
+  }
+
+  remove(): void {
+    const parent = this.parent;
+    if (parent === null) {
+      return;
+    }
+    const index = parent.children.indexOf(this);
+    if (index >= 0) {
+      parent.children.splice(index, 1);
+    }
+    this.parent = null;
   }
 
   replaceChildren(...nodes: (MockElement | MockTextNode)[]): void {
@@ -307,6 +324,7 @@ function matchesSimpleSelector(el: MockElement, selector: string): boolean {
 
 class MockDocument {
   activeElement: MockElement | null = null;
+  readonly body: MockElement = new MockElement("body", this);
 
   createElement(tagName: string): MockElement {
     return new MockElement(tagName, this);
@@ -933,7 +951,7 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
     h.dispose();
   });
 
-  it("Spec 07 AC-04: renders 60..130% (10% steps) displayScale selector, falls back invalid/out-of-range values to 100% without dynamic option, and persists displayScale: 60", async () => {
+  it("Spec 07 AC-04: display scale offers fixed 10% steps 60..130 via the touch picker, falls back invalid/out-of-range saved values to 100% without dynamic options, and persists displayScale: 60 immediately on option tap", async () => {
     const h = createHarness();
     await h.store.bootstrap();
     await h.store.loginPrimaryPin("1234");
@@ -946,10 +964,17 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
     });
 
     h.store.openModal({ kind: "settings", activeTab: "general" });
-    const scaleSelect = h.settingsModalRoot.querySelector('[data-testid="settings-display-scale"]');
-    expect(scaleSelect).not.toBeNull();
-    const options = scaleSelect?.querySelectorAll("option") ?? [];
-    expect(options.map((o) => o.value)).toEqual([
+    const control = h.settingsModalRoot.querySelector('[data-testid="settings-display-scale"]');
+    expect(control).not.toBeNull();
+    // Out-of-range 150 falls back to the default label without a dynamic option
+    expect(control?.textContent).toBe("100% (既定)");
+
+    control?.click();
+    const rows =
+      h.doc.body
+        .querySelector('[data-testid="picker-settings-display-scale"]')
+        ?.querySelectorAll(".picker-option") ?? [];
+    expect(rows.map((r) => r.getAttribute("data-option-value"))).toEqual([
       "60",
       "70",
       "80",
@@ -959,17 +984,10 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
       "120",
       "130",
     ]);
-    // Out-of-range 150 falls back to 100 without dynamic option
-    expect(scaleSelect?.value).toBe("100");
-    expect(options.some((o) => o.value === "150")).toBe(false);
+    expect(rows.some((r) => r.getAttribute("data-option-value") === "150")).toBe(false);
 
-    // Select 60% and save -> sends displayScale: 60
-    if (scaleSelect) {
-      scaleSelect.value = "60";
-      scaleSelect.dispatchEvent(new MockEvent("change"));
-    }
-    h.settingsModalRoot.querySelector('[data-action="settings-general-save"]')?.click();
-    await Promise.resolve();
+    rows.find((r) => r.getAttribute("data-option-value") === "60")?.click();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
     expect(h.rest.updatePatches.at(-1)?.stream?.displayScale).toBe(60);
     expect(h.store.getState().settings?.stream.displayScale).toBe(60);
 
@@ -1090,5 +1108,141 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
     expect(rear.overlayRoot.querySelector('[data-testid="overlay-rear-standby"]')).toBeNull();
 
     rear.dispose();
+  });
+
+  it("Spec 07 AC-06: client source and index.html contain zero native <select> elements (all selection flows use the in-app touch picker)", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name.endsWith(".ts")) {
+          const source = fs.readFileSync(full, "utf8");
+          if (/el\(\s*doc,\s*"select"/.test(source) || source.includes("form-select")) {
+            offenders.push(path.relative(clientDir, full));
+          }
+        }
+      }
+    };
+    walk(path.join(clientDir, "src"));
+    const indexHtml = fs.readFileSync(path.join(clientDir, "index.html"), "utf8");
+    expect(indexHtml.includes("<select")).toBe(false);
+    expect(offenders).toEqual([]);
+  });
+
+  it("Spec 07 AC-06: tapping the display scale control opens an in-app picker with the fixed steps and no native option elements", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    h.settingsModalRoot.querySelector('[data-testid="settings-display-scale"]')?.click();
+
+    const picker = h.doc.body.querySelector('[data-testid="picker-settings-display-scale"]');
+    expect(picker).not.toBeNull();
+    const rows = picker?.querySelectorAll(".picker-option") ?? [];
+    expect(rows.map((r) => r.getAttribute("data-option-value"))).toEqual([
+      "60",
+      "70",
+      "80",
+      "90",
+      "100",
+      "110",
+      "120",
+      "130",
+    ]);
+    expect(picker?.querySelectorAll("option")).toHaveLength(0);
+
+    h.dispose();
+  });
+
+  it("Spec 07 AC-06: tapping a picker option confirms immediately, saves via PUT /api/settings for that field only, and closes the picker", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    h.settingsModalRoot.querySelector('[data-testid="settings-target-buffer"]')?.click();
+    const picker = h.doc.body.querySelector('[data-testid="picker-settings-target-buffer"]');
+    expect(picker).not.toBeNull();
+    const rows = picker?.querySelectorAll(".picker-option") ?? [];
+    expect(rows.map((r) => r.getAttribute("data-option-value"))).toEqual([
+      "0",
+      "2000",
+      "5000",
+      "10000",
+      "20000",
+      "30000",
+    ]);
+
+    const rowFor = (value: string): MockElement | undefined =>
+      rows.find((r) => r.getAttribute("data-option-value") === value);
+    rowFor("5000")?.click();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+    expect(h.rest.updatePatches.at(-1)?.stream?.targetBufferMs).toBe(5000);
+    expect(h.store.getState().settings?.stream.targetBufferMs).toBe(5000);
+    expect(h.doc.body.querySelector('[data-testid="picker-settings-target-buffer"]')).toBeNull();
+
+    h.dispose();
+  });
+
+  it("Spec 07 AC-06: tapping the picker background closes only the picker and changes no value", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    const patchesBefore = h.rest.updatePatches.length;
+    h.settingsModalRoot.querySelector('[data-testid="settings-audio-bitrate"]')?.click();
+    const backdrop = h.doc.body.querySelector('[data-testid="picker-settings-audio-bitrate"]');
+    expect(backdrop).not.toBeNull();
+
+    backdrop?.dispatchEvent(new MockEvent("click"));
+
+    expect(h.rest.updatePatches.length).toBe(patchesBefore);
+    expect(h.store.getState().settings?.stream.audioBitrate).toBe(
+      DEFAULT_APP_SETTINGS.stream.audioBitrate,
+    );
+    expect(h.doc.body.querySelector('[data-testid="picker-settings-audio-bitrate"]')).toBeNull();
+
+    h.dispose();
+  });
+
+  it("Spec 07 AC-06: preset and client profile controls open pickers with backend-compatible fixed choices", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    h.settingsModalRoot.querySelector('[data-testid="settings-video-preset"]')?.click();
+    const presetRows =
+      h.doc.body
+        .querySelector('[data-testid="picker-settings-video-preset"]')
+        ?.querySelectorAll(".picker-option") ?? [];
+    expect(presetRows.map((r) => r.getAttribute("data-option-value"))).toEqual([
+      "high",
+      "balanced",
+      "low_power",
+      "custom",
+    ]);
+
+    h.settingsModalRoot.querySelector('[data-testid="settings-client-profile"]')?.click();
+    const profileRows =
+      h.doc.body
+        .querySelector('[data-testid="picker-settings-client-profile"]')
+        ?.querySelectorAll(".picker-option") ?? [];
+    expect(profileRows.map((r) => r.getAttribute("data-option-value"))).toEqual([
+      "standard",
+      "lightweight",
+      "custom",
+    ]);
+
+    h.dispose();
   });
 });

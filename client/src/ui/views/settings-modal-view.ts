@@ -24,6 +24,12 @@ import {
 import type { AppState, AppStore, SettingsTabId } from "../../state/index.js";
 import { el, getDoc, touchButton } from "../dom.js";
 import { escapeHtml } from "../escape.js";
+import {
+  openTouchPicker,
+  pickerControl,
+  type TouchPickerHandle,
+  type TouchPickerOption,
+} from "../touch-picker.js";
 
 export interface SettingsPollingTimerHandle {
   cancel(): void;
@@ -57,6 +63,19 @@ const PROFILE_LABELS: Readonly<Record<ClientProfileName, string>> = {
   lightweight: "軽量 (lightweight)",
   custom: "カスタム (custom)",
 };
+
+function displayScaleLabel(scale: number): string {
+  return scale === 100 ? "100% (既定)" : `${scale}%`;
+}
+
+function targetBufferLabel(ms: number): string {
+  return ms === 10_000 ? "10,000 ms (既定)" : `${ms.toLocaleString("en-US")} ms`;
+}
+
+function audioBitrateLabel(bps: number): string {
+  const kbps = Math.round(bps / 1_000);
+  return bps === 128_000 ? `${kbps} kbps (既定)` : `${kbps} kbps`;
+}
 
 function defaultPollingClock(): SettingsPollingClock {
   return {
@@ -151,6 +170,7 @@ export class SettingsModalView {
   private generalStatusMessage: string | null = null;
   private resetPresetsArmedUntilMs: number | null = null;
   private clearLogsArmedUntilMs: number | null = null;
+  private activePicker: TouchPickerHandle | null = null;
 
   // Spec: docs/specs/07-ui-hud-settings.md#2.4
   constructor(store: AppStore, options?: SettingsModalViewOptions) {
@@ -167,6 +187,8 @@ export class SettingsModalView {
   // Spec: docs/specs/07-ui-hud-settings.md#2.4
   unmount(): void {
     this.stopPolling();
+    this.activePicker?.dismiss();
+    this.activePicker = null;
     if (this.container !== null) {
       this.container.replaceChildren();
     }
@@ -660,81 +682,95 @@ export class SettingsModalView {
     );
 
     // Display Scale (60..130%, 8 options, fallback 100%, no dynamic option)
-    const scaleSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "settings-display-scale" },
-    });
-    for (const scale of DISPLAY_SCALE_UI_OPTIONS) {
-      const opt = el(doc, "option", {
-        text: scale === 100 ? "100% (既定)" : `${scale}%`,
-        attrs: { value: String(scale) },
-      });
-      if (scale === draft.displayScale) {
-        opt.selected = true;
-      }
-      scaleSelect.appendChild(opt);
-    }
-    scaleSelect.value = String(draft.displayScale);
-    scaleSelect.addEventListener("change", () => {
-      draft.displayScale = normalizeDisplayScaleForUi(scaleSelect.value);
-    });
+    const scaleControl = pickerControl(
+      doc,
+      "settings-display-scale",
+      displayScaleLabel(draft.displayScale),
+      () => {
+        void this.openOptionPicker(
+          doc,
+          "settings-display-scale",
+          "ブラウザ表示拡大率",
+          DISPLAY_SCALE_UI_OPTIONS.map((scale) => ({
+            label: displayScaleLabel(scale),
+            value: String(scale),
+          })),
+          String(draft.displayScale),
+        ).then((value) => {
+          if (value === null) {
+            return;
+          }
+          draft.displayScale = Number(value);
+          void this.store.saveSettings({ stream: { displayScale: Number(value) } });
+        });
+      },
+    );
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
         el(doc, "label", { text: "ブラウザ表示拡大率" }),
-        scaleSelect,
+        scaleControl,
       ]),
     );
 
     // Target Buffer Depth
-    const bufferSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "settings-target-buffer" },
-    });
-    for (const ms of TARGET_BUFFER_MS_OPTIONS) {
-      const opt = el(doc, "option", {
-        text: ms === 10_000 ? "10,000 ms (既定)" : `${ms.toLocaleString("en-US")} ms`,
-        attrs: { value: String(ms) },
-      });
-      if (ms === draft.targetBufferMs) {
-        opt.selected = true;
-      }
-      bufferSelect.appendChild(opt);
-    }
-    bufferSelect.value = String(draft.targetBufferMs);
-    bufferSelect.addEventListener("change", () => {
-      draft.targetBufferMs = Number(bufferSelect.value);
-    });
+    const bufferControl = pickerControl(
+      doc,
+      "settings-target-buffer",
+      targetBufferLabel(draft.targetBufferMs),
+      () => {
+        void this.openOptionPicker(
+          doc,
+          "settings-target-buffer",
+          "先行バッファ深度",
+          TARGET_BUFFER_MS_OPTIONS.map((ms) => ({
+            label: targetBufferLabel(ms),
+            value: String(ms),
+          })),
+          String(draft.targetBufferMs),
+        ).then((value) => {
+          if (value === null) {
+            return;
+          }
+          draft.targetBufferMs = Number(value);
+          void this.store.saveSettings({ stream: { targetBufferMs: Number(value) } });
+        });
+      },
+    );
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
         el(doc, "label", { text: "先行バッファ深度" }),
-        bufferSelect,
+        bufferControl,
       ]),
     );
 
     // Audio Bitrate
-    const audioSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "settings-audio-bitrate" },
-    });
-    for (const bps of AUDIO_BITRATE_OPTIONS) {
-      const kbps = Math.round(bps / 1_000);
-      const opt = el(doc, "option", {
-        text: bps === 128_000 ? `${kbps} kbps (既定)` : `${kbps} kbps`,
-        attrs: { value: String(bps) },
-      });
-      if (bps === draft.audioBitrate) {
-        opt.selected = true;
-      }
-      audioSelect.appendChild(opt);
-    }
-    audioSelect.value = String(draft.audioBitrate);
-    audioSelect.addEventListener("change", () => {
-      draft.audioBitrate = Number(audioSelect.value);
-    });
+    const audioControl = pickerControl(
+      doc,
+      "settings-audio-bitrate",
+      audioBitrateLabel(draft.audioBitrate),
+      () => {
+        void this.openOptionPicker(
+          doc,
+          "settings-audio-bitrate",
+          "音声ビットレート",
+          AUDIO_BITRATE_OPTIONS.map((bps) => ({
+            label: audioBitrateLabel(bps),
+            value: String(bps),
+          })),
+          String(draft.audioBitrate),
+        ).then((value) => {
+          if (value === null) {
+            return;
+          }
+          draft.audioBitrate = Number(value);
+          void this.store.saveSettings({ stream: { audioBitrate: Number(value) } });
+        });
+      },
+    );
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
         el(doc, "label", { text: "音声ビットレート" }),
-        audioSelect,
+        audioControl,
       ]),
     );
 
@@ -768,28 +804,37 @@ export class SettingsModalView {
 
     const availablePresets: readonly VideoPerformancePreset[] =
       backend === "software" ? CPU_PERFORMANCE_PRESETS : GPU_PERFORMANCE_PRESETS;
-    const presetSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "settings-video-preset" },
-    });
-    for (const p of availablePresets) {
-      const opt = el(doc, "option", { text: PRESET_LABELS[p], attrs: { value: p } });
-      if (p === draft.preset) {
-        opt.selected = true;
-      }
-      presetSelect.appendChild(opt);
-    }
-    presetSelect.value = isPresetCompatibleWithBackend(draft.preset, backend)
+    const currentPresetValue: VideoPerformancePreset = isPresetCompatibleWithBackend(
+      draft.preset,
+      backend,
+    )
       ? draft.preset
       : "custom";
-    presetSelect.addEventListener("change", () => {
-      draft.preset = presetSelect.value as VideoPerformancePreset;
-      this.render(this.store.getState());
-    });
+    const presetControl = pickerControl(
+      doc,
+      "settings-video-preset",
+      PRESET_LABELS[currentPresetValue],
+      () => {
+        void this.openOptionPicker(
+          doc,
+          "settings-video-preset",
+          "サーバー映像プリセット",
+          availablePresets.map((p) => ({ label: PRESET_LABELS[p], value: p })),
+          currentPresetValue,
+        ).then((value) => {
+          if (value === null) {
+            return;
+          }
+          draft.preset = value as VideoPerformancePreset;
+          void this.store.saveSettings({ stream: { preset: value as VideoPerformancePreset } });
+          this.render(this.store.getState());
+        });
+      },
+    );
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
         el(doc, "label", { text: "サーバー映像プリセット" }),
-        presetSelect,
+        presetControl,
       ]),
     );
 
@@ -804,7 +849,7 @@ export class SettingsModalView {
         draft.maxSize = parsed;
       }
       draft.preset = "custom";
-      presetSelect.value = "custom";
+      presetControl.textContent = PRESET_LABELS.custom;
     });
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
@@ -827,22 +872,29 @@ export class SettingsModalView {
     }
 
     // Client Load Profile
-    const profileSelect = el(doc, "select", {
-      className: "form-select",
-      attrs: { "data-testid": "settings-client-profile" },
-    });
-    for (const name of CLIENT_PROFILE_NAMES) {
-      const opt = el(doc, "option", { text: PROFILE_LABELS[name], attrs: { value: name } });
-      if (name === draft.clientProfileActive) {
-        opt.selected = true;
-      }
-      profileSelect.appendChild(opt);
-    }
-    profileSelect.value = draft.clientProfileActive;
-    profileSelect.addEventListener("change", () => {
-      draft.clientProfileActive = profileSelect.value as ClientProfileName;
-      this.render(this.store.getState());
-    });
+    const profileControl = pickerControl(
+      doc,
+      "settings-client-profile",
+      PROFILE_LABELS[draft.clientProfileActive],
+      () => {
+        void this.openOptionPicker(
+          doc,
+          "settings-client-profile",
+          "クライアント負荷プロファイル",
+          CLIENT_PROFILE_NAMES.map((name) => ({ label: PROFILE_LABELS[name], value: name })),
+          draft.clientProfileActive,
+        ).then((value) => {
+          if (value === null) {
+            return;
+          }
+          draft.clientProfileActive = value as ClientProfileName;
+          void this.store.saveSettings({
+            stream: { clientProfile: { active: value as ClientProfileName } },
+          });
+          this.render(this.store.getState());
+        });
+      },
+    );
 
     const resolvedProfile = resolveClientProfile({
       active: draft.clientProfileActive,
@@ -860,7 +912,7 @@ export class SettingsModalView {
     root.appendChild(
       el(doc, "div", { className: "form-field" }, [
         el(doc, "label", { text: "クライアント負荷プロファイル" }),
-        profileSelect,
+        profileControl,
         el(doc, "span", {
           className: "metric-label",
           text: previewText,
@@ -1183,5 +1235,26 @@ export class SettingsModalView {
     this.generalStatusMessage = null;
     this.resetPresetsArmedUntilMs = null;
     this.clearLogsArmedUntilMs = null;
+    this.activePicker?.dismiss();
+    this.activePicker = null;
+  }
+
+  // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-06) — 開いているピッカーは常に単一。
+  private openOptionPicker(
+    doc: Document,
+    testid: string,
+    title: string,
+    options: readonly TouchPickerOption[],
+    selectedValue: string,
+  ): Promise<string | null> {
+    this.activePicker?.dismiss();
+    const handle = openTouchPicker(doc, { title, testid, options, selectedValue });
+    this.activePicker = handle;
+    void handle.closed.then(() => {
+      if (this.activePicker === handle) {
+        this.activePicker = null;
+      }
+    });
+    return handle.closed;
   }
 }
