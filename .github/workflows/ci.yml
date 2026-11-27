@@ -2,9 +2,12 @@ name: CI (Test & Build)
 
 on:
   push:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'restart/**', 'release/**' ]
   pull_request:
-    branches: [ main, 'release/**' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Security boundary: read-only GITHUB_TOKEN with pull_request sandbox only and no secrets.
 permissions:
