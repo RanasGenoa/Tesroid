@@ -55,7 +55,7 @@
 - **不変条件**: LIVE 配信中のソケット輻輳では絶対に追っかけ（`CATCHUP`）モードへ遷移させず、ヒステリシスによる GOP スキップのみへ一元化する。
 
 ### 2.4 統合バッファ・追っかけ（CATCHUP）・生成一時停止（Buffer-Hold）制御
-ユーザー体験（通信断や狭帯域でも途切れず、復帰後は滑らかに追いつき、過大な滞留時にはサーバー生成を一時停止して追従させる）として、リングバッファ・CATCHUP・リンク認識制御・生成一時停止を単一のシームレスなモデルとして統合する（電源・タイマー排他・スリープ遷移は [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) へ集約）。
+ユーザー体験（通信断や狭帯域でも途切れず、復帰後は滑らかに追いつき、過大な滞留時にはサーバー生成を一時停止して追従させる）として、リングバッファ・CATCHUP・リンク認識制御・生成一時停止を単一のシームレスなモデルとして統合する（電源・タイマー排他・スリープ遷移は [10-power-lifecycle.md](10-power-lifecycle.md) へ集約）。
 
 - **サーバー側リングバッファ（60 秒 / 48 MiB）**:
   - 保持時間既定 **60 秒**（`PLAYBACK_BUFFER_SECONDS`）・メモリ上限既定 **48 MiB**（`PLAYBACK_BUFFER_MAX_BYTES`）。
@@ -85,7 +85,7 @@
   - **生成停止と送出継続の分離**: `BUFFER_HOLD` はサーバー側の **生成停止** のみを意味し、再接続したクライアントへの既生成バッファ送出（`CATCHUP` 排水）は抑止しない（送出抑止セレクタ `shouldSuppressMediaSend` は `STANDBY` のみ `true`、生成停止セレクタ `shouldPauseGeneration` は `STANDBY` と `BUFFER_HOLD` で `true`）。
   - **再開条件**: クライアント再接続後の送出と再生によりプライマリ確認済み PTS が進み、未消費占有率が **`<= 10%`** まで排水されたら `ACTIVE`（生成再開）へ自動復帰し、新 `streamEpoch` でライブ配信を再開する。
   - **例外的な即復帰**: `USER_INTERACTION`、`STREAM_RESET`、または別プライマリによるセッション奪取（`4009` / ライブ端転落）時は未消費バッファを破棄して即 `ACTIVE` へ復帰する。
-  - Hold 期限タイマー・自動スリープ排他・`autoSleepMinutes = 0` 時の期限再武装・手動停止変換はすべて [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) で一元管理する。
+  - Hold 期限タイマー・自動スリープ排他・`autoSleepMinutes = 0` 時の期限再武装・手動停止変換はすべて [10-power-lifecycle.md](10-power-lifecycle.md) で一元管理する。
 
 ### 2.5 ライブ同期・配信リセット（`POST` への完全一本化）
 - **単一リセット API（REST `POST` 統一）**:

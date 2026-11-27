@@ -19,7 +19,7 @@
 - **左側コントロール群（状態表示・同期・品質切替）**:
   1. **停止ボタン**: 省電力＆リソース制御モーダルを開く（即時停止はしない）。
   2. **通信状態 & RTT バッジ**: 4 段階シグナルメーター＋状態ドット＋数値表示（切断 / 一時切断 / 1,200 ms 超未着で瞬断警告 / 400 ms 超未着または RTT 90 ms 以上で遅延警告 / 正常。有効 PONG 5 秒未着で「接続中」へ鮮度リセット）。
-  3. **LIVE / バッファ状態ボタン**: 優先順に従い `HOLD L:x.xs S:x.xs` ＞ `DIRECT LIVE` ＞ `WAIT L:x.xs S:x.xs` ＞ `BUF L:x.xs S:x.xs`（ローカル `>= 800 ms` またはサーバー `>= 600 ms`）＞ `LIVE (+Nms)` ＞ `LIVE` を表示する。タップで単一の配信リセット API（`POST /api/stream/reset`、[03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md)）を実行し、常に映像・音声双方をリセットしてライブ同期する（**1,000 ms** 連打ガード付き、後席待機中は無効）。
+  3. **LIVE / バッファ状態ボタン**: 優先順に従い `HOLD L:x.xs S:x.xs` ＞ `DIRECT LIVE` ＞ `WAIT L:x.xs S:x.xs` ＞ `BUF L:x.xs S:x.xs`（ローカル `>= 800 ms` またはサーバー `>= 600 ms`）＞ `LIVE (+Nms)` ＞ `LIVE` を表示する。タップで単一の配信リセット API（`POST /api/stream/reset`、[03-streaming-transport.md](03-streaming-transport.md)）を実行し、常に映像・音声双方をリセットしてライブ同期する（**1,000 ms** 連打ガード付き、後席待機中は無効）。
   4. **実測描画 FPS バッジ**: 1,500 ms 以上描画更新が無ければ「静止中」、それ以外は `<fps> FPS` を表示する（目標 FPS の 80% 以上で正常色、未満で警告色）。
   5. **FPS クイックトグル**: サーバーから解決されたクライアント負荷プロファイル許可値（例: `[24, 30, 60]` または `[24, 30]`）を循環切替し、300 ms デバウンスで `PUT /api/settings` へ保存する。
   6. **ビットレートクイックトグル**: `0.25M / 0.5M / 0.75M / 1.0M / 1.5M / 2.0M` の 6 段階（`250k〜2,000k bps`、システム上限 `2.0 Mbps` と一致）を循環切替し、300 ms デバウンスで保存する（選択肢外の値が設定されている場合は次タップで `1.5M` へ進む）。
@@ -30,12 +30,12 @@
   10. **お気に入りドロワー**: 仮想キーボードドロワーと相互排他で開閉。「＋ 現在のページを追加」「編集 / 管理」「閉じる」および登録済みお気に入り一覧（ホームバッジ付き、1 タップで遷移し自動でドロワーを閉じる）を表示する。
   11. **YouTube 専用検索バー**: 現在表示中の URL ホストが厳密に `youtube.com` / `*.youtube.com` / `youtu.be`（`http:` / `https:`）である場合のみ表示し、それ以外や偽装ドメインでは誤操作防止のため非表示とする。`http(s)://` URL 入力時は直接遷移、検索語入力時は YouTube 検索結果 URL へ遷移する（フォーカス時幅 `120px -> 160px` 拡張）。
   12. **設定ボタン**: 設定・管理コンソールモーダルを開く。未認証時はネイティブ `window.prompt()` を使わず **アプリ内ソフトウェア PIN テンキーモーダル** で再認証する。
-- **ビューポート状態オーバーレイ**: 起動中・スリープ中（オーバーレイまたは復帰ボタンのタップ [800 ms デバウンス] で [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) の復帰 API を呼出、および切断ボタン）・復帰中・切断中・後席待機中（切断ボタンのみ、タップ復帰無効）を全画面表示する。
+- **ビューポート状態オーバーレイ**: 起動中・スリープ中（オーバーレイまたは復帰ボタンのタップ [800 ms デバウンス] で [10-power-lifecycle.md](10-power-lifecycle.md) の復帰 API を呼出、および切断ボタン）・復帰中・切断中・後席待機中（切断ボタンのみ、タップ復帰無効）を全画面表示する。
 
 ### 2.2 省電力 & リソース制御モーダル
 - 停止ボタンから開くモーダルに以下の 3 アクションを集約する（一時停止・再開・再エンコードの個別ボタンは置かない。閉じるボタンまたは背景タップで閉じる）:
-  1. **ワンタップ停止**: [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) の停止 API を呼び出し、クライアントデコーダをリセットしてスリープオーバーレイを表示する（後席待機中は無効）。
-  2. **ブラウザ＆配信再起動**: ネイティブ `window.confirm()` を廃止し、**アプリ内タッチ確認モーダル（または 2 タップ確認）** を経て [10-power-lifecycle.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/10-power-lifecycle.md) のブラウザ再起動 API を実行する（後席待機中は無効）。
+  1. **ワンタップ停止**: [10-power-lifecycle.md](10-power-lifecycle.md) の停止 API を呼び出し、クライアントデコーダをリセットしてスリープオーバーレイを表示する（後席待機中は無効）。
+  2. **ブラウザ＆配信再起動**: ネイティブ `window.confirm()` を廃止し、**アプリ内タッチ確認モーダル（または 2 タップ確認）** を経て [10-power-lifecycle.md](10-power-lifecycle.md) のブラウザ再起動 API を実行する（後席待機中は無効）。
   3. **セッション切断**: 明示切断通知を送信し、セッションストレージを消去して WebSocket を正常終了（コード `1000`）し、ページをリロードする（常時有効）。
 
 ### 2.3 お気に入り & ホーム管理
@@ -71,7 +71,7 @@
 - **小窓表示主対象（Primary Target: Small Window）**:
   - 実車利用ではナビ等と並べる小窓表示が中心となるため、UI 視認性・操作性およびエンコード解像度は小窓（代表基準 `773×553 CSS / DPR 1.53`）を主対象として最適化する（全画面表示時にも破綻なく追従させる）。
 - **DPR 値の非ハードコード**:
-  - 将来の車載ファームウェア更新で DPR が変化し得るため、`1.53` などの特定 DPR 値を UI・CSS・計算ロジックへ固定値として直書きしてはならない。実行時の物理ピクセル（`devicePixelRatio` ベース）およびサーバー側リサイズ計算（[03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md) §2.1 / [05-encoder-gpu.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/05-encoder-gpu.md) §2.3）で動的に吸収する。
+  - 将来の車載ファームウェア更新で DPR が変化し得るため、`1.53` などの特定 DPR 値を UI・CSS・計算ロジックへ固定値として直書きしてはならない。実行時の物理ピクセル（`devicePixelRatio` ベース）およびサーバー側リサイズ計算（[03-streaming-transport.md](03-streaming-transport.md) §2.1 / [05-encoder-gpu.md](05-encoder-gpu.md) §2.3）で動的に吸収する。
 - **完全タッチオンリー環境厳守**:
   - 車載ディスプレイは完全タッチ操作のため、`Escape` キーでのモーダル閉じ・キーボードショートカット・`keydown` 依存・`hover` のみで露出する UI・右クリックメニュー・マウスポインタ前提ドラッグを実装してはならない。
   - ネイティブダイアログ（`window.prompt()`, `window.confirm()`）は完全に禁止し、アプリ内モーダルへ統一する。

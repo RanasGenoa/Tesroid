@@ -1,0 +1,31 @@
+services:
+  tesroid:
+    image: ghcr.io/ranasgenoa/tesroid:latest
+    platform: linux/amd64
+    init: true
+    shm_size: "1g"
+    restart: unless-stopped
+    ports:
+      - "${TESROID_PORT:-9001}:${PORT:-8080}"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - tesroid-data:/data
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+    environment:
+      PORT: "${PORT:-8080}"
+      DATA_DIR: "${DATA_DIR:-/data}"
+      DISPLAY: "${DISPLAY:-:99}"
+      LOCALE: "${LOCALE:-ja-JP}"
+      TZ: "${TZ:-Asia/Tokyo}"
+      ENCODER_MODE: "${ENCODER_MODE:-auto}"
+      VAAPI_DEVICE: "${VAAPI_DEVICE:-}"
+      LIBVA_DRIVER_NAME: "${LIBVA_DRIVER_NAME:-d3d12}"
+      LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
+      TELEMETRY_LOG_DIR: "${TELEMETRY_LOG_DIR:-}"
+      BUFFER_HOLD_EXPIRE_MINUTES: "${BUFFER_HOLD_EXPIRE_MINUTES:-10}"
+      TINI_KILL_PROCESS_GROUP: "1"
+
+volumes:
+  tesroid-data:

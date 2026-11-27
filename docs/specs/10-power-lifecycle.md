@@ -28,15 +28,15 @@
 - **`POST /api/power/sleep`**（および対応 WS コマンド `PAUSE_BROWSER`）: 状態に関わらず共通のスリープ遷移を実行する。`BUFFER_HOLD` 中に呼ばれた場合も再開チャーンを経由せず直接 `SLEEP_PAUSED` へ変換する。
 - **`POST /api/power/resume`**（および対応 WS コマンド `RESUME_BROWSER`）: `SLEEP_PAUSED` からブラウザを復帰（`SIGCONT`）させ、**映像・音声双方のエンコーダが確実に稼働した状態** で `ACTIVE` へ戻し、新 `streamEpoch` を発行して全接続クライアントへ状態通知する。
 - **`POST /api/power/restart-browser`**（および対応 WS コマンド `RESTART_BROWSER`）: 進行中の追っかけキューや Hold 状態をすべて解除し、リングバッファをクリアしてブラウザを再起動した上で、映像・音声双方のエンコーダ稼働を保証して `ACTIVE` へ戻す。
-- ※ 配信のみのクリーンリセットは [03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md) の `POST /api/stream/reset` と連携し、Hold 中に呼ばれた場合は Hold を解除して新 `streamEpoch` で再配信を開始する。
+- ※ 配信のみのクリーンリセットは [03-streaming-transport.md](03-streaming-transport.md) の `POST /api/stream/reset` と連携し、Hold 中に呼ばれた場合は Hold を解除して新 `streamEpoch` で再配信を開始する。
 
 ### 2.3 ドメイン間内部インターフェース契約
 本ドメインは他ドメインの責務を直接記述せず、以下の境界契約を通じて協調する。
 
-- **対 仮想ブラウザドメイン ([06-browser-input-cdp.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/06-browser-input-cdp.md))**: プロセスツリー凍結（`SIGSTOP`）、復帰（`SIGCONT`）、再起動、ページ監視の一時停止/再開を指示する。
-- **対 エンコーダドメイン ([05-encoder-gpu.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/05-encoder-gpu.md))**: 映像・音声エンコーダの停止、双方の稼働保証付き起動（片肺防止：`video && audio` 両稼働を必須条件とする）、タイムライン補償の記録/リセットおよび新 `streamEpoch` の発行を指示する。
-- **対 ストリーミング転送ドメイン ([03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md))**: 電源 FSM とストリーミング状態機械は互いの boolean フラグを直接読み書きせず、電源ドメインがストリーミング側の単一遷移関数へ明示イベント（`ENTER_BUFFER_HOLD`, `EXIT_BUFFER_HOLD`, `POWER_SLEEP`, `SESSION_ACTIVATED` 等）を投入して状態同期し、ストリーミング側からの宣言的 Hold/再開要求を受けて電源状態遷移およびクライアントへの `BUFFER_HOLD` / `BROWSER_STATUS` 通知を実行する。
-- **対 セッション管理ドメイン ([02-session-multidisplay.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/02-session-multidisplay.md))**: プライマリ接続・代理昇格・全プライマリ離脱・再接続のイベントを受信し、スリープ解除またはタイマー武装を実行する。`SLEEP_PAUSED` 遷移時に視聴中セカンダリを待機状態（`SECONDARY_STANDBY`）へ移行させ、また `streamEpoch` 更新およびスリープ移行時には `SessionRegistry` のプライマリ確認済み PTS 基準点を即座に未受信（`null`）へリセットする。
+- **対 仮想ブラウザドメイン ([06-browser-input-cdp.md](06-browser-input-cdp.md))**: プロセスツリー凍結（`SIGSTOP`）、復帰（`SIGCONT`）、再起動、ページ監視の一時停止/再開を指示する。
+- **対 エンコーダドメイン ([05-encoder-gpu.md](05-encoder-gpu.md))**: 映像・音声エンコーダの停止、双方の稼働保証付き起動（片肺防止：`video && audio` 両稼働を必須条件とする）、タイムライン補償の記録/リセットおよび新 `streamEpoch` の発行を指示する。
+- **対 ストリーミング転送ドメイン ([03-streaming-transport.md](03-streaming-transport.md))**: 電源 FSM とストリーミング状態機械は互いの boolean フラグを直接読み書きせず、電源ドメインがストリーミング側の単一遷移関数へ明示イベント（`ENTER_BUFFER_HOLD`, `EXIT_BUFFER_HOLD`, `POWER_SLEEP`, `SESSION_ACTIVATED` 等）を投入して状態同期し、ストリーミング側からの宣言的 Hold/再開要求を受けて電源状態遷移およびクライアントへの `BUFFER_HOLD` / `BROWSER_STATUS` 通知を実行する。
+- **対 セッション管理ドメイン ([02-session-multidisplay.md](02-session-multidisplay.md))**: プライマリ接続・代理昇格・全プライマリ離脱・再接続のイベントを受信し、スリープ解除またはタイマー武装を実行する。`SLEEP_PAUSED` 遷移時に視聴中セカンダリを待機状態（`SECONDARY_STANDBY`）へ移行させ、また `streamEpoch` 更新およびスリープ移行時には `SessionRegistry` のプライマリ確認済み PTS 基準点を即座に未受信（`null`）へリセットする。
 
 ### 2.4 タイマー排他と自動スリープ／Buffer-Hold 期限仕様
 - **タイマー厳格排他**: 自動スリープタイマー（`autoSleepTimer`）と Buffer-Hold 有効期限タイマー（`holdExpireTimer`）は **同時に 2 つ以上稼働させてはならない**。

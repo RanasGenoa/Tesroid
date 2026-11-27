@@ -19,7 +19,8 @@
     "typecheck": "tsc -p shared/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tsconfig.typecheck.json --noEmit",
     "check": "npm run lint && npm run typecheck",
     "test": "vitest run",
-    "build": "tsc -b && npm run build -w client"
+    "build": "tsc -b && npm run build -w client",
+    "proxy": "node scripts/pc-proxy.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.9",

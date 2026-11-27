@@ -33,7 +33,7 @@
 
 ### 2.3 動作モード・適応ジッタ・統一マスタークロック同期
 - **状態カプセル化・操作モード切替（単一遷移関数集約）**:
-  - クライアントの視聴状態（`STANDBY` / `INTERACTIVE` [旧 `ACTIVE_INTERACTION`・`DIRECT LIVE`] / `LIVE` [旧 `PASSIVE_STREAMING`] / `CATCHUP` / `BUFFER_HOLD`）は、サーバーと共通の排他判別ユニオンおよび **単一純粋遷移関数** にカプセル化する（[03-streaming-transport.md](file:///Users/takumi/Desktop/Tesroid/docs/specs/03-streaming-transport.md) §2.2）。
+  - クライアントの視聴状態（`STANDBY` / `INTERACTIVE` [旧 `ACTIVE_INTERACTION`・`DIRECT LIVE`] / `LIVE` [旧 `PASSIVE_STREAMING`] / `CATCHUP` / `BUFFER_HOLD`）は、サーバーと共通の排他判別ユニオンおよび **単一純粋遷移関数** にカプセル化する（[03-streaming-transport.md](03-streaming-transport.md) §2.2）。
   - キュー選択（`LIVE` vs `CATCHUP`）、A/V 同期ポリシー、HUD 状態表示（`HOLD` / `DIRECT LIVE` / `WAIT` / `BUF` / `LIVE`）は、複数 boolean の組み合わせ分岐を散在させず、すべて単一状態からの純粋射影（セレクタ）として導出する。
   - タッチ操作時は操作イベント投入により即座に `INTERACTIVE` へ遷移し、最終タッチから **4,000 ms** 経過イベントで `LIVE` へ自動復帰する。
 - **適応ジッタバッファ**:

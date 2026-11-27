@@ -6,11 +6,7 @@ on:
   pull_request:
     branches: [ main, 'release/**' ]
 
-# セキュリティ境界 (Issue #87): このワークフローはシークレットを一切使用せず、
-# GITHUB_TOKEN は読み取り専用に明示分離しています。Fork PR のコードは
-# pull_request トリガーにより GitHub ホスト型サンドボックスで実行されます。
-# Fork コードがベースリポジトリの権限・シークレットで実行される
-# pull_request_target への移行は任意コード実行リスク (pwn request) のため禁止とします。
+# Security boundary: read-only GITHUB_TOKEN with pull_request sandbox only and no secrets.
 permissions:
   contents: read
 
@@ -28,31 +24,19 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            client/package-lock.json
-            server/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - name: Install root dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Install client dependencies
-        run: npm --prefix client ci
+      - name: Code Quality, Formatting & Type Check
+        run: npm run check
 
-      - name: Install server dependencies
-        run: npm --prefix server ci
+      - name: Run automated test & guardrail suite (pre-build)
+        run: npm run test
 
-      - name: Code Quality & Formatting Check (Biome)
-        run: npm run lint:ci
-
-      - name: TypeScript Type Check (client & server)
-        run: npm run typecheck
-
-      - name: Run full automated test & PR guardrail suite (pre-build)
-        run: npm test
-
-      - name: Run production build (client & server TypeScript + Vite)
+      - name: Run production build
         run: npm run build
 
-      - name: Verify built dist compliance
-        run: ./server/node_modules/.bin/vitest run client/test/dom.test.ts
+      - name: Verify built dist & invariant guardrails
+        run: npx vitest run test/guardrails/invariants.test.ts
