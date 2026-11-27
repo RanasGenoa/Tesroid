@@ -50,8 +50,8 @@ async function buildStaticApp(): Promise<{
   return { app, container };
 }
 
-// Spec: docs/specs/01-auth-security.md#2（静的フロントエンド配信は公開境界で Bearer 認証を要求しない）
-describe("仕様 01 §2 エンドポイント認証境界 — 静的フロントエンドの公開配信", () => {
+// Spec: docs/specs/01-auth-security.md#5-ac-07（静的フロントエンド配信は公開境界で Bearer 認証を要求しない）
+describe("仕様 01 AC-07 静的フロントエンドの公開配信", () => {
   afterEach(async () => {
     for (const dir of tempDirs.splice(0)) {
       await fs.rm(dir, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import type { FastifyInstance } from "fastify";
 
-// Spec: docs/specs/01-auth-security.md#2（静的フロントエンド配信は Bearer 認証不要の公開境界）
+// Spec: docs/specs/01-auth-security.md#5-ac-07（静的フロントエンド配信は Bearer 認証不要の公開境界）
 export function registerStaticFrontend(app: FastifyInstance, rootDir: string): void {
   app.register(fastifyStatic, {
     root: rootDir,
