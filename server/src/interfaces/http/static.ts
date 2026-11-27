@@ -8,10 +8,10 @@ export function registerStaticFrontend(app: FastifyInstance, rootDir: string): v
     root: rootDir,
     prefix: "/",
     index: ["index.html"],
-    // プラグ既定の Cache-Control を無効化し、setHeaders を単一の書き込み元にしておく。
+    // プラグイン既定の Cache-Control を無効化し、setHeaders を単一の書き込み元にしておく。
     cacheControl: false,
     setHeaders: (res, filePath) => {
-      // Vite のハッシュ付き assets は内容アドレス指定のため不変キャッシュ、index.html は每次都座検定で新バンドルハッシュを反映する。
+      // Vite のハッシュ付き assets は内容アドレス指定のため不変キャッシュ、index.html は毎回検証で新バンドルハッシュを反映する。
       if (filePath.startsWith(path.join(rootDir, "assets"))) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       } else {

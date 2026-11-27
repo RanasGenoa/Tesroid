@@ -65,7 +65,7 @@ describe("仕様 01 §2 エンドポイント認証境界 — 静的フロント
       expect(res.statusCode).toBe(200);
       expect(res.headers["content-type"]).toContain("text/html");
       expect(res.body).toContain('<canvas id="stage">');
-      // index.html は每次都座検定で新しいバンドルハッシュを反映できる必要がある。
+      // index.html は毎回検証で新しいバンドルハッシュを反映できる必要がある。
       expect(res.headers["cache-control"]).toBe("no-cache");
     } finally {
       await app.close();
