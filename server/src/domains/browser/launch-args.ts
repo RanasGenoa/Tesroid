@@ -94,7 +94,6 @@ export function buildPulseAudioLaunchArgs(): readonly string[] {
     "--exit-idle-time=-1",
     "--disallow-exit",
     "--disable-shm",
-    "--flat-volumes=no",
     "-n",
     "-F",
     "/etc/pulse/tesroid.pa",

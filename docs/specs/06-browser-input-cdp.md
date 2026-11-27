@@ -10,7 +10,7 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
 
 ### 2.1 仮想ディスプレイ・音声・ブラウザハイブリッド描画スタック
 - **仮想オーディオ環境**:
-  - 専用設定ファイル（`/etc/pulse/tesroid.pa`）を明示指定して PulseAudio を起動し、UNIX ドメインソケット（`/tmp/pulse-socket`、匿名許可）および仮想シンク（`48000Hz / stereo / s16le`、`flat-volumes` 無効、音量 `100%`・ミュート解除）を生成する（起動待ち上限 `3,000 ms`）。
+  - 専用設定ファイル（`/etc/pulse/tesroid.pa`）を明示指定して PulseAudio を起動し、UNIX ドメインソケット（`/tmp/pulse-socket`、匿名許可）および仮想シンク（`48000Hz / stereo / s16le`、音量 `100%`・ミュート解除は `.pa` スクリプトのみで保証する）を生成する（起動待ち上限 `3,000 ms`）。flat-volume 切替は PulseAudio `14` 以降で削除済みのため、対応 CLI オプション（`--flat-volumes` 等）は起動引数に含めない。
 - **仮想ディスプレイ & ウィンドウマネージャ**:
   - 仮想 X11 ディスプレイ（`>= 1920×1080 × 24bit`、GLX/RANDR/RENDER 有効、リセット抑止）と、すべてのウィンドウを枠なし・座標 `(0, 0)` 固定・最大化/OS フルスクリーン無効化する軽量ウィンドウマネージャ（Openbox）を起動する。
 - **Google Chrome ハイブリッド描画起動**:
@@ -77,7 +77,7 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
 - **AC-01 (ハイブリッド描画・初期ホーム URL・PulseAudio 不変条件)**:
   - **Given** お気に入りホーム URL が設定された仮想ブラウザ起動環境
   - **When** 起動引数を生成し、環境を初期化する
-  - **Then** `--enable-gpu-rasterization` や `--enable-zero-copy` が含まれず、`--app=<お気に入りホームURL>`、`LOCALE` 既定 `ja-JP`、基本パスワードストア、VAAPI 動画デコード、専用 PulseAudio UNIX ソケット設定が確実に適用される。
+  - **Then** `--enable-gpu-rasterization` や `--enable-zero-copy` が含まれず、`--app=<お気に入りホームURL>`、`LOCALE` 既定 `ja-JP`、基本パスワードストア、VAAPI 動画デコード、専用 PulseAudio UNIX ソケット設定が確実に適用され、PulseAudio 起動引数はイメージ稼働バージョンで受理されない削除済みオプション（`--flat-volumes` 等）を含まない。
 - **AC-02 (タッチ座標変換・上端ガード・CDP 注入と切断時安全破棄)**:
   - **Given** 映像キャンバス上のタッチ操作および CDP 接続/切断状態
   - **When** 上端 20px 以内へのタッチ、8px 以上のドラッグ、マルチタッチ、2.5 秒以上のスタックタッチ、および CDP 未接続・切断時のタッチ／文字／キー／ナビゲーション入力をテストする
