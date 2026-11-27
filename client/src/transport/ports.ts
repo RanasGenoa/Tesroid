@@ -13,6 +13,63 @@ import type {
   WsCloseCode,
 } from "@tesroid/shared";
 
+export interface ClientTimerHandle {
+  cancel(): void;
+}
+
+export interface ClientClock {
+  nowMs(): number;
+  setTimeout(callback: () => void, delayMs: number): ClientTimerHandle;
+  clearTimeout(handle: ClientTimerHandle): void;
+}
+
+export function createBrowserClock(): ClientClock {
+  return {
+    nowMs: () => Date.now(),
+    setTimeout: (callback, delayMs) => {
+      const id = globalThis.setTimeout(callback, delayMs);
+      return {
+        cancel: () => {
+          globalThis.clearTimeout(id);
+        },
+      };
+    },
+    clearTimeout: (handle) => {
+      handle.cancel();
+    },
+  };
+}
+
+export const WS_READY_STATE = {
+  CONNECTING: 0,
+  OPEN: 1,
+  CLOSING: 2,
+  CLOSED: 3,
+} as const;
+
+export interface WebSocketMessageEventLike {
+  readonly data: unknown;
+}
+
+export interface WebSocketCloseEventLike {
+  readonly code: number;
+  readonly reason: string;
+}
+
+export interface WebSocketLike {
+  binaryType: string;
+  readonly readyState: number;
+  send(data: Uint8Array | ArrayBuffer): void;
+  close(code?: number, reason?: string): void;
+  onopen: ((event: unknown) => void) | null;
+  onmessage: ((event: WebSocketMessageEventLike) => void) | null;
+  onclose: ((event: WebSocketCloseEventLike) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+}
+
+export type WebSocketFactory = (url: string) => WebSocketLike;
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
 export type WsConnectionStatus = "DISCONNECTED" | "CONNECTING" | "CONNECTED" | "TERMINAL_CLOSED";
 
 export interface WsCloseEventInfo {
@@ -37,7 +94,13 @@ export interface WsTransportPort {
 
 export type RestApiResult<T> =
   | { readonly ok: true; readonly status: number; readonly data: T }
-  | { readonly ok: false; readonly status: number; readonly error: string; readonly code?: string };
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly error: string;
+      readonly code?: string;
+      readonly data?: T;
+    };
 
 export interface PinVerifyApiResponse {
   readonly ok: boolean;
