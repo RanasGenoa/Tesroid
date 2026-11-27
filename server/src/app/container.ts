@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { AlignedDimensions, SpecialKey } from "@tesroid/shared";
+import type { AlignedDimensions } from "@tesroid/shared";
 import {
   AuthService,
   BcryptPasswordHasher,
@@ -14,11 +14,7 @@ import type {
   TokenGenerator,
 } from "../domains/auth/ports.js";
 import { BrowserInputRouter, BrowserService } from "../domains/browser/index.js";
-import type {
-  BrowserControlPort,
-  BrowserPageInfo,
-  CdpClientPort,
-} from "../domains/browser/ports.js";
+import type { BrowserControlPort, CdpClientPort } from "../domains/browser/ports.js";
 import { EncoderService, NodeGpuHardwareProbe } from "../domains/encoder/index.js";
 import type { EncoderControlPort, GpuHardwareProbePort } from "../domains/encoder/ports.js";
 import { MetricsRingBuffer, TelemetryStore } from "../domains/observability/index.js";
@@ -36,6 +32,7 @@ import {
   type Clock,
   type JsonlStore,
   NodeAtomicJsonStore,
+  NodeCdpClient,
   NodeJsonlStore,
   NodeProcessExit,
   NodeProcessRunner,
@@ -92,27 +89,6 @@ export interface AppContainer {
   dispose(): Promise<void>;
 }
 
-function createDisconnectedCdpFallback(): CdpClientPort {
-  return {
-    connect: async () => {
-      throw new Error("CDP client adapter not configured");
-    },
-    disconnect: async () => {},
-    isConnected: () => false,
-    dispatchTouchEvent: async () => {},
-    insertText: async () => {},
-    dispatchKey: async (_key: SpecialKey) => {},
-    navigate: async () => {},
-    goBack: async () => {},
-    goForward: async () => {},
-    reload: async () => {},
-    setViewportSize: async () => {},
-    evaluate: async <T = unknown>() => undefined as T,
-    addScriptToEvaluateOnNewDocument: async () => {},
-    getPageInfo: async (): Promise<BrowserPageInfo> => ({ url: null, title: null }),
-  };
-}
-
 // Spec: docs/architecture.md#1.2
 export function createAppContainer(
   env: ServerEnvConfig,
@@ -141,7 +117,7 @@ export function createAppContainer(
   });
 
   const pulseSocketPath = PULSE_SOCKET_PATH;
-  const cdp = overrides?.cdp ?? createDisconnectedCdpFallback();
+  const cdp = overrides?.cdp ?? new NodeCdpClient();
   const browser =
     overrides?.browser ??
     new BrowserService({
