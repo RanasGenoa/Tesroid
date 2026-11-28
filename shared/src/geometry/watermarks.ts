@@ -12,6 +12,8 @@ export const LIVE_HYSTERESIS_BOUNDS = {
 export const CATCHUP_FLOW_CONSTANTS = {
   ringBufferMaxSeconds: 60,
   ringBufferMaxBytes: 48 * 1024 * 1024,
+  // セカンダリ参加時: プライマリがライブ端よりこの値以上後方を視聴中なら、プライマリ確認済み PTS 付近から追っかけ開始（仕様 02 §2.2）。
+  secondaryJoinCatchupMinLagMs: 300,
   maxQueueFrames: 6_600,
   minWindowMs: 400,
   minCongestedWindowMs: 2_500,
