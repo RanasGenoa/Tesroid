@@ -1421,7 +1421,7 @@ describe("仕様 08 AC-01/AC-02 クライアント観測結線", () => {
   });
 });
 
-describe("仕様 04 AC-03/AC-04 大ドリフト再アンカーと音声給feed継続", () => {
+describe("仕様 04 AC-03/AC-04 大ドリフト再アンカーと音声供給継続", () => {
   it("AC-03: デコード出力が止まっても source 完了イベントで次の窓をスケジュールし音声が途切れない", async () => {
     const clock = new FakeClock(20_000);
     const transport = new FakeWsTransport();

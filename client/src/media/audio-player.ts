@@ -675,7 +675,7 @@ export class AudioPlayerPipeline {
       this.activeSources.add(source);
       source.onended = () => {
         this.activeSources.delete(source);
-        // 再生完了イベントで給feedを自己持続させる（新規デコード出力の到着に依存せず無音窓を作らない）。
+        // 再生完了イベント起点の音声供給で自己持続させる（新規デコード出力の到着に依存せず無音窓を作らない）。
         this.drainSchedule();
       };
       source.start(this.nextScheduleCtxTimeSec);
