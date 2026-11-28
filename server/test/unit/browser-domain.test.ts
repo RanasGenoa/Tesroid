@@ -106,6 +106,8 @@ interface SyntheticDomHarness {
     lastVolume: number | null;
     unMute(): void;
     setVolume(v: number): void;
+    isMuted(): boolean;
+    getVolume(): number;
   };
   readonly ytpButton: {
     removedAttributes: string[];
@@ -121,6 +123,7 @@ interface SyntheticDomHarness {
 function createSyntheticDomHarness(options?: {
   hostname?: string;
   includeVideo?: boolean;
+  ytSelfRefires?: boolean;
 }): SyntheticDomHarness {
   const clock = new FakeClock();
   const docListeners = new Map<string, ((evt: unknown) => void)[]>();
@@ -157,14 +160,36 @@ function createSyntheticDomHarness(options?: {
       this.removedAttributes.push(attr);
     },
   });
+  const emitLocal = (eventName: string): void => {
+    for (const fn of docListeners.get(eventName) ?? []) {
+      fn(new FakeEvent(eventName));
+    }
+  };
   const ytPlayer = {
     unMuteCalls: 0,
     lastVolume: null as number | null,
+    internalVolume: 25,
+    internalMuted: true,
     unMute(): void {
       this.unMuteCalls += 1;
+      this.internalMuted = false;
+      if (options?.ytSelfRefires) {
+        emitLocal("volumechange");
+      }
     },
     setVolume(v: number): void {
       this.lastVolume = v;
+      this.internalVolume = v;
+      if (options?.ytSelfRefires) {
+        videoElement.volume = v / 100;
+        emitLocal("volumechange");
+      }
+    },
+    isMuted(): boolean {
+      return this.internalMuted;
+    },
+    getVolume(): number {
+      return this.internalVolume;
     },
   };
 
@@ -1144,6 +1169,20 @@ describe("server/domains/browser (Spec 06)", () => {
     ytHarness.advanceIntervals(2_000);
     expect(ytHarness.videoElement.muted).toBe(false);
     expect(ytHarness.videoElement.volume).toBe(1);
+
+    // イベントストーム回帰: unMute/setVolume が volumechange を再発火するプレイヤーでも
+    // 強制は収束する（再入ガードと条件付き呼び出しにより恒久ループが成立しない）。
+    const stormHarness = createSyntheticDomHarness({
+      hostname: "www.youtube.com",
+      includeVideo: true,
+      ytSelfRefires: true,
+    });
+    vm.runInContext(buildCombinedPageInitScript({ displayScale: 100 }), stormHarness.context);
+    stormHarness.triggerDocumentEvent("volumechange");
+    expect(stormHarness.ytPlayer.unMuteCalls).toBe(1);
+    expect(stormHarness.ytPlayer.lastVolume).toBe(100);
+    expect(stormHarness.videoElement.volume).toBe(1);
+    expect(stormHarness.videoElement.muted).toBe(false);
 
     // No-op when page has no video element.
     const emptyHarness = createSyntheticDomHarness({
