@@ -323,7 +323,7 @@ describe("client/observability (Spec 03, 08)", () => {
     reporter.dispose();
   });
 
-  it("Spec 03 AC-05: updates EWMA RTT only during LIVE zero-queue samples and resets stale RTT (> 5,000 ms) to connecting state", () => {
+  it("Spec 03 AC-05: RTT is updated only during LIVE zero-queue samples, the effective value is the minimum of the 8-sample history window (spike-excluded), and stale RTT (> 5,000 ms) resets to connecting state", () => {
     // Pure RTT state verification.
     let state = createRttTrackerState();
     expect(readEffectiveRttMs(state, 1_000)).toBe(0);
@@ -332,17 +332,29 @@ describe("client/observability (Spec 03, 08)", () => {
     state = recordRttMeasurement(state, 50, false, 1_000);
     expect(readEffectiveRttMs(state, 1_000)).toBe(0);
 
-    // First valid LIVE zero-queue sample initializes EWMA.
+    // First valid LIVE zero-queue sample initializes both the EWMA and the min window.
     state = recordRttMeasurement(state, 100, true, 1_000);
     expect(readEffectiveRttMs(state, 1_000)).toBe(100);
 
-    // Second valid sample updates EWMA: 0.7 * 100 + 0.3 * 200 = 130.
+    // Second valid sample: EWMA updates (0.7*100 + 0.3*200 = 130) but the effective value stays at the window minimum.
     state = recordRttMeasurement(state, 200, true, 2_000);
-    expect(readEffectiveRttMs(state, 2_000)).toBeCloseTo(130, 5);
+    expect(state.ewmaRttMs).toBeCloseTo(130, 5);
+    expect(readEffectiveRttMs(state, 2_000)).toBe(100);
+
+    // Congestion spike never raises the effective baseline while a cleaner sample remains in the window.
+    state = recordRttMeasurement(state, 500, true, 3_000);
+    expect(readEffectiveRttMs(state, 3_000)).toBe(100);
+
+    // The window holds at most 8 samples; once older clean samples slide out, the baseline rises.
+    for (let i = 0; i < 8; i += 1) {
+      state = recordRttMeasurement(state, 200, true, 4_000 + i * 100);
+    }
+    expect(state.minHistory.length).toBe(8);
+    expect(readEffectiveRttMs(state, 5_000)).toBe(200);
 
     // At exactly 5,000 ms elapsed, still valid; > 5,000 ms resets to 0.
-    expect(readEffectiveRttMs(state, 7_000)).toBeCloseTo(130, 5);
-    expect(readEffectiveRttMs(state, 7_001)).toBe(0);
+    expect(readEffectiveRttMs(state, 9_000)).toBe(200);
+    expect(readEffectiveRttMs(state, 10_001)).toBe(0);
 
     // Collector integration check.
     const clock = new FakeClock(10_000);
@@ -357,7 +369,7 @@ describe("client/observability (Spec 03, 08)", () => {
 
     clock.advanceBy(1_000);
     collector.recordRttSample(120, true);
-    expect(collector.getEffectiveRttMs()).toBeCloseTo(0.7 * 80 + 0.3 * 120, 5);
+    expect(collector.getEffectiveRttMs()).toBe(80);
 
     clock.advanceBy(PROTOCOL_TIMING.rttStaleTimeoutMs + 1);
     expect(collector.getEffectiveRttMs()).toBe(0);

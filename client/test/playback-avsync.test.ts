@@ -33,6 +33,7 @@ import {
   MasterSyncClock,
   PlaybackController,
   StreamEpochGate,
+  SYNC_CLOCK_CONSTANTS,
   selectSyncPolicy,
   VIDEO_DECODER_CONSTANTS,
   type VideoDecoderAdapter,
@@ -761,7 +762,13 @@ describe("client/media (Spec 04)", () => {
     for (let i = 0; i < 7; i += 1) {
       const f = new TrackedVideoFrame(i * 33_333);
       liveFrames.push(f);
-      liveQueue.push({ streamEpoch: 1, ptsUs: f.timestamp, frame: f, receivedAtMs: i * 33 });
+      liveQueue.push({
+        streamEpoch: 1,
+        ptsUs: f.timestamp,
+        isKeyframe: false,
+        frame: f,
+        receivedAtMs: i * 33,
+      });
     }
     expect(liveQueue.getMetrics().count).toBe(4);
     expect(liveQueue.consumeEvictedCount()).toBe(3);
@@ -769,16 +776,39 @@ describe("client/media (Spec 04)", () => {
     liveQueue.clearAndCloseAll();
     expect(liveFrames.every((f) => f.closed)).toBe(true);
 
+    // CATCHUP の上限超過破棄は GOP 単位: 次のキーフレーム未着のあいだは待機し、到達時に先頭 GOP を一括破棄する。
     const catchupQueue = new CatchupVideoQueue();
     const bigFrameA = new TrackedVideoFrame(0, 1920, 1080, 33_333, 30 * 1024 * 1024);
     const bigFrameB = new TrackedVideoFrame(33_333, 1920, 1080, 33_333, 30 * 1024 * 1024);
-    catchupQueue.push({ streamEpoch: 1, ptsUs: 0, frame: bigFrameA, receivedAtMs: 0 });
-    catchupQueue.push({ streamEpoch: 1, ptsUs: 33_333, frame: bigFrameB, receivedAtMs: 33 });
-    expect(catchupQueue.getMetrics().estimatedBytes).toBeLessThanOrEqual(48 * 1024 * 1024);
-    expect(bigFrameA.closed).toBe(true);
+    catchupQueue.push({
+      streamEpoch: 1,
+      ptsUs: 0,
+      isKeyframe: true,
+      frame: bigFrameA,
+      receivedAtMs: 0,
+    });
+    catchupQueue.push({
+      streamEpoch: 1,
+      ptsUs: 33_333,
+      isKeyframe: false,
+      frame: bigFrameB,
+      receivedAtMs: 33,
+    });
+    expect(bigFrameA.closed).toBe(false);
     expect(bigFrameB.closed).toBe(false);
-    catchupQueue.clearAndCloseAll();
+    const nextKey = new TrackedVideoFrame(66_666, 1920, 1080, 33_333, 1024);
+    catchupQueue.push({
+      streamEpoch: 1,
+      ptsUs: 66_666,
+      isKeyframe: true,
+      frame: nextKey,
+      receivedAtMs: 66,
+    });
+    expect(bigFrameA.closed).toBe(true);
     expect(bigFrameB.closed).toBe(true);
+    expect(catchupQueue.peek()?.ptsUs).toBe(66_666);
+    catchupQueue.clearAndCloseAll();
+    expect(nextKey.closed).toBe(true);
 
     // LIVE stays LIVE on SOCKET_CONGESTED; CATCHUP flushes on USER_INTERACTION.
     const clock = new FakeClock(30_000);
@@ -1291,9 +1321,12 @@ describe("仕様 08 AC-01/AC-02 クライアント観測結線", () => {
     decoder?.emitError(new Error("decode fault"));
     expect(decoder?.state).toBe("closed");
 
-    // 新フレームを投入し、INTERACTIVE の DIRECT 低遅延パスで旧フレームを廃棄させる。
+    // 音声フレームでマスタークロックの音声アンカーを更新した上で、大ズレ境界（−150 ms）以上遅れた
+    // 映像フレームを投入し、外挿有効窓内の同期安全網での破棄を計上させる。
+    controller.handleMediaFrame(makeAudioFrame(1, 400_000));
+    await flushMicrotasks();
     audioHarness.currentTimeSec = 0.3;
-    controller.handleMediaFrame(makeVideoFrame(1, 100_000, VIDEO_FLAG.AVCC));
+    controller.handleMediaFrame(makeVideoFrame(1, 10_000, VIDEO_FLAG.AVCC));
 
     clock.advanceBy(10_000);
 
@@ -1460,6 +1493,173 @@ describe("仕様 04 AC-03/AC-04 大ドリフト再アンカーと音声供給継
 
     expect(audioHarness.scheduledSources.length).toBeGreaterThan(scheduledBefore);
     controller.dispose();
+  });
+
+  it("仕様 04 AC-06: strict 1x ペーシングは実 PTS 差分を守り、45〜150 ms ドリフトは ±0.75 ms/frame 以下、150 ms 超は ±2.0 ms/frame に厳格クランプ、45 ms 以内は無補正で、後方 −150 ms 未満のみ安全網 DROP となる", () => {
+    const C = SYNC_CLOCK_CONSTANTS;
+
+    // バッチ到着: 予定間隔は実 PTS 差分(+微小補正)で進み、バーストも名目間隔への水増しも起きない。
+    const batch = new MasterSyncClock();
+    batch.updateLocalAudioClock(0, 0);
+    const e1 = batch.evaluateVideoFrame(100_000, 0);
+    expect(e1.action).toBe("WAIT");
+    expect(e1.waitMs).toBeCloseTo(100 + 0.5, 6); // drift 100 ms → 比例補正 0.5 ms/frame
+    const e2 = batch.evaluateVideoFrame(133_000, 0);
+    expect(e2.action).toBe("WAIT");
+    const spacingMs = e2.waitMs - e1.waitMs;
+    expect(spacingMs).toBeGreaterThanOrEqual(33);
+    expect(spacingMs).toBeLessThanOrEqual(33 + C.pllMaxShiftMsPerFrame);
+
+    // デッドゾーン: 45 ms 以内は補正ゼロ（ハンチング防止）。
+    const dead = new MasterSyncClock();
+    dead.updateLocalAudioClock(0, 0);
+    const deadEval = dead.evaluateVideoFrame(30_000, 0);
+    expect(deadEval.action).toBe("WAIT");
+    expect(deadEval.waitMs).toBeCloseTo(30, 6);
+
+    // 後方 45〜150 ms は破棄されず、速度補正のみで追いつく。
+    const behind = new MasterSyncClock();
+    behind.updateLocalAudioClock(1_000_000, 0);
+    const behindEval = behind.evaluateVideoFrame(900_000, 0);
+    expect(behindEval.action).not.toBe("DROP_LATE");
+    expect(behindEval.signedDriftMs).toBeCloseTo(-100, 6);
+
+    // 150 ms 超の大ズレ追従は ±2.0 ms/frame への厳格クランプ（比例ゲインの素直な延伸ではない）。
+    const large = new MasterSyncClock();
+    large.updateLocalAudioClock(0, 0);
+    const largeEval = large.evaluateVideoFrame(800_000, 0);
+    expect(largeEval.action).toBe("WAIT");
+    expect(largeEval.waitMs).toBeCloseTo(802, 6); // 800 + 2.0（±4.0 のゲイン値は 2.0 にクランプ）
+
+    // 安全網: 後方が大ズレ境界（−150 ms）未満のフレームのみ例外なく破棄計上される。
+    const safety = new MasterSyncClock();
+    safety.updateLocalAudioClock(1_000_000, 0);
+    const dropped = safety.evaluateVideoFrame(849_000, 0);
+    expect(dropped.action).toBe("DROP_LATE");
+  });
+
+  it("仕様 04 AC-07: CATCHUP 蓄積キューの上限超過破棄は GOP 単位（キーフレーム境界でのみ切り、途中破棄は構造的に起こらない）で、live-jump flush は蓄積内最新キーフレームへ直接ジャンプする", () => {
+    const pushFrame = (q: CatchupVideoQueue, ptsUs: number, isKeyframe: boolean) => {
+      q.push({
+        streamEpoch: 1,
+        ptsUs,
+        isKeyframe,
+        frame: new TrackedVideoFrame(ptsUs, 640, 360, 33_333),
+        receivedAtMs: ptsUs / 1_000,
+      });
+    };
+
+    // GOP 単位 trim: maxBytes を超えた地点で次キーフレーム到達まで待機し、到達時に先頭 GOP を一括破棄する。
+    const q = new CatchupVideoQueue(2 * 1024 * 1024, 60_000);
+    // 1 GOP（9 frame × 約345KB）で 2MB を超える。
+    pushFrame(q, 0, true);
+    for (let i = 1; i < 9; i += 1) {
+      pushFrame(q, i * 33_333, false);
+    }
+    // キーフレーム未着の超過: 待機（破棄しない）。
+    expect(q.getMetrics().estimatedBytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(q.getMetrics().count).toBe(9);
+    pushFrame(q, 9 * 33_333, true);
+    // 次キーフレーム到達 → 先頭 GOP（9 frame）を一括破棄、先頭はキーフレーム。
+    expect(q.getMetrics().count).toBe(1);
+    expect(q.peek()?.isKeyframe).toBe(true);
+    expect(q.peek()?.ptsUs).toBe(9 * 33_333);
+    expect(q.consumeEvictedCount()).toBe(9);
+
+    // live-jump flush: 最新キーフレームより前の GOP を破棄し、以降を保持する。
+    const jump = new CatchupVideoQueue();
+    for (let gop = 0; gop < 2; gop += 1) {
+      pushFrame(jump, gop * 300_000, true);
+      for (let i = 1; i < 4; i += 1) {
+        pushFrame(jump, gop * 300_000 + i * 33_333, false);
+      }
+    }
+    const dropped = jump.liveJumpToLatestKeyframe();
+    expect(dropped).toBe(4); // GOP1 の key+delta×3 を破棄
+    expect(jump.peek()?.ptsUs).toBe(300_000);
+    expect(jump.getMetrics().count).toBe(4);
+    // キーフレームが無い蓄積は全破棄（LIVE エッジの最新フレームから再開）。
+    const noKey = new CatchupVideoQueue();
+    for (let i = 0; i < 3; i += 1) {
+      pushFrame(noKey, i * 33_333, false);
+    }
+    expect(noKey.liveJumpToLatestKeyframe()).toBe(3);
+    expect(noKey.getMetrics().count).toBe(0);
+  });
+
+  it("仕様 04 AC-08: 音声は映像進行より 8 s 超先行して再生スケジュールされず、stale 破棄は再生地点より 1.5 s 超遅れた断片を起点に再生地点+60 ms まで一括で起きる（≤1.5 s では絶対に破棄しない）", async () => {
+    const clock = new FakeClock(0);
+    const harness = new FakeAudioContextHarness();
+    const factory = new FakeAudioDecoderFactory();
+    const telemetry: Array<{ category: string; event: string; data: unknown }> = [];
+    const player = new AudioPlayerPipeline({
+      clock,
+      decoderFactory: factory,
+      audioContextFactory: harness.factory,
+      observer: {
+        emitTelemetry: (category: string, event: string, data: unknown) => {
+          telemetry.push({ category, event, data });
+        },
+      },
+    });
+    await player.unlock();
+    await player.configure(SAMPLE_OPUS_HEAD, 1);
+
+    // 映像進行を 1 s に固定し、実時間へ沿って 0〜12 s の音声供給を 12 s 進める。
+    player.setVideoProgressPtsUs(1_000_000);
+    for (let i = 0; i < 600; i += 1) {
+      player.decode(new Uint8Array([0xfc]), i * 20_000, 1);
+      harness.currentTimeSec = (i + 1) * 0.02;
+    }
+    // ゲート: 映像進行 +8 s = 9 s 超の音声はスケジュールされない。9 s 相当(450 chunk)超の再生予約は存在しない。
+    expect(harness.scheduledSources.length).toBeLessThanOrEqual(460);
+    // 退避キューへ保持され、音声だけが無制限先走りしない（滞留は約 3 s 強）。
+    expect(player.getBufferedMs()).toBeGreaterThanOrEqual(2_500);
+    expect(player.getUnderrunCount()).toBe(0);
+
+    // 退避キューへ保持された分は、ゲートを解除し実時間を進めることで空になるまで再生される。
+    const heldBefore = harness.scheduledSources.length;
+    expect(heldBefore).toBeLessThanOrEqual(460);
+    player.setVideoProgressPtsUs(30_000_000);
+    for (let t = 601; t <= 750; t += 1) {
+      player.decode(new Uint8Array([0xfc]), t * 20_000, 1);
+      harness.currentTimeSec = t * 0.02; // ≈15 s まで実時間進行
+    }
+    expect(harness.scheduledSources.length).toBeGreaterThan(heldBefore);
+
+    // stale: 再生地点より 1.5 s 超遅れて到着した断片を起点に、再生地点+60 ms まで一括で破棄される。
+    const playbackPtsUs = player.getPlaybackPtsUs();
+    if (playbackPtsUs === null) {
+      throw new Error("再生中の音声再生地点が取得できない");
+    }
+    player.decode(new Uint8Array([0xfc]), playbackPtsUs - 2_000_000, 1); // 終端が再生地点 −2 s → stale 発動
+    const staleEvents = telemetry.filter((entry) => entry.event === "stale_drop");
+    expect(staleEvents.length).toBeGreaterThanOrEqual(1);
+    // 再生地点+60 ms までの先行区間があれば一括で再同期される（ここでは断片のみが stale → count ≥ 1）。
+    const firstDrop = staleEvents[0]?.data as { count: number };
+    expect(firstDrop.count).toBeGreaterThanOrEqual(1);
+
+    // ≤1.5 s の遅れは絶対に破棄されない（stale_drop イベントは増えない）。
+    const staleCountBefore = telemetry.filter((entry) => entry.event === "stale_drop").length;
+    player.decode(new Uint8Array([0xfc]), playbackPtsUs - 1_420_000, 1); // 終端が再生地点 −1.4 s → 保持
+    expect(telemetry.filter((entry) => entry.event === "stale_drop").length).toBe(staleCountBefore);
+
+    player.dispose();
+  });
+
+  it("仕様 04 §2.3: 音声アンカー線形外挿は 1.5 s 窓に限定され、10 s 以上古いアンカーは破棄される", () => {
+    const syncClock = new MasterSyncClock();
+    syncClock.updateLocalAudioClock(1_000_000, 0);
+
+    expect(syncClock.getMasterClockSnapshot(1_400).valid).toBe(true);
+    // 窓超えは idle 扱い（外挿値を返さない）。
+    const idle = syncClock.getMasterClockSnapshot(1_600);
+    expect(idle.valid).toBe(false);
+    expect(idle.audioPlaybackPtsUs).toBeNull();
+    // 10 s 以上古い時点でアンカー自体が破棄され、以後も復活しない。
+    expect(syncClock.getMasterClockSnapshot(10_500).valid).toBe(false);
+    syncClock.updateLocalAudioClock(2_000_000, 10_600);
+    expect(syncClock.getMasterClockSnapshot(11_000).audioPlaybackPtsUs).toBe(2_400_000);
   });
 
   it("AC-04: 音声クロックより 1.5s 以上先行した先頭フレームは無限 WAIT でなく再アンカーで即時評価される", () => {

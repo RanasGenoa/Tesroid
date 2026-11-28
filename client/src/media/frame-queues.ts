@@ -4,6 +4,7 @@ import type { VideoFrameLike } from "./ports.js";
 export interface QueuedVideoFrame {
   readonly streamEpoch: number;
   readonly ptsUs: number;
+  readonly isKeyframe: boolean;
   readonly frame: VideoFrameLike;
   readonly receivedAtMs: number;
 }
@@ -126,6 +127,16 @@ abstract class BaseVideoFrameQueue {
     safeCloseFrame(oldest.item.frame);
     this.evictedCount += 1;
   }
+
+  // 先頭 GOP の次キーフレーム境界（自己を除く最初の key）の添字。未着なら -1。
+  protected findNextKeyBoundaryIndex(): number {
+    for (let i = 1; i < this.entries.length; i += 1) {
+      if (this.entries[i]?.item.isKeyframe) {
+        return i;
+      }
+    }
+    return -1;
+  }
 }
 
 export class LiveVideoQueue extends BaseVideoFrameQueue {
@@ -155,8 +166,8 @@ export class CatchupVideoQueue extends BaseVideoFrameQueue {
 
   // Spec: docs/specs/04-client-playback-avsync.md#2.1
   constructor(
-    maxBytes = CATCHUP_FLOW_CONSTANTS.ringBufferMaxBytes,
-    maxDurationMs = STREAM_BOUNDS.targetBufferMs.max,
+    maxBytes: number = CATCHUP_FLOW_CONSTANTS.ringBufferMaxBytes,
+    maxDurationMs: number = STREAM_BOUNDS.targetBufferMs.max,
   ) {
     super();
     this.maxBytes =
@@ -181,6 +192,7 @@ export class CatchupVideoQueue extends BaseVideoFrameQueue {
     this.entries.push({ item, bytes });
     this.estimatedBytes += bytes;
 
+    // 破棄は必ず次のキーフレーム境界までの GOP 単位。キーフレーム未着の超過は到達まで待機する（仕様 04 §2.1）。
     while (this.entries.length > 0) {
       const overBytes = this.estimatedBytes > this.maxBytes;
       const overDuration =
@@ -189,7 +201,37 @@ export class CatchupVideoQueue extends BaseVideoFrameQueue {
       if (!overBytes && !overDuration) {
         break;
       }
-      this.evictHead();
+      const boundary = this.findNextKeyBoundaryIndex();
+      if (boundary === -1) {
+        break;
+      }
+      for (let i = 0; i < boundary; i += 1) {
+        this.evictHead();
+      }
     }
+  }
+
+  // LIVE 復帰時の live-jump flush: 蓄積内最新キーフレームより前の GOP を破棄し、残りは保持する。
+  // 明示的なジャンプ破棄のため evictedCount には計上せず、破棄数を返す（仕様 04 §2.1）。
+  liveJumpToLatestKeyframe(): number {
+    let latestKeyIndex = -1;
+    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
+      if (this.entries[i]?.item.isKeyframe) {
+        latestKeyIndex = i;
+        break;
+      }
+    }
+    const cut = latestKeyIndex === -1 ? this.entries.length : latestKeyIndex;
+    let dropped = 0;
+    for (let i = 0; i < cut; i += 1) {
+      const head = this.entries.shift();
+      if (head === undefined) {
+        break;
+      }
+      this.estimatedBytes = Math.max(0, this.estimatedBytes - head.bytes);
+      safeCloseFrame(head.item.frame);
+      dropped += 1;
+    }
+    return dropped;
   }
 }

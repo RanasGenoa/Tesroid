@@ -90,6 +90,10 @@ export function readEffectiveRttMs(state: RttTrackerState, nowMs: number): numbe
   if (nowMs - state.lastValidAtMs > PROTOCOL_TIMING.rttStaleTimeoutMs) {
     return 0;
   }
+  // 実効 RTT は最小値履歴窓 8 の最小値（輻輳スパイクを除外した回線基準値）。EWMA は内部平滑化のみに留める。
+  if (state.minHistory.length > 0) {
+    return Math.min(...state.minHistory);
+  }
   return state.ewmaRttMs;
 }
 
