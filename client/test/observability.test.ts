@@ -332,20 +332,20 @@ describe("client/observability (Spec 03, 08)", () => {
     state = recordRttMeasurement(state, 50, false, 1_000);
     expect(readEffectiveRttMs(state, 1_000)).toBe(0);
 
-    // First valid LIVE zero-queue sample initializes both the EWMA and the min window.
+    // LIVE ゼロキューの最初の有効サンプルで EWMA と最小窓の両方が初期化される。
     state = recordRttMeasurement(state, 100, true, 1_000);
     expect(readEffectiveRttMs(state, 1_000)).toBe(100);
 
-    // Second valid sample: EWMA updates (0.7*100 + 0.3*200 = 130) but the effective value stays at the window minimum.
+    // 2 つ目の有効サンプルで EWMA は更新される（0.7*100 + 0.3*200 = 130）が、実効値は窓内の最小値のまま据わる。
     state = recordRttMeasurement(state, 200, true, 2_000);
     expect(state.ewmaRttMs).toBeCloseTo(130, 5);
     expect(readEffectiveRttMs(state, 2_000)).toBe(100);
 
-    // Congestion spike never raises the effective baseline while a cleaner sample remains in the window.
+    // 窓内により小さいサンプルが残る限り、輻輳スパイクは実効基準値を上げない。
     state = recordRttMeasurement(state, 500, true, 3_000);
     expect(readEffectiveRttMs(state, 3_000)).toBe(100);
 
-    // The window holds at most 8 samples; once older clean samples slide out, the baseline rises.
+    // 窓は最大 8 サンプル。古い小さいサンプルが窓外へ押し出されると基準値は上昇する。
     for (let i = 0; i < 8; i += 1) {
       state = recordRttMeasurement(state, 200, true, 4_000 + i * 100);
     }
