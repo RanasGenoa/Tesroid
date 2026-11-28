@@ -66,7 +66,7 @@ export type ActiveModalState =
   | { readonly kind: "onboarding_guide" }
   | { readonly kind: "power_control" }
   | { readonly kind: "restart_confirm" }
-  | { readonly kind: "pin_reauth" }
+  | { readonly kind: "pin_reauth"; readonly initialPin?: string }
   | { readonly kind: "settings"; readonly activeTab: SettingsTabId };
 
 export type SignalQualityLevel = "disconnected" | "reconnecting" | "stall" | "degraded" | "good";
@@ -467,6 +467,7 @@ export class AppStore {
   private fpsDebounceTimer: ClientTimerHandle | null = null;
   private bitrateDebounceTimer: ClientTimerHandle | null = null;
   private autoDimTimer: ClientTimerHandle | null = null;
+  private overlayHealthTimer: ClientTimerHandle | null = null;
   private pingTickerTimer: ClientTimerHandle | null = null;
   private reloadTimer: ClientTimerHandle | null = null;
 
@@ -495,11 +496,15 @@ export class AppStore {
     if (this.disposed) {
       return;
     }
+    const prevState = this.state;
     const nextState = reduceAppState(this.state, action);
     if (nextState === this.state) {
       return;
     }
     this.state = nextState;
+    if (prevState.powerState !== nextState.powerState) {
+      this.syncOverlayHealthPolling(nextState.powerState);
+    }
     for (const listener of [...this.listeners]) {
       listener(this.state);
     }
@@ -799,9 +804,9 @@ export class AppStore {
   }
 
   // Spec: docs/specs/01-auth-security.md#2.1
-  openSettingsWithAuthCheck(): void {
+  openSettingsWithAuthCheck(initialPin = ""): void {
     if (!this.state.isAuthenticated) {
-      this.openModal({ kind: "pin_reauth" });
+      this.openModal({ kind: "pin_reauth", initialPin });
       return;
     }
     this.openModal({ kind: "settings", activeTab: "browser" });
@@ -1548,9 +1553,36 @@ export class AppStore {
     }
   }
 
+  // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-07) — オーバーレイ表示中は稼働状態バッジをヘルス API 実データで追従させる。
+  private syncOverlayHealthPolling(powerState: PowerState): void {
+    if (this.overlayHealthTimer !== null) {
+      this.clock.clearTimeout(this.overlayHealthTimer);
+      this.overlayHealthTimer = null;
+    }
+    if (powerState !== "STARTING" && powerState !== "STOPPED" && powerState !== "SLEEP_PAUSED") {
+      return;
+    }
+    const overlayStates: readonly PowerState[] = ["STARTING", "STOPPED", "SLEEP_PAUSED"];
+    const schedule = () => {
+      this.overlayHealthTimer = this.clock.setTimeout(() => {
+        this.overlayHealthTimer = null;
+        if (this.disposed || !overlayStates.includes(this.state.powerState)) {
+          return;
+        }
+        void this.fetchHealth().then(schedule);
+      }, 2_000);
+    };
+    void this.fetchHealth();
+    schedule();
+  }
+
   private clearOperationalTimers(): void {
     this.stopPingTicker();
     this.clearAutoDimTimer();
+    if (this.overlayHealthTimer !== null) {
+      this.clock.clearTimeout(this.overlayHealthTimer);
+      this.overlayHealthTimer = null;
+    }
     if (this.fpsDebounceTimer !== null) {
       this.clock.clearTimeout(this.fpsDebounceTimer);
       this.fpsDebounceTimer = null;

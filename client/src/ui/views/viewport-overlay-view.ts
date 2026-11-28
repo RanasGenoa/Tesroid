@@ -115,6 +115,34 @@ export class ViewportOverlayView {
     }
 
     if (state.powerState === "STARTING" || state.powerState === "STOPPED") {
+      // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-07) — スピナーと Browser/配信の稼働状態バッジをヘルス API 実データで示す。
+      const health = state.health;
+      const browserLabel =
+        health === null
+          ? "確認中"
+          : health.powerState === "ACTIVE"
+            ? "稼働中"
+            : health.powerState === "STARTING"
+              ? "準備中"
+              : health.powerState === "SLEEP_PAUSED"
+                ? "一時停止"
+                : health.powerState === "RESTARTING"
+                  ? "再起動中"
+                  : "停止中";
+      const browserOn = health !== null && health.powerState === "ACTIVE";
+      const encoderRunning = health?.encoder.running === true;
+      const statusRow = el(doc, "div", { className: "overlay-status-row" }, [
+        el(doc, "span", {
+          className: browserOn ? "hud-badge status-badge--on" : "hud-badge status-badge--off",
+          text: `Browser: ${browserLabel}`,
+          attrs: { "data-testid": "overlay-badge-browser" },
+        }),
+        el(doc, "span", {
+          className: encoderRunning ? "hud-badge status-badge--on" : "hud-badge status-badge--off",
+          text: `配信: ${encoderRunning ? "送信中" : "待機中"}`,
+          attrs: { "data-testid": "overlay-badge-encoder" },
+        }),
+      ]);
       this.container.replaceChildren(
         el(
           doc,
@@ -124,8 +152,10 @@ export class ViewportOverlayView {
             attrs: { "data-testid": "overlay-starting" },
           },
           [
+            el(doc, "div", { className: "spinner", attrs: { "data-testid": "overlay-spinner" } }),
             el(doc, "h2", { text: "起動中..." }),
             el(doc, "p", { text: "ブラウザとエンコーダを起動しています。" }),
+            statusRow,
           ],
         ),
       );
