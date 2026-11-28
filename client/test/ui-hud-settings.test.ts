@@ -1248,8 +1248,8 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
   });
 });
 
-describe("仕様 07 AC-07/08/09 視覚言語・PIN 演出・VAAPI 詳細編集（V0.8.0 パリティ復元）", () => {
-  it("AC-07: styles.css に減光 opacity 0.72・下部中央トースト・ドロワーブラー・タッチフィードバック・スピナー・単幅数字が含まれる", () => {
+describe("仕様 07 AC-07A〜C/08/09 視覚言語・PIN 演出・VAAPI 詳細編集（V0.8.0 パリティ復元）", () => {
+  it("AC-07A〜C: styles.css に減光 opacity 0.72・下部中央トースト・ドロワーブラー・タッチフィードバック・スピナー・等幅数字が含まれる", () => {
     const css = fs.readFileSync(path.join(clientDir, "src/ui/styles.css"), "utf8");
     expect(css).toContain(".hud-bar--dimmed {\n  opacity: 0.72;");
     expect(css).toContain(".toast-host");
@@ -1260,7 +1260,7 @@ describe("仕様 07 AC-07/08/09 視覚言語・PIN 演出・VAAPI 詳細編集�
     expect(css).toContain(".btn:active");
   });
 
-  it("AC-07: 起動中オーバーレイにスピナーと Browser/配信の稼働状態バッジを表示し、ヘルス API 実データで追従更新する", async () => {
+  it("AC-07B: 起動中オーバーレイにスピナーと Browser/配信の稼働状態バッジを表示し、ヘルス API 実データで追従更新する", async () => {
     const h = createHarness();
     await h.store.bootstrap();
     await h.store.loginPrimaryPin("1234");
