@@ -11,13 +11,16 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
 ### 2.1 仮想ディスプレイ・音声・ブラウザハイブリッド描画スタック
 - **仮想オーディオ環境**:
   - 専用設定ファイル（`/etc/pulse/tesroid.pa`）を明示指定して PulseAudio を起動し、UNIX ドメインソケット（`/tmp/pulse-socket`、匿名許可）および仮想シンク（`48000Hz / stereo / s16le`、音量 `100%`・ミュート解除は `.pa` スクリプトのみで保証する）を生成する（起動待ち上限 `3,000 ms`）。flat-volume 切替は PulseAudio `14` 以降で削除済みのため、対応 CLI オプション（`--flat-volumes` 等）は起動引数に含めない。
+  - **起動前・起動後の自己修復**: 起動前に stale なソケットファイルと既存デーモン（`pulseaudio -k`）を掃除する。起動後に仮想シンクが欠落している場合は `pactl load-module` で再ロードし、既定シンク設定・音量 `100%`・ミュート解除を強制する。この自己修復を試みた後も応答しない場合のみ起動失敗とする（fail-fast は自己修復の後に適用する）。
 - **仮想ディスプレイ & ウィンドウマネージャ**:
   - 仮想 X11 ディスプレイ（`>= 1920×1080 × 24bit`、GLX/RANDR/RENDER 有効、リセット抑止）と、すべてのウィンドウを枠なし・座標 `(0, 0)` 固定・最大化/OS フルスクリーン無効化する軽量ウィンドウマネージャ（Openbox）を起動する。
 - **Google Chrome ハイブリッド描画起動**:
-  - 永続データディレクトリ内の古いロックファイル（`Singleton*`）を除去し、クラッシュ状態（`exit_type` 等）を正常値へ修復した上でスタンドアロンアプリモード（`--app=<url>`）で起動する。
+  - 永続データディレクトリ内のプロファイル配下 `Singleton*` を**ワイルドカードで全除去**し、クラッシュ状態（`exit_type` 等）を**トップレベル `Preferences` と `Default/Preferences` の両方**について正常値へ修復した上でスタンドアロンアプリモード（`--app=<url>`）で起動する。
+  - **ブラウザバイナリ実行時検出**: `google-chrome-stable` → `google-chrome` → `chromium-browser` → `chromium` の順に実行可能な最初のものを選択し、固定シンボルリンク名に依存しない。
   - **起動時初期 URL**: 環境変数 `BROWSER_URL` は廃止し、常にサーバー設定のお気に入り「ホーム」URL（未設定時は `https://www.youtube.com`）から解決する。
   - **役割分離（デッドロック回避・レンダノード固定）**: 動画デコードのみ VAAPI ハードウェアデコードを有効化し、エンコーダドメインの検出結果から解決したレンダリングノードを `--render-node-override` で明示指定した上で GPU ブロックリストを解除する（llvmpipe 系の仮想 GPU 構成では Chrome のブロックリストがハードウェアデコード判定自体を無効化するため、解除なしでは Video Decode が Software only に留まる）。AV1 ソフトウェアデコードは無効化し H.264/VP9 へ誘導する。さらに単一ページスクリプト注入により、**GPU のデコード能力の有無にかかわらず**ページ側のコーデック選択は VP9/AV1 を選ばず常に H.264 を選択する（互換性優先: H.264 はハードウェアデコード非対応環境でもソフトウェアデコードで成立する唯一のユニバーサルコーデックであり、VP9 高ビット深度配信時のソフトウェアデコードによるレンダラ CPU飽和を構造的に起こさない。実測: 非対応環境での VP9 10bit 配信時にレンダラ CPU 100%）。
-  - **言語・タイムゾーン**: 環境変数 `LOCALE`（既定 `ja-JP`）および設定タイムゾーン（既定 `Asia/Tokyo`）をプロセス環境およびブラウザ設定へ反映する。
+  - **言語・タイムゾーン・音声シンク**: 環境変数 `LOCALE`（既定 `ja-JP`）および設定タイムゾーン（既定 `Asia/Tokyo`）をプロセス環境およびブラウザ設定へ反映する。`--lang` に加え、`LOCALE` から導出する Accept-Language 順序リスト（既定は `ja-JP,ja,en-US,en`）を起動引数 `--accept-lang` と Preferences（`intl.accept_languages` / `selected_languages`）の両方で明示する。ブラウザプロセス環境には `PULSE_SERVER`（UNIX ソケット）に加え `PULSE_SINK`（仮想シンク名）を設定し、既定シンクへの暗黙依存を排除する。
+  - **車載表示・タッチ能力・耐障害フラグ**: 起動引数に `--touch-events=enabled`（タッチ能力検出で UI を切り替えるサイトがあるため Blink のタッチ機能を有効化）、`--force-dark-mode`（車載眩低減のためダークテーマを Cookie に加え恒久化）、`--disable-gpu-sandbox`（GPU プロセスの `/dev/dri` アクセス担保）、`--hide-crash-restore-bubble`（クラッシュ状態修復と併用する復元バブル抑止の二重保証）を常に含める。
   - **異常終了回復 & 安全性**: Chrome が予期せず終了した場合は `2,000 ms` 後（起動直後 1 秒以内終了時もリトライ）に自動再起動する。ナビゲーション URL は `http:` および `https:` スキームのみ厳格に許可する。
 
 ### 2.2 ネイティブタッチ入力 & OSK 文字・キー注入
@@ -45,9 +48,9 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
 ### 2.4 車載表示拡大・Web フルスクリーン・スクリプト集約 & ページ監視
 - **スクリプト注入元の単一集約**: WebAuthn 抑止・車載表示拡大・Web フルスクリーン・動画音声維持のスクリプト注入および設定反映は単一の制御箇所へ集約し、多重定義や拡大率フォールバック値の食い違いを防ぐ。
 - **表示拡大ズーム**: 許容範囲 `50%〜250%`・**既定値 `100%`**（範囲外・無効値は `100%` へフォールバック）をページ全体に適用し、Web フルスクリーン再生中も `100%` を維持する。REST API および WebSocket `SET_ZOOM` の双方で `[50, 250]` クランプと有限数値検証を一貫適用する。
-- **仮想 Web フルスクリーン**: DOM Fullscreen API をインターセプトし、OS フルスクリーンへ遷移させずビューポート全面（`100vw × 100vh`・最前面・アスペクト比維持）へ拡大する。YouTube の画面サイズ判定（2 秒後のフルスクリーンボタン無効化）をウィンドウ寸法応答で回避し、ダークテーマ/シアターモード Cookie 付与・全画面ボタン保護・動画領域以外の装飾非表示を行う。非 YouTube の一般動画要素およびコンテナ要素も同様に全画面化する。
+- **仮想 Web フルスクリーン**: DOM Fullscreen API をインターセプトし、OS フルスクリーンへ遷移させずビューポート全面（`100vw × 100vh`・最前面・アスペクト比維持）へ拡大する。YouTube の画面サイズ判定（2 秒後のフルスクリーンボタン無効化）をウィンドウ寸法応答で回避し、ダークテーマ/シアターモード Cookie 付与を行う。YouTube プレイヤーではフルスクリーンボタンの操作維持（`disabled` / `aria-disabled` 除去・`pointer-events` 強制・capture 位相でのボタンタップ遮断）、プレイヤー内部 `toggleFullscreen` の仮想フルスクリーンへの接続、SPA 遷移（`yt-navigate-start`）時の仮想フルスクリーン自動解除を適用し、動画領域以外の装飾（ヘッダー、サイドバー、コメント欄、ガイド、cinematics 効果、プレイヤー背景）を非表示化する。非 YouTube の一般動画要素およびコンテナ要素も同様に全画面化する。
 - **動画サイト側音量の常時最大維持**: 車載側の音量コントロールに一本化するため、コンテナ内ブラウザの動画プレイヤーは 2 秒周期の監視等により **常にミュート解除・音量 100% 固定** を維持する（動画サイト側での音量操作をさせない想定）。
-- **リアルタイムページ監視**: CDP イベント（ページ遷移・SPA 内履歴遷移・読込完了）および 3 秒間隔の状態確認により現在 URL（`http:`/`https:` のみ）とタイトルを同期し、クライアントへ通知する（スリープ・Buffer-Hold 凍結時は監視を停止する）。
+- **リアルタイムページ監視**: CDP イベントによる即時同期（`Page.frameNavigated` / `navigatedWithinDocument`（発火 400 ms 後にタイトル再取得）/ `loadEventFired` / `Page.domContentEventFired` で直ちに URL・タイトルを評価）を主経路とし、3 秒間隔の状態確認をフォールバックとして、現在 URL（`http:`/`https:` のみ）とタイトルを同期し、クライアントへ通知する（スリープ・Buffer-Hold 凍結時は監視を停止する）。
 
 ### 2.5 電源・ライフサイクル管理ドメインとの連携（プロセス操作責務）
 - 電源状態の遷移、タイマー排他、REST/WS 外部制御窓口はすべて **[10-power-lifecycle.md](10-power-lifecycle.md)** の単一ドメインへ集約し、本ドメインは以下のプリミティブ操作のみを単一ドメインからの指示で実行する:
@@ -80,7 +83,8 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
 - **AC-01 (ハイブリッド描画・初期ホーム URL・PulseAudio 不変条件)**:
   - **Given** お気に入りホーム URL が設定された仮想ブラウザ起動環境
   - **When** 起動引数を生成し、環境を初期化する
-  - **Then** `--enable-gpu-rasterization` や `--enable-zero-copy` が含まれず、`--app=<お気に入りホームURL>`、`LOCALE` 既定 `ja-JP`、基本パスワードストア、VAAPI 動画デコード（`--render-node-override=<検出ノード>` および `--ignore-gpu-blocklist` の適用により chrome://gpu の Video Decode が Hardware accelerated であること）、専用 PulseAudio UNIX ソケット設定が確実に適用され、PulseAudio 起動引数はイメージ稼働バージョンで受理されない削除済みオプション（`--flat-volumes` 等）を含まない。
+  - **Then** `--enable-gpu-rasterization` や `--enable-zero-copy` が含まれず、`--app=<お気に入りホームURL>`、`LOCALE` 既定 `ja-JP` と一致する `--accept-lang` / Preferences `intl.accept_languages`、基本パスワードストア、VAAPI 動画デコード（`--render-node-override=<検出ノード>` および `--ignore-gpu-blocklist` の適用により chrome://gpu の Video Decode が Hardware accelerated であること）、専用 PulseAudio UNIX ソケット設定と `PULSE_SINK` 明示が確実に適用され、PulseAudio 起動引数はイメージ稼働バージョンで受理されない削除済みオプション（`--flat-volumes` 等）を含まない。
+  - **And** 起動引数に `--touch-events=enabled`・`--force-dark-mode`・`--disable-gpu-sandbox`・`--hide-crash-restore-bubble` が含まれ、ブラウザバイナリは 4 候補（`google-chrome-stable` / `google-chrome` / `chromium-browser` / `chromium`）から実行時検出される。
   - **And** 単一ページスクリプト注入は GPU 能力にかかわらず常に有効であり、`MediaSource.isTypeSupported` 上で vp9/av1 を拒否し h264 のみ受理するため、ページ側プレイヤーは常に H.264 配信を選択する。
 - **AC-02 (タッチ座標変換・上端ガード・CDP 注入と切断時安全破棄)**:
   - **Given** 映像キャンバス上のタッチ操作および CDP 接続/切断状態
@@ -102,6 +106,14 @@ Docker コンテナ内の仮想ディスプレイ上で安定したハードウ�
   - **Given** 稼働イメージのビルド定義
   - **When** `/etc/opt/chrome/policies/managed/` の policy ファイルと Chrome 起動引数を検査する
   - **Then** `CommandLineFlagSecurityWarningsEnabled: false` を含む JSON がイメージへ焼き込まれており、廃止済みで無効な `--disable-infobars` は起動引数に含まれない。
+- **AC-07 (フルスクリーン保護・SPA 解除・ページ即時同期)**:
+  - **Given** 単一ページスクリプトが注入された YouTube および一般動画ページ
+  - **When** 仮想フルスクリーン中にプレイヤーがフルスクリーンボタンを `disabled` 化する／`yt-navigate-start` の SPA 遷移が発生する／`Page.frameNavigated`・`navigatedWithinDocument` イベントが発火する
+  - **Then** ボタンは操作可能なまま（`disabled`/`aria-disabled` 除去・`pointer-events` 強制）で capture 位相タップが接続され、SPA 遷移で仮想フルスクリーン状態が自動解除されコメント欄等の装飾が残留せず、URL・タイトルは 3 秒ポーリングを待たずイベント即時で同期される。
+- **AC-08 (PulseAudio 起動前・起動後自己修復)**:
+  - **Given** stale ソケットまたは仮想シンク欠落（設定再読込等）が残存する起動環境
+  - **When** 仮想オーディオ環境の初期化を実行する
+  - **Then** stale ソケットと既存デーモンの掃除、`pactl load-module` によるシンク再ロード、既定シンク・音量 100%・ミュート解除強制が試みられた上で応答が得られ、自己修復後も無応答の場合のみ起動失敗となる。
 
 ---
 

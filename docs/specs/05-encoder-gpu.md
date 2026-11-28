@@ -28,7 +28,7 @@
 - **動作モード (`ENCODER_MODE`)**: `auto`（既定） / `nvenc` / `vaapi` / `software`。
   - コンテナ起動スクリプトを含め `ENCODER_MODE=nvenc` を正式に受理し、固定モード指定時は他バックエンドへ自動降格せず失敗理由を明確に警告・リトライする。
 - **起動時バックエンド選択優先順位（`auto` モード時）**:
-  1. **NVIDIA (`h264_nvenc`)**: NVIDIA デバイス露出確認（`NVIDIA_VISIBLE_DEVICES` が `none`/`void` 以外で非空、または `/dev/nvidiactl` / `/dev/nvidia0` 存在）の上、1 フレームの `h264_nvenc`（`256×144`、8 秒タイムアウト）実エンコードプローブに成功した場合は **最優先で NVENC を採用** する。
+  1. **NVIDIA (`h264_nvenc`)**: NVIDIA デバイス露出確認（`NVIDIA_VISIBLE_DEVICES` が `none`/`void` 以外で非空、または `/dev/nvidiactl` / `/dev/nvidia0` 存在）の上、稼働時と同一の低遅延構成（`-preset p1 -tune ll -zerolatency 1`、入力 `256×144:r=1`、`-pix_fmt yuv420p`）で 1 フレームの `h264_nvenc` 実エンコードプローブ（8 秒タイムアウト）に成功した場合は **最優先で NVENC を採用** する。
   2. **AMD (VAAPI `radeonsi`)**: `/dev/dri/renderD*` を走査し、AMD ベンダ（`0x1002`）ノード上で `vainfo`（3 秒タイムアウト）の同一行に `VAProfileH264...VAEntrypointEncSlice` が存在する場合に採用する。
   3. **Intel (VAAPI `iHD` → `i965`) / Windows WSL2 (`d3d12`)**: Intel（`0x8086`）ノードでは `iHD` で H.264 エンコード可否を実測し不可なら旧世代向け `i965` へフォールバックする。WSL2（`/dev/dxg` 存在時）は `d3d12` でプローブする（明示ユーザー指定ドライバがある場合は尊重）。
   4. **Software (`libx264`)**: 上記いずれのハードウェアエンコーダも利用不可の場合に自動採用する。
