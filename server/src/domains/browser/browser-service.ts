@@ -343,7 +343,7 @@ export class BrowserService implements BrowserControlPort {
     try {
       await fs.rm(socketPath, { force: true });
     } catch {
-      // ソケット不在の通常系はそのまま続行する。
+      // ソケット不在の正常系はそのまま続行する。
     }
     try {
       await this.deps.processRunner.exec("pulseaudio", ["-k"], { timeoutMs: 1_000 });
