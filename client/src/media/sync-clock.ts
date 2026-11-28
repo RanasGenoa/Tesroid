@@ -17,8 +17,21 @@ export interface JitterState {
 
 export const SYNC_CLOCK_CONSTANTS = {
   minRenderIntervalMs: 8,
-  lateDropThresholdMs: 45,
-  renderEarlyToleranceMs: 8,
+  // strict 1x: 予定描画時刻が now + 2 ms 以内なら即描画窓とする（仕様 04 §2.3）。
+  immediateRenderWindowMs: 2,
+  // PLL マイクロ同期: 45 ms 以内は無補正、45〜150 ms は比例ゲインで ±0.75 ms/frame、
+  // 150 ms 超は大ズレ安全網として ±2.0 ms/frame へ厳格クランプする（仕様 04 §2.3）。
+  pllDeadzoneMs: 45,
+  pllProportionalGainPerMs: 0.005,
+  pllMaxShiftMsPerFrame: 0.75,
+  pllLargeDriftThresholdMs: 150,
+  pllLargeMaxShiftMsPerFrame: 2.0,
+  // 後方 DROP・前方再アンカーの双方はこの境界を超える大ズレのみが対象（仕様 04 §2.3 AC-04/06）。
+  // 後方は ±150 ms の大ズレ境界で破棄、前方は 1,500 ms でライブエッジ再アンカーする。
+  reAnchorThresholdMs: 1_500,
+  // 音声アンカー線形外挿の有効窓: 1.5 s 超は idle、10 s 以上古いアンカーは破棄する（仕様 04 §2.3）。
+  audioExtrapolationMaxMs: 1_500,
+  audioAnchorDiscardMs: 10_000,
   jitterDropoutExcludeMs: 850,
   jitterSpreadThresholdMs: 90,
   adaptiveDelayMinMs: 60,
@@ -30,8 +43,6 @@ export const SYNC_CLOCK_CONSTANTS = {
   stallCushionMinMs: 180,
   stallCushionMaxMs: 450,
   stallQuietFramesForDecay: 8,
-  // 音声クロックよりこれ以上先行したフレームは待っても追いつけないため、ライブエッジへ再アンカーして即時描画する（AC-04 の収束境界）。
-  reAnchorThresholdMs: 1_500,
   sampleWindowSize: 60,
   minJitterSamples: 4,
 } as const;
@@ -70,6 +81,9 @@ export class MasterSyncClock {
   private videoAnchorPtsUs: number | null = null;
   private videoAnchorAtMs: number | null = null;
   private lastRenderAtMs: number | null = null;
+  // strict 1x ペースの直前予定描画時刻と対象 PTS。実 PTS 差分でのみ進める（仕様 04 §2.3）。
+  private plannedRenderAtMs: number | null = null;
+  private plannedPtsUs: number | null = null;
 
   private lastVideoArrivalAtMs: number | null = null;
   private arrivalIntervalsMs: number[] = [];
@@ -190,17 +204,67 @@ export class MasterSyncClock {
     const master = this.getMasterClockSnapshot(nowMs);
     if (master.valid && master.audioPlaybackPtsUs !== null) {
       const signedDriftMs = this.computeSignedAvDriftMs(videoPtsUs, master.audioPlaybackPtsUs);
-      if (signedDriftMs < -SYNC_CLOCK_CONSTANTS.lateDropThresholdMs) {
+      // 大ズレ安全網: 後方は −150 ms 境界超で破棄、前方は 1,500 ms 超で再アンカー即描画。
+      // ±150 ms 以内の通常ドリフトはフレーム破棄なしで PLL 速度補正のみ収束させる（仕様 04 §2.3 AC-04/06）。
+      if (signedDriftMs < -SYNC_CLOCK_CONSTANTS.pllLargeDriftThresholdMs) {
         return { action: "DROP_LATE", waitMs: 0, signedDriftMs };
       }
-      // 音声遅延が収束境界以上では待っても追いつけないため、ライブエッジ再アンカーで描画を再開する。
       if (signedDriftMs >= SYNC_CLOCK_CONSTANTS.reAnchorThresholdMs) {
+        this.plannedRenderAtMs = null;
+        this.plannedPtsUs = null;
         return this.applyMinRenderInterval(nowMs, signedDriftMs);
       }
-      if (signedDriftMs > SYNC_CLOCK_CONSTANTS.renderEarlyToleranceMs) {
-        return { action: "WAIT", waitMs: signedDriftMs, signedDriftMs };
+
+      // strict 1x: 前フレーム予定描画時刻 + 実 PTS 差分で厳密に計算する。同一フレームの再評価は予定を保持する。
+      let scheduledMs: number;
+      if (
+        this.plannedRenderAtMs !== null &&
+        this.plannedPtsUs !== null &&
+        videoPtsUs === this.plannedPtsUs
+      ) {
+        scheduledMs = this.plannedRenderAtMs;
+      } else if (
+        this.plannedRenderAtMs !== null &&
+        this.plannedPtsUs !== null &&
+        videoPtsUs > this.plannedPtsUs
+      ) {
+        scheduledMs = this.plannedRenderAtMs + (videoPtsUs - this.plannedPtsUs) / 1_000;
+      } else {
+        scheduledMs = nowMs + Math.max(0, signedDriftMs);
       }
-      return this.applyMinRenderInterval(nowMs, signedDriftMs);
+
+      // PLL マイクロ同期: デッドゾーン外のみ速度微小補正（フレーム破棄・音声再バッファなし）。
+      const absDrift = Math.abs(signedDriftMs);
+      if (absDrift > SYNC_CLOCK_CONSTANTS.pllDeadzoneMs) {
+        const maxShift =
+          absDrift > SYNC_CLOCK_CONSTANTS.pllLargeDriftThresholdMs
+            ? SYNC_CLOCK_CONSTANTS.pllLargeMaxShiftMsPerFrame
+            : SYNC_CLOCK_CONSTANTS.pllMaxShiftMsPerFrame;
+        const shiftMs = clamp(
+          signedDriftMs * SYNC_CLOCK_CONSTANTS.pllProportionalGainPerMs,
+          -maxShift,
+          maxShift,
+        );
+        scheduledMs += shiftMs;
+      }
+
+      // 音声マスタークロック基準: デッドゾーンを超えて音声ターゲットより先描画しない。
+      const audioTargetMs = nowMs + signedDriftMs;
+      scheduledMs = Math.max(scheduledMs, audioTargetMs - SYNC_CLOCK_CONSTANTS.pllDeadzoneMs);
+
+      if (
+        this.plannedRenderAtMs === null ||
+        this.plannedPtsUs === null ||
+        videoPtsUs >= this.plannedPtsUs
+      ) {
+        this.plannedRenderAtMs = Math.max(scheduledMs, nowMs);
+        this.plannedPtsUs = videoPtsUs;
+      }
+
+      if (scheduledMs <= nowMs + SYNC_CLOCK_CONSTANTS.immediateRenderWindowMs) {
+        return this.applyMinRenderInterval(nowMs, signedDriftMs);
+      }
+      return { action: "WAIT", waitMs: scheduledMs - nowMs, signedDriftMs };
     }
 
     if (this.videoAnchorPtsUs === null || this.videoAnchorAtMs === null) {
@@ -209,7 +273,7 @@ export class MasterSyncClock {
     const expectedNowPtsUs =
       this.videoAnchorPtsUs + Math.max(0, nowMs - this.videoAnchorAtMs) * 1_000;
     const deltaMs = (videoPtsUs - expectedNowPtsUs) / 1_000;
-    if (deltaMs > SYNC_CLOCK_CONSTANTS.renderEarlyToleranceMs) {
+    if (deltaMs > SYNC_CLOCK_CONSTANTS.immediateRenderWindowMs) {
       return { action: "WAIT", waitMs: deltaMs, signedDriftMs: 0 };
     }
     return this.applyMinRenderInterval(nowMs, 0);
@@ -224,11 +288,17 @@ export class MasterSyncClock {
   getMasterClockSnapshot(nowMs: number): MasterClockSnapshot {
     if (this.localAudioPtsUs !== null && this.localAudioUpdatedAtMs !== null) {
       const elapsedMs = Math.max(0, nowMs - this.localAudioUpdatedAtMs);
-      return {
-        audioPlaybackPtsUs: this.localAudioPtsUs + elapsedMs * 1_000,
-        source: "LOCAL_AUDIO",
-        valid: true,
-      };
+      // 10 s 以上古い音声アンカーは破棄し、線形外挿は 1.5 s 窓に限定する（超えは idle 扱い）。
+      if (elapsedMs >= SYNC_CLOCK_CONSTANTS.audioAnchorDiscardMs) {
+        this.localAudioPtsUs = null;
+        this.localAudioUpdatedAtMs = null;
+      } else if (elapsedMs <= SYNC_CLOCK_CONSTANTS.audioExtrapolationMaxMs) {
+        return {
+          audioPlaybackPtsUs: this.localAudioPtsUs + elapsedMs * 1_000,
+          source: "LOCAL_AUDIO",
+          valid: true,
+        };
+      }
     }
 
     if (this.primaryRef !== null) {
@@ -273,6 +343,8 @@ export class MasterSyncClock {
     this.videoAnchorPtsUs = null;
     this.videoAnchorAtMs = null;
     this.lastRenderAtMs = null;
+    this.plannedRenderAtMs = null;
+    this.plannedPtsUs = null;
     this.lastVideoArrivalAtMs = null;
     this.arrivalIntervalsMs = [];
     this.rttSamplesMs = [];

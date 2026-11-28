@@ -134,8 +134,8 @@ export class PlaybackController implements PlaybackControllerPort {
     this.renderer = new Canvas2DRenderer(this.clock);
     this.videoDecoder = new VideoDecoderPipeline(
       {
-        onFrame: (frame, streamEpoch) => {
-          this.handleDecodedVideoFrame(frame, streamEpoch);
+        onFrame: (frame, streamEpoch, isKeyframe) => {
+          this.handleDecodedVideoFrame(frame, streamEpoch, isKeyframe);
         },
         onDecoderError: () => {
           this.decoderErrorsDelta += 1;
@@ -191,7 +191,19 @@ export class PlaybackController implements PlaybackControllerPort {
         break;
       case "LIVE":
         if (prevQueueKind !== "LIVE") {
-          this.catchupQueue.clearAndCloseAll();
+          // 仕様 04 §2.1: LIVE 復帰は蓄積内最新キーフレームへの live-jump flush。以降の GOP は LIVE キューへ継承する。
+          const flushed = this.catchupQueue.liveJumpToLatestKeyframe();
+          if (flushed > 0) {
+            this.droppedFramesDelta += flushed;
+            this.deps.observer?.onDroppedFrames(flushed);
+          }
+          for (
+            let carried = this.catchupQueue.shift();
+            carried !== null;
+            carried = this.catchupQueue.shift()
+          ) {
+            this.liveQueue.push(carried);
+          }
         }
         this.ensureFeedbackTimer();
         break;
@@ -453,7 +465,11 @@ export class PlaybackController implements PlaybackControllerPort {
     }
   }
 
-  private handleDecodedVideoFrame(frame: VideoFrameLike, streamEpoch: number): void {
+  private handleDecodedVideoFrame(
+    frame: VideoFrameLike,
+    streamEpoch: number,
+    isKeyframe: boolean,
+  ): void {
     const activeQueue = this.getActiveQueue();
     if (this.disposed || activeQueue === null || streamEpoch !== this.epochGate.getActiveEpoch()) {
       safeCloseVideoFrame(frame);
@@ -463,6 +479,7 @@ export class PlaybackController implements PlaybackControllerPort {
     activeQueue.push({
       streamEpoch,
       ptsUs: frame.timestamp,
+      isKeyframe,
       frame,
       receivedAtMs: this.clock.nowMs(),
     });
@@ -616,6 +633,8 @@ export class PlaybackController implements PlaybackControllerPort {
     this.lastRenderedAtMs = nowMs;
     this.lastRenderedPtsUs = item.ptsUs;
     this.syncClock.recordFrameRendered(item.ptsUs, nowMs);
+    // 音声先走り保持の基準を毎描画で更新する（仕様 04 §2.2）。
+    this.audioPlayer.setVideoProgressPtsUs(item.ptsUs);
     this.renderedTimestampsMs.push(nowMs);
     this.pruneFpsWindow(nowMs);
   }

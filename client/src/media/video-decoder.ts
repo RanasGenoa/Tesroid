@@ -14,7 +14,7 @@ import type {
 } from "./ports.js";
 
 export interface VideoDecoderCallbacks {
-  readonly onFrame: (frame: VideoFrameLike, streamEpoch: number) => void;
+  readonly onFrame: (frame: VideoFrameLike, streamEpoch: number, isKeyframe: boolean) => void;
   readonly onDecoderError: (error: Error) => void;
   readonly onNeedsReset: () => void;
 }
@@ -262,6 +262,8 @@ export class VideoDecoderPipeline {
   private resetSequence = 0;
   private decoder: VideoDecoderAdapter | null = null;
   private configured = false;
+  // 入力 PTS → key フラグの対応。デコーダ出力の GOP 境界判定にのみ用いる（仕様 04 §2.1）。
+  private readonly pendingKeyFlags = new Map<number, boolean>();
   private disposed = false;
   private lastConfigBytes: Uint8Array | null = null;
   private recoveryTimer: ClientTimerHandle | null = null;
@@ -341,7 +343,13 @@ export class VideoDecoderPipeline {
           }
           return;
         }
-        this.callbacks.onFrame(frame, boundEpoch);
+        this.callbacks.onFrame(
+          frame,
+          boundEpoch,
+          // GOP 境界判定のため、入力時に記録した key フラグを PTS で照合する（出力順序は PTS 一致で保証）。
+          this.pendingKeyFlags.get(frame.timestamp) === true,
+        );
+        this.pendingKeyFlags.delete(frame.timestamp);
       },
       onError: (error) => {
         this.handleDecoderError(error, probeGen);
@@ -373,6 +381,7 @@ export class VideoDecoderPipeline {
     }
 
     const gen = this.decoderGen;
+    this.pendingKeyFlags.set(ptsUs, isKeyframe);
     try {
       this.decoder.decode(avccPayload, ptsUs, isKeyframe);
     } catch (err) {
@@ -402,6 +411,7 @@ export class VideoDecoderPipeline {
     this.cancelRecoveryTimer();
     this.resetSequence += 1;
     this.decoderGen += 1;
+    this.pendingKeyFlags.clear();
     if (newStreamEpoch > this.activeEpoch) {
       this.activeEpoch = newStreamEpoch;
       this.lastConfigBytes = null;
@@ -419,6 +429,7 @@ export class VideoDecoderPipeline {
     this.cancelRecoveryTimer();
     this.resetSequence += 1;
     this.decoderGen += 1;
+    this.pendingKeyFlags.clear();
     safeCloseDecoder(this.decoder);
     this.decoder = null;
     this.configured = false;
@@ -430,6 +441,7 @@ export class VideoDecoderPipeline {
       return;
     }
     this.decoderGen += 1;
+    this.pendingKeyFlags.clear();
     safeCloseDecoder(this.decoder);
     this.decoder = null;
     this.configured = false;

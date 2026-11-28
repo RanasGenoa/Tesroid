@@ -29,6 +29,11 @@ export const AUDIO_PLAYER_CONSTANTS = {
   scheduleLookaheadMs: 25,
   maxScheduleLookaheadMs: 500,
   maxBufferedMs: 45_000,
+  // 音声先走り保持: 映像進行よりこの値を超えて先行する音声はスケジュールしない（仕様 04 §2.2）。
+  videoLeadHoldMs: 8_000,
+  // stale 破棄は再生地点よりこの値超遅れた場合のみ。発動時は ≤60 ms 地点まで一括再同期する（≤1.5s ジッタでは絶対に破棄しない）。
+  staleDropBehindMs: 1_500,
+  staleResyncLeadMs: 60,
 } as const;
 
 export interface AudioPlayerPipelineOptions {
@@ -267,6 +272,8 @@ export class AudioPlayerPipeline {
   private holdForVideoBuffering = false;
   private holdStartedAtMs: number | null = null;
   private holdTimer: ClientTimerHandle | null = null;
+  // 映像描画の進行 PTS。音声の先走り保持（仕様 04 §2.2）にのみ用いる。
+  private videoProgressPtsUs: number | null = null;
 
   private playing = false;
   private needsDeclickFade = true;
@@ -425,6 +432,11 @@ export class AudioPlayerPipeline {
     this.adaptiveDelayMs = Math.min(SYNC_CLOCK_CONSTANTS.adaptiveDelayMaxMs, Math.max(0, delayMs));
   }
 
+  // Spec: docs/specs/04-client-playback-avsync.md#2.2
+  setVideoProgressPtsUs(ptsUs: number | null): void {
+    this.videoProgressPtsUs = ptsUs !== null && Number.isFinite(ptsUs) ? ptsUs : null;
+  }
+
   // Spec: docs/specs/04-client-playback-avsync.md#2.3
   setHoldForVideoBuffering(holding: boolean): void {
     if (holding) {
@@ -562,6 +574,9 @@ export class AudioPlayerPipeline {
       });
       this.queuedDurationUs += durationUs;
 
+      // stale 破棄は再生地点より 1.5 s 超遅れた場合のみ、≤60 ms 地点まで一括で再同期する（仕様 04 §2.2）。
+      this.dropStaleChunks();
+
       const maxBufferedUs = AUDIO_PLAYER_CONSTANTS.maxBufferedMs * 1_000;
       while (this.queuedDurationUs > maxBufferedUs && this.pcmQueue.length > 0) {
         const dropped = this.pcmQueue.shift();
@@ -573,6 +588,33 @@ export class AudioPlayerPipeline {
       this.drainSchedule();
     } finally {
       safeCloseAudioData(audioData);
+    }
+  }
+
+  private dropStaleChunks(): void {
+    const playbackPtsUs = this.getPlaybackPtsUs();
+    if (playbackPtsUs === null) {
+      return;
+    }
+    const staleBoundaryUs = playbackPtsUs - AUDIO_PLAYER_CONSTANTS.staleDropBehindMs * 1_000;
+    // 1.5 s 以内のジッタでは絶対に破棄しない（仕様 04 §2.2）。
+    if (!this.pcmQueue.some((chunk) => chunk.ptsUs + chunk.durationUs < staleBoundaryUs)) {
+      return;
+    }
+    // stale 発生時は再生地点+60 ms まで一括で再同期する。
+    const resyncTargetUs = playbackPtsUs + AUDIO_PLAYER_CONSTANTS.staleResyncLeadMs * 1_000;
+    let droppedCount = 0;
+    for (let i = this.pcmQueue.length - 1; i >= 0; i -= 1) {
+      const chunk = this.pcmQueue[i];
+      if (chunk === undefined || chunk.ptsUs + chunk.durationUs >= resyncTargetUs) {
+        continue;
+      }
+      this.pcmQueue.splice(i, 1);
+      this.queuedDurationUs = Math.max(0, this.queuedDurationUs - chunk.durationUs);
+      droppedCount += 1;
+    }
+    if (droppedCount > 0) {
+      this.observer?.emitTelemetry("audio", "stale_drop", { count: droppedCount });
     }
   }
 
@@ -649,6 +691,15 @@ export class AudioPlayerPipeline {
       if (this.nextScheduleCtxTimeSec - nowSec >= maxAheadSec) {
         break;
       }
+      // 音声先走り保持: 映像進行より 8 s 超先行する音声は再生スケジュールしない（仕様 04 §2.2）。
+      const head = this.pcmQueue[0];
+      if (
+        head !== undefined &&
+        this.videoProgressPtsUs !== null &&
+        head.ptsUs > this.videoProgressPtsUs + AUDIO_PLAYER_CONSTANTS.videoLeadHoldMs * 1_000
+      ) {
+        break;
+      }
       const chunk = this.pcmQueue.shift();
       if (chunk === undefined) {
         break;
@@ -687,6 +738,7 @@ export class AudioPlayerPipeline {
 
   private clearPlaybackSchedule(): void {
     this.cancelHoldTimer();
+    this.videoProgressPtsUs = null;
     for (const source of this.activeSources) {
       source.onended = null;
       try {
