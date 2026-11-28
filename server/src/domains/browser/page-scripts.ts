@@ -347,7 +347,9 @@ export function buildVolumeLockScript(): string {
   }
   g.__tesroidVolumeLockInstalled = true;
 
-  const enforceVolume = () => {
+  let enforcing = false;
+
+  const enforceVolumeInner = () => {
     const doc = g.document;
     if (!doc || typeof doc.querySelectorAll !== "function") {
       return;
@@ -367,13 +369,30 @@ export function buildVolumeLockScript(): string {
     if (typeof doc.querySelector === "function") {
       const ytPlayer = doc.querySelector("#movie_player");
       if (ytPlayer) {
-        if (typeof ytPlayer.unMute === "function") {
+        // 条件付き呼び出し: 音量100%・非ミュート成立中は再呼び出ししない。無条件呼び出しは
+        // プレイヤー側の volumechange 再発火と相互に発火し合い main thread を飽和させる。
+        const muted = typeof ytPlayer.isMuted === "function" ? Boolean(ytPlayer.isMuted()) : null;
+        if (muted !== false && typeof ytPlayer.unMute === "function") {
           ytPlayer.unMute();
         }
-        if (typeof ytPlayer.setVolume === "function") {
+        const volume = typeof ytPlayer.getVolume === "function" ? Number(ytPlayer.getVolume()) : null;
+        if (volume !== 100 && typeof ytPlayer.setVolume === "function") {
           ytPlayer.setVolume(100);
         }
       }
+    }
+  };
+
+  // 再入ガード: イベント経由の同期再突入を遮断し、収束後の恒久ループを構造的に成立させない。
+  const enforceVolume = () => {
+    if (enforcing) {
+      return;
+    }
+    enforcing = true;
+    try {
+      enforceVolumeInner();
+    } finally {
+      enforcing = false;
     }
   };
 
