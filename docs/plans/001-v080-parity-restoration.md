@@ -77,7 +77,7 @@ V0.8.0 はコンテナ内ブラウザの安定起動、GPU/CPU どちらでも�
 | P-4 | CATCHUP 蓄積キューの GOP 単位 trim と LIVE 復帰時の最新キーフレームへの live-jump flush | v0.8.0:decoder.ts（GOP trim・flushPendingForLiveJump） | CatchupVideoQueue はバイト/時間上限 trim のみ | **R**（キーフレーム途中破棄を構造的に起こさない） |
 | P-5 | 音声 overflow 保持（映像より 8〜60s 先行時に退避、>1.5s stale のみ ≤60ms 地点へ一括再同期） | v0.8.0:audio-player.ts | pcmQueue 45s trim + 送出順制御のみ | **R**（CATCHUP 中の音声先走り防止をクライアント側でも保証） |
 | P-6 | RTT 最小値履歴窓 8・CATCHUP/滞留中サンプル除外 | v0.8.0:streaming.ts | metrics-collector は EWMA + 鮮度のみ。仕様 03 §2.6 が既に要求 | **R+★** |
-| P-7 | 音切れ防止数値（初期クッション 160ms / アンダーラン判定 >40ms / 再バッファ 80ms / 先行 25・500ms / ゲイン 0.88 / デクリック 1ms / source 完了イベント給feed） | v0.8.0:audio-player.ts | AUDIO_PLAYER_CONSTANTS に同一値で継承済み | **K**（実装済み。回帰テストのみ追加） |
+| P-7 | 音切れ防止数値（初期クッション 160ms / アンダーラン判定 >40ms / 再バッファ 80ms / 先行 25・500ms / ゲイン 0.88 / デクリック 1ms / source 完了イベント音声供給） | v0.8.0:audio-player.ts | AUDIO_PLAYER_CONSTANTS に同一値で継承済み | **K**（実装済み。回帰テストのみ追加） |
 | P-8 | 適応ジッタ（90ms 閾値、60〜240ms、20ms/frame 昇・20ms/s 降） | v0.8.0:adaptive-jitter.ts | sync-clock に同一値継承 | **K**（同上） |
 
 ### 3.4 WS 配信・セッション（仕様 03 / 02）
@@ -98,7 +98,7 @@ V0.8.0 はコンテナ内ブラウザの安定起動、GPU/CPU どちらでも�
 | U-1 | トースト通知システム（色分け・アイコン・スライドイン・2.8s 自動消滅。設定反映・追加・入力操作のフィードバック） | **R** |
 | U-2 | アニメーション体系（spin / pulse ドット / signal-blink / ドロワーのスライドイン + backdrop-blur / `:active` scale(.96) / transition） | **R** |
 | U-3 | PIN 画面のフルスクリーン演出（radial-gradient 背景、緑 #00ff88 発光 PIN・接続ボタン、大型テンキー、ブランドヘッダー、試行回数表示）+ PIN 画面から「設定・管理コンソール」（入力中 PIN プリフィル）入口 | **R** |
-| U-4 | HUD アイコン式（SVG アイコン + monospace tabular-nums telemetry + 状態別バッジ配色: LIVE 緑 / buffering 水 / catchup 橙 / 正常 FPS 緑・低下橙） | **R**（V0.8.0 の「かっこよさ」の本体。ラベル文言は現行セレクタ出力を維持） |
+| U-4 | HUD アイコン式（SVG アイコン + monospace tabular-nums telemetry + 状態別バッジ配色: LIVE 緑 / `BUFFER_HOLD` 水 / `CATCHUP` 橙 / 正常 FPS 緑・低下橙） | **R**（V0.8.0 の「かっこよさ」の本体。ラベル文言は現行セレクタ出力を維持） |
 | U-5 | お気に入りドロワーのカードグリッド（タイトル+ホスト、ホーム青枠、空状態案内） | **R** |
 | U-6 | 起動中/スリープオーバーレイのリアルタイム health バッジ（Browser: 稼働中/準備中、配信: 送信中/待機中）+ スピナー | **R**（`/api/health` 実データで表示） |
 | U-7 | 品質統計タブの monospace グリッド化 | **R** |
