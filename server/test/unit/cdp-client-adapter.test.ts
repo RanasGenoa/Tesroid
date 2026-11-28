@@ -272,6 +272,33 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     expect(socket.sent.length).toBe(before);
   });
 
+  it("仕様 06 §2.4: setPageEventListener に SPA 遷移・DOMContentLoaded・load・メインフレーム frameNavigated を通知し、子フレーム遷移と null 解除では通知しない", async () => {
+    const fixture = createAdapterFixture();
+    const socket = await connectFixture(fixture);
+    const events: string[] = [];
+    fixture.client.setPageEventListener((event) => {
+      events.push(event);
+    });
+
+    socket.emitEvent("Page.navigatedWithinDocument", { url: "https://x/y" });
+    socket.emitEvent("Page.domContentEventFired", {});
+    socket.emitEvent("Page.loadEventFired", { timestamp: 1 });
+    socket.emitEvent("Page.frameNavigated", { frame: { id: "F1" } });
+    socket.emitEvent("Page.frameNavigated", { frame: { id: "F2", parentId: "F1" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toEqual([
+      "navigatedWithinDocument",
+      "domContentLoaded",
+      "load",
+      "frameNavigated",
+    ]);
+
+    fixture.client.setPageEventListener(null);
+    socket.emitEvent("Page.loadEventFired", {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toHaveLength(4);
+  });
+
   it("AC-01 付則: 再接続後も保持した初期化スクリプトを自動再登録する", async () => {
     const fixture = createAdapterFixture();
     const socket = await connectFixture(fixture);

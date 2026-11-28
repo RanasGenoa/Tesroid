@@ -1,5 +1,13 @@
 import type { AlignedDimensions, SpecialKey } from "@tesroid/shared";
 
+// 仕様 06 §2.4: ページ遷移・読み込み完了の CDP イベント種別。ドメイン Port とは構造的に整合する単独定義
+// （infra → domains の import は依存マトリクスで禁止されるため、統合は app 層配線時の型検査で強制する）。
+export type PageNavigationEvent =
+  | "frameNavigated"
+  | "navigatedWithinDocument"
+  | "load"
+  | "domContentLoaded";
+
 // 仕様 06 §2.2: CDP（127.0.0.1:9222）専用経路のクライアントアダプタ。
 // WebSocket とターゲット一覧 HTTP は外部 I/O 境界であり、テストでは Fake に差し替える。
 
@@ -94,6 +102,7 @@ export class NodeCdpClient {
   private pageInitScriptSource: string | null = null;
   private pageDomainEnabled = false;
   private injectedScriptIdentifier: string | null = null;
+  private pageEventListener: ((event: PageNavigationEvent) => void) | null = null;
   private nextCommandId = 1;
   private readonly pending = new Map<number, PendingCommand>();
 
@@ -227,6 +236,11 @@ export class NodeCdpClient {
     }
   }
 
+  // 仕様 06 §2.4: ページ監視の即時同期。接続ごとに 1 回登録し、null で解除する。
+  setPageEventListener(listener: ((event: PageNavigationEvent) => void) | null): void {
+    this.pageEventListener = listener;
+  }
+
   async getPageInfo(): Promise<{ readonly url: string | null; readonly title: string | null }> {
     const value = await this.evaluate<{ url?: unknown; title?: unknown }>(PAGE_INFO_EXPRESSION);
     return {
@@ -347,8 +361,23 @@ export class NodeCdpClient {
       const frame = (message.params as { frame?: { parentId?: unknown } } | undefined)?.frame;
       if (frame !== undefined && frame.parentId === undefined) {
         void this.applyPageInitScript();
+        this.pageEventListener?.("frameNavigated");
       }
       return;
+    }
+    // 仕様 06 §2.4: SPA 遷移・読み込み完了も即時に上位へ通知し、URL・タイトル同期を 3 秒ポーリング待ちにしない。
+    if (message.id === undefined) {
+      const immediateEvent: PageNavigationEvent | null =
+        message.method === "Page.navigatedWithinDocument"
+          ? "navigatedWithinDocument"
+          : message.method === "Page.loadEventFired"
+            ? "load"
+            : message.method === "Page.domContentEventFired"
+              ? "domContentLoaded"
+              : null;
+      if (immediateEvent !== null) {
+        this.pageEventListener?.(immediateEvent);
+      }
     }
     if (typeof message.id !== "number") {
       return;

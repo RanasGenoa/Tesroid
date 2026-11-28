@@ -20,9 +20,13 @@ import type { BrowserInputRouter, DroppedInputKind } from "./input-router.js";
 import {
   buildChromeLaunchArgs,
   buildChromeProcessEnv,
+  buildNullSinkModuleArgs,
   buildPulseAudioLaunchArgs,
   buildXvfbLaunchArgs,
+  CHROME_BINARY_CANDIDATES,
+  deriveAcceptLanguages,
   sanitizeChromePreferences,
+  VIRTUAL_SINK_NAME,
 } from "./launch-args.js";
 import { buildCombinedPageInitScript } from "./page-scripts.js";
 import type {
@@ -30,6 +34,7 @@ import type {
   BrowserLaunchConfig,
   BrowserPageInfo,
   CdpClientPort,
+  PageNavigationEvent,
 } from "./ports.js";
 
 const PULSE_READY_TIMEOUT_MS = 3_000;
@@ -37,8 +42,10 @@ const PULSE_READY_POLL_MS = 100;
 const CDP_RECONNECT_INTERVAL_MS = 2_000;
 const CHROME_CRASH_RESTART_DELAY_MS = 2_000;
 const PAGE_MONITOR_INTERVAL_MS = 3_000;
+// SPA（navigatedWithinDocument）ではタイトル後更新が一般的なため、URL 即時同期後に一度だけ遅延再取得する。
+const PAGE_TITLE_REFETCH_DELAY_MS = 400;
 const PROCESS_TERMINATE_GRACE_MS = 1_500;
-const CHROME_SINGLETON_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"] as const;
+const CHROME_BINARY_PROBE_TIMEOUT_MS = 2_000;
 
 export interface BrowserServiceDeps {
   readonly clock: Clock;
@@ -64,6 +71,7 @@ export class BrowserService implements BrowserControlPort {
   private viewport: AlignedDimensions;
   private displayScale: number;
   private currentPageInfo: BrowserPageInfo = { url: null, title: null };
+  private chromeBinary: string | null = null;
 
   private started = false;
   private stopping = false;
@@ -91,11 +99,13 @@ export class BrowserService implements BrowserControlPort {
     this.restarting = false;
 
     try {
+      await this.cleanupPulseAudio();
       this.pulseProc = this.deps.processRunner.spawn({
         command: "pulseaudio",
         args: buildPulseAudioLaunchArgs(),
       });
-      await this.waitForPulseAudioReady();
+      await this.waitForPulseAudioReadyWithSelfHeal();
+      await this.ensureVirtualSink();
 
       this.xvfbProc = this.deps.processRunner.spawn({
         command: "Xvfb",
@@ -128,6 +138,7 @@ export class BrowserService implements BrowserControlPort {
     this.deps.inputRouter.dispose();
 
     try {
+      this.deps.cdp.setPageEventListener(null);
       await this.deps.cdp.disconnect();
     } catch {
       // Ignore disconnect errors during shutdown.
@@ -326,26 +337,120 @@ export class BrowserService implements BrowserControlPort {
     });
   }
 
+  // 仕様 06 AC-08: 起動前自己修復 — stale ソケット除去と既存デーモンの终止で、コンテナ再起動残存状態を継承しない。
+  private async cleanupPulseAudio(): Promise<void> {
+    const socketPath = this.deps.config.pulseSocketPath.replace(/^unix:/, "");
+    try {
+      await fs.rm(socketPath, { force: true });
+    } catch {
+      // ソケット不在の正常系はそのまま続行する。
+    }
+    try {
+      await this.deps.processRunner.exec("pulseaudio", ["-k"], { timeoutMs: 1_000 });
+    } catch {
+      // デーモン不在（初回起動）は正常系。
+    }
+  }
+
+  // fail-fast は自己修復の後に適用する（仕様 06 §2.1）: 掃除→再生成を 1 度試みた後も無応答の場合のみ失敗とする。
+  private async waitForPulseAudioReadyWithSelfHeal(): Promise<void> {
+    try {
+      await this.waitForPulseAudioReady();
+    } catch {
+      await this.cleanupPulseAudio();
+      await this.terminateProcess(this.pulseProc);
+      this.pulseProc = this.deps.processRunner.spawn({
+        command: "pulseaudio",
+        args: buildPulseAudioLaunchArgs(),
+      });
+      await this.waitForPulseAudioReady();
+    }
+  }
+
+  // 仕様 06 AC-08: 起動後自己修復 — 仮想シンク欠落時に `.pa` と同一構成で再ロードし、既定・音量・ミュートを強制する。
+  private async ensureVirtualSink(): Promise<void> {
+    const pulseEnv = {
+      ...process.env,
+      PULSE_SERVER: this.getPulseServerAddress(),
+    };
+    const listed = await this.deps.processRunner.exec("pactl", ["list", "short", "sinks"], {
+      env: pulseEnv,
+      timeoutMs: 1_000,
+    });
+    if (listed.exitCode === 0 && listed.stdout.includes(VIRTUAL_SINK_NAME)) {
+      return;
+    }
+    await this.deps.processRunner.exec("pactl", [...buildNullSinkModuleArgs()], {
+      env: pulseEnv,
+      timeoutMs: 2_000,
+    });
+    const enforcement: readonly (readonly string[])[] = [
+      ["set-default-sink", VIRTUAL_SINK_NAME],
+      ["set-sink-volume", VIRTUAL_SINK_NAME, "100%"],
+      ["set-sink-mute", VIRTUAL_SINK_NAME, "0"],
+    ];
+    for (const args of enforcement) {
+      await this.deps.processRunner.exec("pactl", [...args], { env: pulseEnv, timeoutMs: 1_000 });
+    }
+  }
+
+  // 仕様 06 §2.1: 4 候補から実行可能な最初のものを選択し、同一インスタンスでは結果を保持する。
+  private async resolveChromeBinary(): Promise<string> {
+    if (this.chromeBinary !== null) {
+      return this.chromeBinary;
+    }
+    for (const candidate of CHROME_BINARY_CANDIDATES) {
+      let exitCode = 1;
+      try {
+        const probe = await this.deps.processRunner.exec(candidate, ["--version"], {
+          timeoutMs: CHROME_BINARY_PROBE_TIMEOUT_MS,
+        });
+        exitCode = probe.exitCode ?? 1;
+      } catch {
+        exitCode = 1;
+      }
+      if (exitCode === 0) {
+        this.chromeBinary = candidate;
+        return candidate;
+      }
+    }
+    this.chromeBinary = CHROME_BINARY_CANDIDATES[0];
+    return this.chromeBinary;
+  }
+
   private async prepareUserDataDir(): Promise<void> {
     const { userDataDir } = this.deps.config;
     await fs.mkdir(userDataDir, { recursive: true });
 
-    for (const fileName of CHROME_SINGLETON_FILES) {
-      await fs.rm(path.join(userDataDir, fileName), { force: true });
-    }
-
-    const defaultDir = path.join(userDataDir, "Default");
-    const prefsPath = path.join(defaultDir, "Preferences");
-    let existingPrefs: string | null = null;
+    // ワイルドカード全除去: クラッシュ残存 Singleton* はファイル名列挙に依存せずすべて退避させる。
+    let entries: string[];
     try {
-      existingPrefs = await fs.readFile(prefsPath, "utf8");
+      entries = await fs.readdir(userDataDir);
     } catch {
-      existingPrefs = null;
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (entry.startsWith("Singleton")) {
+        await fs.rm(path.join(userDataDir, entry), { recursive: true, force: true });
+      }
     }
 
-    const sanitized = sanitizeChromePreferences(existingPrefs);
-    await fs.mkdir(defaultDir, { recursive: true });
-    await fs.writeFile(prefsPath, sanitized.rawJson, "utf8");
+    // クラッシュ状態はトップレベルとプロファイル配下の両 Preferences について修復する。
+    const acceptLanguages = deriveAcceptLanguages(this.deps.config.locale);
+    for (const prefsPath of [
+      path.join(userDataDir, "Preferences"),
+      path.join(userDataDir, "Default", "Preferences"),
+    ]) {
+      let existingPrefs: string | null = null;
+      try {
+        existingPrefs = await fs.readFile(prefsPath, "utf8");
+      } catch {
+        existingPrefs = null;
+      }
+      const sanitized = sanitizeChromePreferences(existingPrefs, acceptLanguages);
+      await fs.mkdir(path.dirname(prefsPath), { recursive: true });
+      await fs.writeFile(prefsPath, sanitized.rawJson, "utf8");
+    }
   }
 
   private async launchChromeProcess(): Promise<void> {
@@ -372,7 +477,7 @@ export class BrowserService implements BrowserControlPort {
     );
 
     const proc = this.deps.processRunner.spawn({
-      command: "google-chrome",
+      command: await this.resolveChromeBinary(),
       args,
       env,
     });
@@ -425,6 +530,10 @@ export class BrowserService implements BrowserControlPort {
     try {
       await this.deps.cdp.connect(this.deps.config.cdpPort);
       this.clearCdpReconnectTimer();
+      // 仕様 06 §2.4: CDP イベントでの即時同期を主経路とし、3 秒間隔ポーリングはフォールバックとして維持する。
+      this.deps.cdp.setPageEventListener((event) => {
+        this.handlePageNavigationEvent(event);
+      });
       await this.deps.cdp.setPageInitScript(
         buildCombinedPageInitScript({ displayScale: this.displayScale }),
       );
@@ -463,6 +572,17 @@ export class BrowserService implements BrowserControlPort {
     if (this.monitorTimer !== null) {
       this.deps.clock.clearInterval(this.monitorTimer);
       this.monitorTimer = null;
+    }
+  }
+
+  // 仕様 06 §2.4: 遷移イベントで即時に URL・タイトルを評価する。SPA 遷移はタイトル後更新が一般的なため
+  // 即時同期に加え 400 ms 後に一度だけ再取得する。
+  private handlePageNavigationEvent(event: PageNavigationEvent): void {
+    void this.pollPageInfoOnce();
+    if (event === "navigatedWithinDocument") {
+      this.deps.clock.setTimeout(() => {
+        void this.pollPageInfoOnce();
+      }, PAGE_TITLE_REFETCH_DELAY_MS);
     }
   }
 

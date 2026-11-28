@@ -16,10 +16,14 @@ import {
   buildChromeProcessEnv,
   buildCombinedPageInitScript,
   buildDisplayScaleScript,
+  buildNullSinkModuleArgs,
   buildPulseAudioLaunchArgs,
+  buildVirtualFullscreenScript,
   buildXvfbLaunchArgs,
+  CHROME_BINARY_CANDIDATES,
   PROHIBITED_CHROME_FLAGS,
   sanitizeChromePreferences,
+  VIRTUAL_SINK_NAME,
 } from "../../src/domains/browser/index.js";
 import { PowerService, PowerTimers } from "../../src/domains/power/index.js";
 import type {
@@ -103,9 +107,14 @@ interface SyntheticDomHarness {
     unMute(): void;
     setVolume(v: number): void;
   };
+  readonly ytpButton: {
+    removedAttributes: string[];
+    stylePropertyCalls: string[][];
+    removeAttribute(attr: string): void;
+  };
   readonly passthroughCalls: unknown[];
   readonly dispatchedEvents: string[];
-  triggerDocumentEvent(eventName: string): void;
+  triggerDocumentEvent(eventName: string, evt?: unknown): void;
   advanceIntervals(ms: number): void;
 }
 
@@ -159,6 +168,22 @@ function createSyntheticDomHarness(options?: {
     },
   };
 
+  const ytpButton = Object.assign(new FakeElement(), {
+    removedAttributes: [] as string[],
+    stylePropertyCalls: [] as string[][],
+    style: {
+      setProperty(name: string, value: string, priority: string): void {
+        ytpButton.stylePropertyCalls.push([name, value, priority]);
+      },
+    },
+    removeAttribute(attr: string): void {
+      this.removedAttributes.push(attr);
+    },
+    closest(selector: string): unknown {
+      return selector === ".ytp-fullscreen-button" ? this : null;
+    },
+  });
+
   const includeVideo = options?.includeVideo ?? true;
 
   const cookies: string[] = [];
@@ -194,6 +219,9 @@ function createSyntheticDomHarness(options?: {
       }
       if (selector === "#movie_player") {
         return ytPlayer;
+      }
+      if (selector === ".ytp-fullscreen-button") {
+        return ytpButton;
       }
       return null;
     },
@@ -280,11 +308,12 @@ function createSyntheticDomHarness(options?: {
     playerElement,
     videoElement,
     ytPlayer,
+    ytpButton,
     passthroughCalls,
     dispatchedEvents,
-    triggerDocumentEvent: (eventName: string) => {
+    triggerDocumentEvent: (eventName: string, evt?: unknown) => {
       for (const listener of docListeners.get(eventName) ?? []) {
-        listener(new FakeEvent(eventName));
+        listener(evt ?? new FakeEvent(eventName));
       }
     },
     advanceIntervals: (ms: number) => {
@@ -317,7 +346,18 @@ describe("server/domains/browser (Spec 06)", () => {
     }
     expect(args).toContain("--app=https://tver.jp");
     expect(args).toContain(`--lang=${DEFAULT_LOCALE}`);
+    // 仕様 06 §2.1: Accept-Language 順序リストを起動引数で明示する。
+    expect(args).toContain("--accept-lang=ja-JP,ja,en-US,en");
     expect(args).toContain("--password-store=basic");
+    // 車載表示・タッチ能力・耐障害フラグは常に含める（仕様 06 AC-01）。
+    for (const required of [
+      "--touch-events=enabled",
+      "--force-dark-mode",
+      "--disable-gpu-sandbox",
+      "--hide-crash-restore-bubble",
+    ]) {
+      expect(args).toContain(required);
+    }
     // レンダリングとコンポジティングの不一致は再生画面の描画破綻を起こすため、強制ソフトウェア化フラグは付与しない（v0.8.0 実績準拠）。
     expect(args).not.toContain("--disable-gpu-rasterization");
     expect(args).toContain("--enable-accelerated-video-decode");
@@ -376,6 +416,8 @@ describe("server/domains/browser (Spec 06)", () => {
     expect(chromeEnv.TUNNEL_TOKEN).toBeUndefined();
     expect(chromeEnv.LIBVA_DRIVER_NAME).toBeUndefined();
     expect(chromeEnv.PULSE_SERVER).toBe("unix:/tmp/pulse-socket");
+    // 既定シンクへの暗黙依存を排除し、仮想シンクへ明示バインドする（仕様 06 AC-01）。
+    expect(chromeEnv.PULSE_SINK).toBe(VIRTUAL_SINK_NAME);
     expect(chromeEnv.LANG).toBe("ja_JP.UTF-8");
     expect(chromeEnv.TZ).toBe("Asia/Tokyo");
 
@@ -409,13 +451,15 @@ describe("server/domains/browser (Spec 06)", () => {
     });
 
     await service.start();
+    // 実行時検出: 既定 Fake では全候補が実行可能 → 先頭候補を選ぶ（仕様 06 §2.1）。
     expect(processRunner.spawnCalls.map((call) => call.command)).toEqual([
       "pulseaudio",
       "Xvfb",
       "openbox",
-      "google-chrome",
+      CHROME_BINARY_CANDIDATES[0],
     ]);
-    expect(processRunner.execCalls[0]?.command).toBe("pactl");
+    // 起動前自己修復（stale ソケット掃除と既存デーモン终止）が最先行で、その後に応答確認・シンク点検が続く。
+    expect(processRunner.execCalls[0]).toMatchObject({ command: "pulseaudio", args: ["-k"] });
     expect(cdp.connectedPort).toBe(9222);
 
     await expect(fs.access(path.join(userDataDir, "SingletonLock"))).rejects.toThrow();
@@ -431,7 +475,7 @@ describe("server/domains/browser (Spec 06)", () => {
     await vi.waitFor(() => {
       expect(processRunner.spawnCalls).toHaveLength(5);
     });
-    expect(processRunner.spawnCalls[4]?.command).toBe("google-chrome");
+    expect(processRunner.spawnCalls[4]?.command).toBe(CHROME_BINARY_CANDIDATES[0]);
 
     await service.stop();
   });
@@ -498,11 +542,315 @@ describe("server/domains/browser (Spec 06)", () => {
     });
 
     await service.start();
-    const chromeSpawn = processRunner.spawnCalls.find((call) => call.command === "google-chrome");
+    const chromeSpawn = processRunner.spawnCalls.find((call) =>
+      (CHROME_BINARY_CANDIDATES as readonly string[]).includes(call.command),
+    );
     expect(chromeSpawn?.args).toContain("--render-node-override=/dev/dri/renderD128");
     expect(detectCount).toBe(1);
 
     await service.stop();
+  });
+
+  it("仕様 06 AC-01: selects the first executable browser binary from the four candidates at runtime", async () => {
+    const userDataDir = await makeTempDir();
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    const processRunner = new FakeProcessRunner();
+    // 先頭候補のみ実行不可（127）→ 第2候補を採用する実行時検出。
+    processRunner.execHandler = async (command: string) => {
+      if (command === CHROME_BINARY_CANDIDATES[0]) {
+        return { exitCode: 127, stdout: "", stderr: "not found", timedOut: false };
+      }
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp: new FakeCdpClient(),
+      inputRouter: new BrowserInputRouter({ clock, cdp: new FakeCdpClient() }),
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: "/tmp/pulse-socket",
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    await service.start();
+    expect(processRunner.spawnCalls[3]?.command).toBe(CHROME_BINARY_CANDIDATES[1]);
+    const probed = processRunner.execCalls
+      .filter((call) => call.args[0] === "--version")
+      .map((call) => call.command);
+    expect(probed).toEqual([CHROME_BINARY_CANDIDATES[0], CHROME_BINARY_CANDIDATES[1]]);
+
+    await service.stop();
+  });
+
+  it("仕様 06 AC-08: cleans stale socket and daemon before start, and reloads the missing virtual sink with default/volume/mute enforcement after start", async () => {
+    const userDataDir = await makeTempDir();
+    const socketPath = path.join(userDataDir, "pulse-socket");
+    await fs.writeFile(socketPath, "stale", "utf8");
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    // 既定 Fake: pactl info は成功するが list short sinks の出力は空（シンク欠落再現）。
+    const processRunner = new FakeProcessRunner();
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp: new FakeCdpClient(),
+      inputRouter: new BrowserInputRouter({ clock, cdp: new FakeCdpClient() }),
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: socketPath,
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    await service.start();
+    // 起動前自己修復: 既存デーモン终止が最先行し、stale ソケットは除去済み。
+    expect(processRunner.execCalls[0]).toMatchObject({ command: "pulseaudio", args: ["-k"] });
+    await expect(fs.access(socketPath)).rejects.toThrow();
+
+    const pactlArgs = processRunner.execCalls
+      .filter((call) => call.command === "pactl")
+      .map((call) => call.args.join(" "));
+    expect(pactlArgs).toContain("list short sinks");
+    // 再ロードは `.pa` 焼き込み行と同一構成（buildNullSinkModuleArgs）で行う。
+    expect(pactlArgs).toContain(buildNullSinkModuleArgs().join(" "));
+    expect(pactlArgs).toContain(`set-default-sink ${VIRTUAL_SINK_NAME}`);
+    expect(pactlArgs).toContain(`set-sink-volume ${VIRTUAL_SINK_NAME} 100%`);
+    expect(pactlArgs).toContain(`set-sink-mute ${VIRTUAL_SINK_NAME} 0`);
+
+    await service.stop();
+  });
+
+  it("仕様 06 AC-08: skips the sink reload when the virtual sink already exists", async () => {
+    const userDataDir = await makeTempDir();
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    const processRunner = new FakeProcessRunner();
+    processRunner.execHandler = async (_command: string, args: readonly string[]) => {
+      if (args[0] === "list") {
+        return {
+          exitCode: 0,
+          stdout: `0\t${VIRTUAL_SINK_NAME}\tmodule-null-sink\n`,
+          stderr: "",
+          timedOut: false,
+        };
+      }
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp: new FakeCdpClient(),
+      inputRouter: new BrowserInputRouter({ clock, cdp: new FakeCdpClient() }),
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: "/tmp/pulse-socket",
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    await service.start();
+    const pactlArgs = processRunner.execCalls
+      .filter((call) => call.command === "pactl")
+      .map((call) => call.args.join(" "));
+    expect(pactlArgs).toContain("list short sinks");
+    expect(pactlArgs).not.toContain(buildNullSinkModuleArgs().join(" "));
+
+    await service.stop();
+  });
+
+  it("仕様 06 AC-08: fails to start only after one self-heal regeneration when PulseAudio never responds", async () => {
+    const userDataDir = await makeTempDir();
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    const processRunner = new FakeProcessRunner();
+    // pactl info は常に無応答（終了コード 1）。
+    processRunner.execHandler = async (command: string) => {
+      if (command === "pactl") {
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
+      }
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp: new FakeCdpClient(),
+      inputRouter: new BrowserInputRouter({ clock, cdp: new FakeCdpClient() }),
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: "/tmp/pulse-socket",
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    const startPromise = service.start();
+    // 駆動ループ中に rejection が一時未処理にならないよう、先にハンドラを添えてから後で検証する。
+    startPromise.catch(() => undefined);
+    // 起動待ち上限（3,000 ms）× 2 回 + 掃除をフォールバック実時間進めで駆動する。
+    for (let i = 0; i < 400; i += 1) {
+      clock.advanceByMs(50);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await expect(startPromise).rejects.toThrow(/PulseAudio/);
+
+    const pulseSpawns = processRunner.spawnCalls.filter((call) => call.command === "pulseaudio");
+    expect(pulseSpawns).toHaveLength(2);
+    const daemonKills = processRunner.execCalls.filter(
+      (call) => call.command === "pulseaudio" && call.args[0] === "-k",
+    );
+    expect(daemonKills).toHaveLength(2);
+  });
+
+  it("仕様 06 AC-07: syncs URL and title immediately on navigation events without waiting for the 3s poll, and refetches the title 400ms after an in-document navigation", async () => {
+    const userDataDir = await makeTempDir();
+    const clock = new FakeClock();
+    const settings = new SettingsService({
+      store: new FakeAtomicJsonStore(),
+      filePath: path.join(userDataDir, "settings.json"),
+    });
+    await settings.load();
+
+    const processRunner = new FakeProcessRunner();
+    const cdp = new FakeCdpClient();
+    const collected: { url: string | null; title: string | null }[] = [];
+    const service = new BrowserService({
+      clock,
+      settings,
+      processRunner,
+      processTree: new NodeProcessTreeController({ processRunner }),
+      cdp,
+      inputRouter: new BrowserInputRouter({ clock, cdp }),
+      onPageInfoChanged: (info) => {
+        collected.push(info);
+      },
+      config: {
+        display: ":99",
+        locale: "ja-JP",
+        userDataDir,
+        pulseSocketPath: "/tmp/pulse-socket",
+        cdpPort: 9222,
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+
+    await service.start();
+
+    // frameNavigated: 3 秒監視タイマーを進めずとも即時に同期される。
+    cdp.pageInfo = { url: "https://tver.jp/live/abc123", title: "TVer 見逃し配信" };
+    cdp.emitPageEvent("frameNavigated");
+    await vi.waitFor(() => {
+      expect(collected.at(-1)).toEqual({
+        url: "https://tver.jp/live/abc123",
+        title: "TVer 見逃し配信",
+      });
+    });
+
+    // navigatedWithinDocument: URL は即時、タイトルは 400 ms 後の再取得で更新される。
+    cdp.pageInfo = { url: "https://www.youtube.com/watch?v=xyz", title: "before" };
+    cdp.emitPageEvent("navigatedWithinDocument");
+    await vi.waitFor(() => {
+      expect(collected.at(-1)?.url).toBe("https://www.youtube.com/watch?v=xyz");
+    });
+    cdp.pageInfo = { url: "https://www.youtube.com/watch?v=xyz", title: "after" };
+    clock.advanceByMs(400);
+    await vi.waitFor(() => {
+      expect(collected.at(-1)?.title).toBe("after");
+    });
+
+    await service.stop();
+  });
+
+  it("仕様 06 AC-07: keeps the YouTube fullscreen button interactive, routes its tap into virtual fullscreen, and releases on SPA navigation", () => {
+    const harness = createSyntheticDomHarness();
+    vm.runInContext(buildVirtualFullscreenScript(), harness.context);
+
+    // 初期保守: disabled / aria-disabled 除去と pointer-events 強制。
+    expect(harness.ytpButton.removedAttributes).toEqual(
+      expect.arrayContaining(["disabled", "aria-disabled"]),
+    );
+    expect(harness.ytpButton.stylePropertyCalls).toContainEqual([
+      "pointer-events",
+      "auto",
+      "important",
+    ]);
+    // プレイヤー内部 toggleFullscreen は仮想フルスクリーンへ接続される。
+    const ytPlayerWithToggle = harness.ytPlayer as { toggleFullscreen?: unknown };
+    expect(typeof ytPlayerWithToggle.toggleFullscreen).toBe("function");
+
+    // 2 秒周期で再度 disabled 化されても復元する。
+    harness.ytpButton.removedAttributes = [];
+    harness.advanceIntervals(2_000);
+    expect(harness.ytpButton.removedAttributes).toEqual(
+      expect.arrayContaining(["disabled", "aria-disabled"]),
+    );
+
+    // フルスクリーンボタンタップは capture 位相で遮断され、仮想フルスクリーンへ入る。
+    let prevented = false;
+    harness.triggerDocumentEvent("click", {
+      target: harness.ytpButton,
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
+    expect(harness.playerElement.classList.has("tesroid-vfs-target")).toBe(true);
+
+    // 動画領域以外の装飾（コメント欄・ガイド・cinematics・プレイヤー背景）の非表示化を含む。
+    const styleEl = harness.docObj.head.children[0] as { textContent: string };
+    for (const selector of [
+      ".tesroid-vfs-active #comments",
+      ".tesroid-vfs-active #guide-wrapper",
+      ".tesroid-vfs-active #cinematics",
+      ".tesroid-vfs-active .player-container-background",
+    ]) {
+      expect(styleEl.textContent).toContain(selector);
+    }
+
+    // SPA 遷移（yt-navigate-start）で仮想フルスクリーンを自動解除する。
+    harness.triggerDocumentEvent("yt-navigate-start");
+    expect(harness.playerElement.classList.has("tesroid-vfs-target")).toBe(false);
   });
 
   it("AC-02: injects CDP native touch with 8px slop, 80ms/15px debounce (promoting >8px drag), 2,500ms cancel, residual reset, and safely drops inputs when CDP disconnected", async () => {
@@ -711,9 +1059,15 @@ describe("server/domains/browser (Spec 06)", () => {
         },
         custom_key: "preserved",
       }),
+      "ja-JP,ja,en-US,en",
     );
     const parsed = JSON.parse(repaired.rawJson) as Record<string, unknown>;
     expect(parsed.custom_key).toBe("preserved");
+    // Accept-Language 順序リストは Preferences 側にも同一順序で明示する（仕様 06 §2.1）。
+    expect(parsed.intl).toEqual({
+      accept_languages: "ja-JP,ja,en-US,en",
+      selected_languages: "ja-JP,ja,en-US,en",
+    });
     expect(parsed.credentials_enable_service).toBe(false);
     expect(parsed.credentials_enable_autosignin).toBe(false);
     expect(parsed.autofill).toEqual({
