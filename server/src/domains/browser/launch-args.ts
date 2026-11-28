@@ -20,6 +20,47 @@ const ENABLED_CHROME_FEATURES = ["AcceleratedVideoDecodeLinuxGL", "VaapiIgnoreDr
   ",",
 );
 
+// Dockerfile の /etc/pulse/tesroid.pa が生成する仮想シンクと同一名称で一致させる（pulse-socket 整合テストで強制）。
+export const VIRTUAL_SINK_NAME = "virtual_sink";
+
+// 起動後自己修復の再ロード引数は `.pa` 焼き込み行と同一構成でなければならない（同じ整合テストで一致を検証）。
+export function buildNullSinkModuleArgs(): readonly string[] {
+  return [
+    "load-module",
+    "module-null-sink",
+    `sink_name=${VIRTUAL_SINK_NAME}`,
+    "rate=48000",
+    "channels=2",
+    "format=s16le",
+    "sink_properties=device.description=Tesroid_Virtual_Sink",
+  ];
+}
+
+// Chrome バイナリは固定シンボルリンク名に依存せず、実行可能な最初の候補を選ぶ（仕様 06 §2.1）。
+export const CHROME_BINARY_CANDIDATES = [
+  "google-chrome-stable",
+  "google-chrome",
+  "chromium-browser",
+  "chromium",
+] as const;
+
+// --lang と Preferences の両方で同一順序を明示するため、LOCALE から Accept-Language 順序リストを導出する。
+export function deriveAcceptLanguages(locale: string): string {
+  const effective = locale.trim() || DEFAULT_LOCALE;
+  const primary = effective.split("-")[0] ?? effective;
+  const ordered = [effective];
+  if (primary !== effective) {
+    ordered.push(primary);
+  }
+  if (!ordered.includes("en-US")) {
+    ordered.push("en-US");
+  }
+  if (!ordered.includes("en")) {
+    ordered.push("en");
+  }
+  return ordered.join(",");
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -50,15 +91,23 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--window-position=0,0",
     `--window-size=${width},${height}`,
     `--lang=${locale}`,
+    `--accept-lang=${deriveAcceptLanguages(locale)}`,
     "--password-store=basic",
     "--no-first-run",
     "--no-default-browser-check",
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
     "--disable-notifications",
     "--disable-translate",
     "--disable-sync",
+    // タッチ能力検出で UI を切り替えるサイトがあるため Blink のタッチ機能を明示有効化する（車載はタッチのみ）。
+    "--touch-events=enabled",
+    // 車載眩低減のためダークテーマを Cookie に加え恒久化する。
+    "--force-dark-mode",
+    // GPU プロセスの /dev/dri アクセス担保（VAAPI デコードはコンテナ内サンドボックス外アクセスが必要）。
+    "--disable-gpu-sandbox",
     // 仮想 GPU 構成では Chrome の GPU ブロックリストが HW 動画デコード判定自体を無効化するため除外する。
     "--ignore-gpu-blocklist",
     "--enable-accelerated-video-decode",
@@ -106,7 +155,10 @@ export function buildPulseAudioLaunchArgs(): readonly string[] {
 }
 
 // Spec: docs/specs/06-browser-input-cdp.md#2.3
-export function sanitizeChromePreferences(existingJson: string | null): ChromePreferencesPatch {
+export function sanitizeChromePreferences(
+  existingJson: string | null,
+  acceptLanguages: string,
+): ChromePreferencesPatch {
   let root: Record<string, unknown> = {};
   if (existingJson !== null && existingJson.trim().length > 0) {
     try {
@@ -138,6 +190,12 @@ export function sanitizeChromePreferences(existingJson: string | null): ChromePr
   const translate = getNestedRecord(root, "translate");
   translate.enabled = false;
   root.translate = translate;
+
+  // --accept-lang と同一順序を Preferences 側にも明示し、Accept-Language の暗黙フォールバックを排除する。
+  const intl = getNestedRecord(root, "intl");
+  intl.accept_languages = acceptLanguages;
+  intl.selected_languages = acceptLanguages;
+  root.intl = intl;
 
   return {
     rawJson: JSON.stringify(root, null, 2),
@@ -174,6 +232,8 @@ export function buildChromeProcessEnv(
 
   env.DISPLAY = display;
   env.PULSE_SERVER = pulseServer;
+  // 既定シンクへの暗黙依存を排除し、仮想シンクへ明示バインドする。
+  env.PULSE_SINK = VIRTUAL_SINK_NAME;
   env.TZ = effectiveTimezone;
   env.LANG = posixLocale;
   env.LC_ALL = posixLocale;

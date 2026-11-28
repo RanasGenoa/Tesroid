@@ -18,6 +18,13 @@ export interface BrowserPageInfo {
   readonly title: string | null;
 }
 
+// 仕様 06 §2.4: ページ監視の即時同期経路。ページ遷移・読み込み完了の CDP イベント種別。
+export type PageNavigationEvent =
+  | "frameNavigated"
+  | "navigatedWithinDocument"
+  | "load"
+  | "domContentLoaded";
+
 export interface CdpClientPort {
   connect(port: number): Promise<void>;
   disconnect(): Promise<void>;
@@ -35,6 +42,8 @@ export interface CdpClientPort {
   setViewportSize(dimensions: AlignedDimensions): Promise<void>;
   evaluate<T = unknown>(expression: string): Promise<T>;
   setPageInitScript(source: string): Promise<void>;
+  // 接続ごとに 1 回登録する。null で解除（仕様 06 §2.4 の即時同期）。
+  setPageEventListener(listener: ((event: PageNavigationEvent) => void) | null): void;
   getPageInfo(): Promise<BrowserPageInfo>;
 }
 

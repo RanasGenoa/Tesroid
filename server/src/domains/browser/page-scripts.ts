@@ -141,7 +141,8 @@ export function buildVirtualFullscreenScript(): string {
   }
 
   const host = (g.location && typeof g.location.hostname === "string" ? g.location.hostname : "").toLowerCase();
-  if (doc && (host === "youtube.com" || host.endsWith(".youtube.com"))) {
+  const isYouTubeHost = host === "youtube.com" || host.endsWith(".youtube.com");
+  if (doc && isYouTubeHost) {
     try {
       doc.cookie = "wide=1; path=/; domain=.youtube.com";
       doc.cookie = "PREF=f6=400; path=/; domain=.youtube.com";
@@ -162,7 +163,7 @@ export function buildVirtualFullscreenScript(): string {
     style.textContent = [
       ".tesroid-vfs-active, .tesroid-vfs-active body { overflow: hidden !important; }",
       ".tesroid-vfs-target { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; z-index: 2147483647 !important; background: #000 !important; object-fit: contain !important; }",
-      ".tesroid-vfs-active #masthead-container, .tesroid-vfs-active #secondary, .tesroid-vfs-active #below { display: none !important; }",
+      ".tesroid-vfs-active #masthead-container, .tesroid-vfs-active #guide-wrapper, .tesroid-vfs-active #secondary, .tesroid-vfs-active #below, .tesroid-vfs-active #comments, .tesroid-vfs-active #cinematics, .tesroid-vfs-active .player-container-background { display: none !important; }",
     ].join("\\n");
     doc.head.appendChild(style);
   };
@@ -277,6 +278,63 @@ export function buildVirtualFullscreenScript(): string {
     }
     return true;
   };
+
+  // YouTube は再生開始 2 秒後にフルスクリーンボタンを disabled 化するため、周期的に操作可能へ復元する。
+  if (doc && isYouTubeHost) {
+    const keepFullscreenButtonEnabled = () => {
+      if (typeof doc.querySelector !== "function") {
+        return;
+      }
+      const button = doc.querySelector(".ytp-fullscreen-button");
+      if (button) {
+        if (typeof button.removeAttribute === "function") {
+          button.removeAttribute("disabled");
+          button.removeAttribute("aria-disabled");
+        }
+        if (button.style && typeof button.style.setProperty === "function") {
+          button.style.setProperty("pointer-events", "auto", "important");
+        }
+      }
+      const player = doc.querySelector("#movie_player");
+      if (player && typeof player.toggleFullscreen !== "function") {
+        try {
+          player.toggleFullscreen = () => g.__tesroidToggleFullscreen();
+        } catch {
+          // 非拡張のプレイヤーオブジェクトには接続しない。
+        }
+      }
+    };
+    keepFullscreenButtonEnabled();
+    if (typeof g.setInterval === "function") {
+      g.setInterval(keepFullscreenButtonEnabled, 2_000);
+    }
+    // ボタンタップは capture 位相で遮断し、プレイヤー内部の OS フルスクリーン要求を仮想化へ接続する。
+    if (typeof doc.addEventListener === "function") {
+      doc.addEventListener(
+        "click",
+        (event) => {
+          const target = event && event.target;
+          if (!target || typeof target.closest !== "function") {
+            return;
+          }
+          if (target.closest(".ytp-fullscreen-button") === null) {
+            return;
+          }
+          if (typeof event.preventDefault === "function") {
+            event.preventDefault();
+          }
+          g.__tesroidToggleFullscreen();
+        },
+        true,
+      );
+      // SPA 遷移では旧動画のフルスクリーン対象と装飾が失効するため仮想フルスクリーンを自動解除する。
+      doc.addEventListener("yt-navigate-start", () => {
+        if (g.__tesroidVfsElement) {
+          void exitVfs.call(doc);
+        }
+      });
+    }
+  }
 })();`;
 }
 

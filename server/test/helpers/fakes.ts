@@ -1,6 +1,10 @@
 import path from "node:path";
 import type { AlignedDimensions, EncoderBackend, SpecialKey, WsCloseCode } from "@tesroid/shared";
-import type { BrowserPageInfo, CdpClientPort } from "../../src/domains/browser/ports.js";
+import type {
+  BrowserPageInfo,
+  CdpClientPort,
+  PageNavigationEvent,
+} from "../../src/domains/browser/ports.js";
 import type { GpuHardwareProbePort } from "../../src/domains/encoder/ports.js";
 import type { SessionConnectionId, SessionTransportPort } from "../../src/domains/session/ports.js";
 import type {
@@ -473,6 +477,7 @@ export class FakeCdpClient implements CdpClientPort {
   readonly evaluatedExpressions: string[] = [];
   readonly initScripts: string[] = [];
   evaluateHandler: ((expression: string) => unknown) | null = null;
+  pageEventListener: ((event: PageNavigationEvent) => void) | null = null;
 
   // Spec: docs/architecture.md#4.2
   async connect(port: number): Promise<void> {
@@ -553,6 +558,15 @@ export class FakeCdpClient implements CdpClientPort {
   // Spec: docs/architecture.md#4.2
   async setPageInitScript(source: string): Promise<void> {
     this.initScripts.push(source);
+  }
+
+  // Spec: docs/specs/06-browser-input-cdp.md#2.4
+  setPageEventListener(listener: ((event: PageNavigationEvent) => void) | null): void {
+    this.pageEventListener = listener;
+  }
+
+  emitPageEvent(event: PageNavigationEvent): void {
+    this.pageEventListener?.(event);
   }
 
   // Spec: docs/architecture.md#4.2

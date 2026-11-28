@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PULSE_SOCKET_PATH } from "../../src/app/container.js";
+import { buildNullSinkModuleArgs } from "../../src/domains/browser/index.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -18,5 +19,11 @@ describe("仕様 06 AC-01 PulseAudio ソケット経路の整合", () => {
       ...dockerfile.matchAll(/module-native-protocol-unix[^"']*socket=(\/[^\s'"]+)/g),
     ].map((m) => m[1]);
     expect(sockets).toEqual([PULSE_SOCKET_PATH]);
+  });
+
+  it("Dockerfile の仮想シンク生成行と、起動後自己修復の再ロード引数が同一構成である", () => {
+    const dockerfile = readFileSync(path.join(REPO_ROOT, "Dockerfile"), "utf8");
+    const baked = dockerfile.match(/load-module module-null-sink[^\n']*/)?.[0];
+    expect(baked).toBe(buildNullSinkModuleArgs().join(" "));
   });
 });
