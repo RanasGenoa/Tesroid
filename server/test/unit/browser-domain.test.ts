@@ -360,7 +360,11 @@ describe("server/domains/browser (Spec 06)", () => {
     }
     // レンダリングとコンポジティングの不一致は再生画面の描画破綻を起こすため、強制ソフトウェア化フラグは付与しない（v0.8.0 実績準拠）。
     expect(args).not.toContain("--disable-gpu-rasterization");
-    expect(args).toContain("--enable-accelerated-video-decode");
+    // 三点セット外の GPU 強制フラグは Xvfb 構成で Video Decode を Software へ退行させる（実機 chrome://gpu 実測）。
+    expect(args).not.toContain("--enable-accelerated-video-decode");
+    expect(args).not.toContain("--disable-dev-shm-usage");
+    // Chrome 音声サービスのコンテナ内 PulseAudio ソケット到達（V0.8.0 実測準拠）。
+    expect(args.some((arg) => arg.includes("AudioServiceSandbox"))).toBe(true);
     expect(args.some((arg) => arg.includes("Dav1dVideoDecoder"))).toBe(true);
     expect(() =>
       buildChromeLaunchArgs({
@@ -406,15 +410,28 @@ describe("server/domains/browser (Spec 06)", () => {
         PATH: "/usr/bin",
         GALLIUM_DRIVER: "d3d12",
         TUNNEL_TOKEN: "secret-token",
+        LIBVA_DRIVER_NAME: "host-leftover",
       },
       "",
       "",
       ":99",
       "/tmp/pulse-socket",
+      null,
     );
     expect(chromeEnv.GALLIUM_DRIVER).toBeUndefined();
     expect(chromeEnv.TUNNEL_TOKEN).toBeUndefined();
+    // 検出 null では既定値を注入しない（仕様 09 §2.4 の無条件既定値エクスポート禁止）。
     expect(chromeEnv.LIBVA_DRIVER_NAME).toBeUndefined();
+    // VAAPI 検出成功時は検出値のみを明示伝播し、Chrome の libva 自動探索に委ねない（仕様 06 §2.1）。
+    const detectedEnv = buildChromeProcessEnv(
+      { PATH: "/usr/bin" },
+      "",
+      "",
+      ":99",
+      "/tmp/pulse-socket",
+      "iHD",
+    );
+    expect(detectedEnv.LIBVA_DRIVER_NAME).toBe("iHD");
     expect(chromeEnv.PULSE_SERVER).toBe("unix:/tmp/pulse-socket");
     // 既定シンクへの暗黙依存を排除し、仮想シンクへ明示バインドする（仕様 06 AC-01）。
     expect(chromeEnv.PULSE_SINK).toBe(VIRTUAL_SINK_NAME);

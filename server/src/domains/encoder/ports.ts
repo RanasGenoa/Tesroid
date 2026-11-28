@@ -30,6 +30,7 @@ export interface EncoderControlPort extends PowerEncoderPort {
   detectBackend(): Promise<GpuProbeResult>;
   getActiveBackend(): EncoderBackend;
   getRenderNode(): string | null;
+  getVaapiDriver(): string | null;
   getHealthStatus(): EncoderHealthStatus;
   reconfigureDimensions(layoutDimensions: AlignedDimensions): Promise<void>;
   applySettingsUpdate(options: {

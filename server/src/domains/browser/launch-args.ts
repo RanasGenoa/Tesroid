@@ -14,6 +14,8 @@ const DISABLED_CHROME_FEATURES = [
   "MediaFoundationAV1Decoding",
   "Dav1dVideoDecoder",
   "Av1Decoder",
+  // コンテナ内 PulseAudio ソケットへ Chrome 音声サービスが到達するための無効化（V0.8.0 実測準拠）。
+  "AudioServiceSandbox",
 ].join(",");
 
 const ENABLED_CHROME_FEATURES = ["AcceleratedVideoDecodeLinuxGL", "VaapiIgnoreDriverChecks"].join(
@@ -96,7 +98,6 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--no-first-run",
     "--no-default-browser-check",
     "--no-sandbox",
-    "--disable-dev-shm-usage",
     "--disable-session-crashed-bubble",
     "--hide-crash-restore-bubble",
     "--disable-notifications",
@@ -110,7 +111,8 @@ export function buildChromeLaunchArgs(config: BrowserLaunchConfig): readonly str
     "--disable-gpu-sandbox",
     // 仮想 GPU 構成では Chrome の GPU ブロックリストが HW 動画デコード判定自体を無効化するため除外する。
     "--ignore-gpu-blocklist",
-    "--enable-accelerated-video-decode",
+    // 三点セット（enable-features / ignore-gpu-blocklist / render-node-override）以外の GPU 強制フラグは
+    // Xvfb 構成で GPU 機能全体を Software へ退行させる（実機 chrome://gpu 実測: 付与時 Video Decode Software only）。
     `--enable-features=${ENABLED_CHROME_FEATURES}`,
     `--disable-features=${DISABLED_CHROME_FEATURES}`,
     "--autoplay-policy=no-user-gesture-required",
@@ -209,6 +211,7 @@ export function buildChromeProcessEnv(
   timezone: string,
   display: string,
   pulseSocketPath: string,
+  vaapiDriverName: string | null,
 ): Readonly<Record<string, string>> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -234,6 +237,13 @@ export function buildChromeProcessEnv(
   env.PULSE_SERVER = pulseServer;
   // 既定シンクへの暗黙依存を排除し、仮想シンクへ明示バインドする。
   env.PULSE_SINK = VIRTUAL_SINK_NAME;
+  // 検出済み VAAPI ドライバ名のみを明示伝播する（--render-node-override と同一供給源）。
+  // 検出 null で既定値を注入しないのは仕様 09 §2.4 の境界どおり（無条件の既定値エクスポートは禁止）。
+  if (vaapiDriverName !== null && vaapiDriverName.trim().length > 0) {
+    env.LIBVA_DRIVER_NAME = vaapiDriverName.trim();
+  } else {
+    delete env.LIBVA_DRIVER_NAME;
+  }
   env.TZ = effectiveTimezone;
   env.LANG = posixLocale;
   env.LC_ALL = posixLocale;

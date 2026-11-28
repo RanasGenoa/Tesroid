@@ -290,6 +290,7 @@ describe("Architecture & Specification Invariant Guardrails", () => {
       "Asia/Tokyo",
       ":99",
       "/tmp/pulse-socket",
+      null,
     );
     expect(chromeEnv.GALLIUM_DRIVER).toBeUndefined();
     expect(chromeEnv.LIBVA_DRIVER_NAME).toBeUndefined();
