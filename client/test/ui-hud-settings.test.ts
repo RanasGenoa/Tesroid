@@ -1247,3 +1247,169 @@ describe("client/ui & client/state (Spec 01, 02, 07)", () => {
     h.dispose();
   });
 });
+
+describe("仕様 07 AC-07/08/09 視覚言語・PIN 演出・VAAPI 詳細編集（V0.8.0 パリティ復元）", () => {
+  it("AC-07: styles.css に減光 opacity 0.72・下部中央トースト・ドロワーブラー・タッチフィードバック・スピナー・単幅数字が含まれる", () => {
+    const css = fs.readFileSync(path.join(clientDir, "src/ui/styles.css"), "utf8");
+    expect(css).toContain(".hud-bar--dimmed {\n  opacity: 0.72;");
+    expect(css).toContain(".toast-host");
+    expect(css).toContain("backdrop-filter: blur(8px)");
+    expect(css).toContain("font-variant-numeric: tabular-nums");
+    expect(css).toContain("@keyframes toast-in");
+    expect(css).toContain(".spinner");
+    expect(css).toContain(".btn:active");
+  });
+
+  it("AC-07: 起動中オーバーレイにスピナーと Browser/配信の稼働状態バッジを表示し、ヘルス API 実データで追従更新する", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+
+    h.store.dispatch({ type: "SET_POWER_STATE", powerState: "STARTING" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.overlayRoot.querySelector('[data-testid="overlay-spinner"]')).not.toBeNull();
+    expect(
+      h.overlayRoot.querySelector('[data-testid="overlay-badge-browser"]')?.textContent,
+    ).toContain("稼働中");
+    expect(
+      h.overlayRoot.querySelector('[data-testid="overlay-badge-encoder"]')?.textContent,
+    ).toContain("送信中");
+
+    // 2 秒周期のヘルスポーリングで実データが変わればバッジも追従する。
+    expect(h.rest.healthResult.ok).toBe(true);
+    const base = (h.rest.healthResult.ok ? h.rest.healthResult.data : null) as HealthResponse;
+    h.rest.healthResult = {
+      ok: true,
+      status: 200,
+      data: {
+        ...base,
+        powerState: "STOPPED",
+        encoder: { ...base.encoder, running: false },
+      },
+    };
+    h.clock.advanceBy(2_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      h.overlayRoot.querySelector('[data-testid="overlay-badge-browser"]')?.textContent,
+    ).toContain("停止中");
+    expect(
+      h.overlayRoot.querySelector('[data-testid="overlay-badge-encoder"]')?.textContent,
+    ).toContain("待機中");
+
+    h.dispose();
+  });
+
+  it("AC-08: PIN 画面の右上メニューは 3 入口、規定桁数未満の入口は視覚的に無効化しトーストで理由を表示、規定桁数では入力中 PIN をプリフィルした再認証で設定を開く", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    expect(h.store.getState().route).toBe("PIN");
+
+    h.statusRoot.querySelector('[data-action="toggle-pin-menu"]')?.click();
+    const popover = h.statusRoot.querySelector('[data-testid="pin-menu-popover"]');
+    expect(popover).not.toBeNull();
+    for (const action of [
+      "open-guide-from-pin",
+      "connect-rear-standby",
+      "open-settings-from-pin",
+    ]) {
+      expect(popover?.querySelector(`[data-action="${action}"]`)).not.toBeNull();
+    }
+
+    const disabledEntry = popover?.querySelector('[data-action="open-settings-from-pin"]');
+    expect(disabledEntry?.className).toContain("btn--disabled-look");
+    disabledEntry?.click();
+    expect(h.doc.body.querySelector('[data-testid="app-toast"]')?.textContent).toContain("4 桁");
+
+    for (const key of ["1", "2", "3", "4"]) {
+      h.statusRoot.querySelector(`[data-pin-key="${key}"]`)?.click();
+    }
+    expect(h.statusRoot.querySelector('[data-testid="pin-attempts"]')?.textContent).toBe("10 / 10");
+
+    // テンキー入力で再描画済み（menuOpen は維持）の入口状態を検証する。
+    const entry = h.statusRoot.querySelector('[data-action="open-settings-from-pin"]');
+    expect(entry).not.toBeNull();
+    expect(entry?.className).not.toContain("btn--disabled-look");
+    entry?.click();
+    expect(h.store.getState().activeModal.kind).toBe("pin_reauth");
+    expect(h.appModalRoot.querySelector('[data-testid="reauth-pin-display"]')?.textContent).toBe(
+      "●●●●",
+    );
+
+    h.dispose();
+  });
+
+  it("AC-09: VAAPI 稼働時の詳細編集に圧縮優先度 1〜7 ピッカーと 2 トグルを表示し、PUT /api/settings へ保存して成功トーストを出す", async () => {
+    const h = createHarness();
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+    await h.store.fetchHealth();
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    const details = h.settingsModalRoot.querySelector('[data-testid="settings-vaapi-details"]');
+    expect(details).not.toBeNull();
+    expect(
+      h.settingsModalRoot.querySelector('[data-testid="settings-vaapi-disabled-reason"]'),
+    ).toBeNull();
+
+    details?.querySelector('[data-testid="settings-vaapi-compression"]')?.click();
+    const rows =
+      h.doc.body
+        .querySelector('[data-testid="picker-settings-vaapi-compression"]')
+        ?.querySelectorAll(".picker-option") ?? [];
+    expect(rows.map((r) => r.getAttribute("data-option-value"))).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+    ]);
+    rows.find((r) => r.getAttribute("data-option-value") === "3")?.click();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+    h.settingsModalRoot.querySelector('[data-action="settings-toggle-vaapi-color"]')?.click();
+    h.settingsModalRoot.querySelector('[data-action="settings-toggle-vaapi-lowpower"]')?.click();
+    h.settingsModalRoot.querySelector('[data-action="settings-general-save"]')?.click();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+    expect(h.rest.updatePatches.at(-1)?.stream?.vaapi).toEqual({
+      compressionLevel: 3,
+      lowPower: true,
+      gpuColorConvert: false,
+    });
+    expect(h.doc.body.querySelector('[data-testid="app-toast"]')?.textContent).toContain(
+      "設定を保存しました",
+    );
+
+    h.dispose();
+  });
+
+  it("AC-09: NVENC 稼働時は VAAPI 詳細コントロールを非表示とし、無効化理由の文案を表示する", async () => {
+    const h = createHarness();
+    expect(h.rest.healthResult.ok).toBe(true);
+    const base = (h.rest.healthResult.ok ? h.rest.healthResult.data : null) as HealthResponse;
+    h.rest.healthResult = {
+      ok: true,
+      status: 200,
+      data: { ...base, encoder: { ...base.encoder, backend: "nvenc" } },
+    };
+    await h.store.bootstrap();
+    await h.store.loginPrimaryPin("1234");
+    h.authenticateWs("PRIMARY");
+    await h.store.fetchHealth();
+
+    h.store.openModal({ kind: "settings", activeTab: "general" });
+    expect(h.settingsModalRoot.querySelector('[data-testid="settings-vaapi-details"]')).toBeNull();
+    const reason = h.settingsModalRoot.querySelector(
+      '[data-testid="settings-vaapi-disabled-reason"]',
+    );
+    expect(reason?.textContent).toContain("NVENC");
+
+    h.dispose();
+  });
+});

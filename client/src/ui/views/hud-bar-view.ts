@@ -14,8 +14,9 @@ import {
   isPrimaryAuthorityRole,
   type SignalQualityLevel,
 } from "../../state/index.js";
-import { el, getDoc, touchButton } from "../dom.js";
+import { el, getDoc, iconButton, touchButton } from "../dom.js";
 import { escapeHtml } from "../escape.js";
+import { showToast } from "../toast-view.js";
 
 function signalBarsActiveCount(level: SignalQualityLevel): number {
   switch (level) {
@@ -117,9 +118,10 @@ export class HudBarView {
     });
 
     leftGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
-        "停止",
+        "電源",
+        '<path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>',
         () => {
           this.store.openModal({ kind: "power_control" });
         },
@@ -197,9 +199,10 @@ export class HudBarView {
     });
 
     rightGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
         "キーボード",
+        '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="7" cy="10" r="0.6"/><circle cx="12" cy="10" r="0.6"/><circle cx="17" cy="10" r="0.6"/><path d="M8 14h8"/>',
         () => {
           this.store.toggleDrawer("keyboard");
         },
@@ -211,9 +214,10 @@ export class HudBarView {
     );
 
     rightGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
         "戻る",
+        '<path d="M15 6l-6 6 6 6"/>',
         () => {
           this.store.navigateBack();
         },
@@ -226,9 +230,10 @@ export class HudBarView {
     );
 
     rightGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
-        "ホーム",
+        "ホームへ戻る",
+        '<path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/>',
         () => {
           this.store.navigateHome();
         },
@@ -241,9 +246,10 @@ export class HudBarView {
     );
 
     rightGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
         "お気に入り",
+        '<path d="M12 3l2.7 5.6 6.1.8-4.5 4.3 1.1 6-5.4-2.9-5.4 2.9 1.1-6L3.2 9.4l6.1-.8z"/>',
         () => {
           this.store.toggleDrawer("favorites");
         },
@@ -259,9 +265,10 @@ export class HudBarView {
     }
 
     rightGroup.appendChild(
-      touchButton(
+      iconButton(
         doc,
         "設定",
+        '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
         () => {
           this.store.openSettingsWithAuthCheck();
         },
@@ -399,6 +406,7 @@ export class HudBarView {
           if (this.keyboardDraft.length > 0) {
             this.store.sendInputText(this.keyboardDraft);
             this.keyboardDraft = "";
+            showToast(doc, "テキストを仮想ブラウザへ送信しました", "success");
             this.render(this.store.getState());
           }
         },
@@ -526,6 +534,7 @@ export class HudBarView {
     const result = addFavorite(favorites, { id, title, url });
     if (!result.ok) {
       this.favoriteError = result.message;
+      this.toast(result.message, "error");
       this.render(this.store.getState());
       return;
     }
@@ -533,7 +542,17 @@ export class HudBarView {
     const saved = await this.store.saveSettings({ favorites: result.value });
     if (!saved) {
       this.favoriteError = this.store.getState().errorBanner ?? "保存に失敗しました";
+      this.toast(this.favoriteError, "error");
       this.render(this.store.getState());
+      return;
     }
+    this.toast("お気に入りに追加しました", "success");
+  }
+
+  private toast(message: string, kind: Parameters<typeof showToast>[2]): void {
+    if (this.container === null) {
+      return;
+    }
+    showToast(getDoc(this.container), message, kind);
   }
 }

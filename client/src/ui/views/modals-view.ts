@@ -49,7 +49,9 @@ export class AppModalsView {
     }
 
     if (this.lastModalKind !== modalKind && modalKind === "pin_reauth") {
-      this.reauthPinBuffer = "";
+      // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-08) — PIN 画面から入口経由で開く場合は入力中 PIN をプリフィルする。
+      const modal = state.activeModal;
+      this.reauthPinBuffer = modal.kind === "pin_reauth" ? (modal.initialPin ?? "") : "";
       this.reauthError = null;
     }
     this.lastModalKind = modalKind;

@@ -60,3 +60,31 @@ export function touchButton(
   btn.addEventListener("click", onClick);
   return btn;
 }
+
+// Spec: docs/specs/07-ui-hud-settings.md#2.1 — HUD 操作系は SVG アイコンのみ（テキストラベルなし）。
+export function iconButton(
+  doc: Document,
+  ariaLabel: string,
+  svgInner: string,
+  onClick: () => void,
+  options?: {
+    readonly className?: string;
+    readonly attrs?: Readonly<Record<string, string>>;
+    readonly disabled?: boolean;
+  },
+): HTMLButtonElement {
+  const btn = el(doc, "button", {
+    className: options?.className ?? "btn",
+    attrs: {
+      type: "button",
+      "aria-label": ariaLabel,
+      ...(options?.attrs ?? {}),
+    },
+  });
+  btn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${svgInner}</svg>`;
+  btn.addEventListener("click", onClick);
+  if (options?.disabled) {
+    btn.disabled = true;
+  }
+  return btn;
+}

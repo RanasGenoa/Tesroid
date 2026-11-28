@@ -1,6 +1,7 @@
 import { AUTH_SECURITY_CONSTANTS, isValidPin } from "@tesroid/shared";
 import type { AppRoute, AppState, AppStore } from "../../state/index.js";
 import { el, getDoc, touchButton } from "../dom.js";
+import { showToast } from "../toast-view.js";
 
 export class PinAndStatusViews {
   private readonly store: AppStore;
@@ -239,6 +240,23 @@ export class PinAndStatusViews {
               },
               { className: "btn", attrs: { "data-action": "connect-rear-standby" } },
             ),
+            // Spec: docs/specs/07-ui-hud-settings.md#2.4 (AC-08) — 規定桁数未満の入口は視覚的に無効化しトーストで理由を表示する。
+            touchButton(
+              doc,
+              "設定・管理コンソール",
+              () => {
+                if (!isValidPin(this.pinBuffer)) {
+                  showToast(doc, "設定コンソールは PIN を 4 桁以上入力してから開けます", "info");
+                  return;
+                }
+                this.menuOpen = false;
+                this.store.openSettingsWithAuthCheck(this.pinBuffer);
+              },
+              {
+                className: isValidPin(this.pinBuffer) ? "btn" : "btn btn--disabled-look",
+                attrs: { "data-action": "open-settings-from-pin" },
+              },
+            ),
           ],
         ),
       );
@@ -249,7 +267,7 @@ export class PinAndStatusViews {
     card.appendChild(
       el(doc, "div", {
         className: isWarning ? "attempts-badge attempts-badge--warn" : "attempts-badge",
-        text: `残り試行回数: ${state.remainingPinAttempts} 回`,
+        text: `${state.remainingPinAttempts} / ${AUTH_SECURITY_CONSTANTS.maxConsecutiveFailures}`,
         attrs: { "data-testid": "pin-attempts" },
       }),
     );
