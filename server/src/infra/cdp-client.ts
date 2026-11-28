@@ -91,6 +91,9 @@ export class NodeCdpClient {
   private connecting: Promise<void> | null = null;
   // disconnect() の直後に onopen が届く競合を構造的に退避させるための接続世代（仕様 06 §2.2 の切断後残留防止）。
   private connectGeneration = 0;
+  private pageInitScriptSource: string | null = null;
+  private pageDomainEnabled = false;
+  private injectedScriptIdentifier: string | null = null;
   private nextCommandId = 1;
   private readonly pending = new Map<number, PendingCommand>();
 
@@ -186,8 +189,42 @@ export class NodeCdpClient {
     return response.result?.value as T;
   }
 
-  async addScriptToEvaluateOnNewDocument(source: string): Promise<void> {
-    await this.command("Page.addScriptToEvaluateOnNewDocument", { source });
+  // 仕様 06 AC-01 付則: 初期化スクリプトの単一登録点。登録内容は保持し、
+  // 再接続・メインフレーム遷後のいずれでも現在のドキュメントへ再適用する。
+  async setPageInitScript(source: string): Promise<void> {
+    this.pageInitScriptSource = source;
+    this.injectedScriptIdentifier = null;
+    await this.applyPageInitScript();
+  }
+
+  private async applyPageInitScript(): Promise<void> {
+    const source = this.pageInitScriptSource;
+    if (source === null || this.socket === null) {
+      return;
+    }
+    try {
+      // Page.enable はセッション内で有効なまま再送しない（接続ごとに 1 回のみ）。
+      if (!this.pageDomainEnabled) {
+        await this.command("Page.enable", {});
+        this.pageDomainEnabled = true;
+      }
+      if (this.injectedScriptIdentifier !== null) {
+        await this.command("Page.removeScriptToEvaluateOnNewDocument", {
+          identifier: this.injectedScriptIdentifier,
+        });
+        this.injectedScriptIdentifier = null;
+      }
+      const registered = (await this.command("Page.addScriptToEvaluateOnNewDocument", {
+        source,
+      })) as { identifier?: unknown };
+      if (typeof registered?.identifier === "string") {
+        this.injectedScriptIdentifier = registered.identifier;
+      }
+      // 現在読み込み済みの文書へは addScript が届かないため即時評価で適用する（冪等スクリプト前提）。
+      await this.command("Runtime.evaluate", { expression: source, returnByValue: false });
+    } catch {
+      // 応答待ち中の切断は次の再接続・遷移検知で再適用される（仕様 06 §2.2 の安全破棄と同義）。
+    }
   }
 
   async getPageInfo(): Promise<{ readonly url: string | null; readonly title: string | null }> {
@@ -226,6 +263,8 @@ export class NodeCdpClient {
           return;
         }
         this.socket = socket;
+        // 再接続後も単一登録点の内容を現在のドキュメントへ再適用する（仕様 06 AC-01 付則）。
+        void this.applyPageInitScript();
         resolve();
       };
       socket.onclose = () => {
@@ -250,6 +289,9 @@ export class NodeCdpClient {
   private detachSocket(socket: CdpSocketLike | null): void {
     if (socket !== null && this.socket === socket) {
       this.socket = null;
+      // Chrome 側の登録・Page.enable はセッションと共に消えるため再登録対象としてクリアする。
+      this.injectedScriptIdentifier = null;
+      this.pageDomainEnabled = false;
     }
     for (const pending of this.pending.values()) {
       pending.reject(new Error("CDP connection closed"));
@@ -287,10 +329,25 @@ export class NodeCdpClient {
   }
 
   private handleMessage(data: string): void {
-    let message: { id?: unknown; result?: unknown; error?: { message?: unknown } };
+    let message: {
+      id?: unknown;
+      method?: unknown;
+      params?: unknown;
+      result?: unknown;
+      error?: { message?: unknown };
+    };
     try {
       message = JSON.parse(data) as typeof message;
     } catch {
+      return;
+    }
+    // 仕様 06 AC-01 付則: メインフレームのドキュメント差し替えで初期化スクリプトは失われるため、
+    // PageHandler の再生成を検知して単一登録点から再適用する。
+    if (message.id === undefined && message.method === "Page.frameNavigated") {
+      const frame = (message.params as { frame?: { parentId?: unknown } } | undefined)?.frame;
+      if (frame !== undefined && frame.parentId === undefined) {
+        void this.applyPageInitScript();
+      }
       return;
     }
     if (typeof message.id !== "number") {

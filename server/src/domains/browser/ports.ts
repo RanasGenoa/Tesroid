@@ -10,6 +10,7 @@ export interface BrowserLaunchConfig {
   readonly cdpPort: number;
   readonly initialUrl: string;
   readonly viewport: AlignedDimensions;
+  readonly vaapiRenderNode: string | null;
 }
 
 export interface BrowserPageInfo {
@@ -33,7 +34,7 @@ export interface CdpClientPort {
   reload(): Promise<void>;
   setViewportSize(dimensions: AlignedDimensions): Promise<void>;
   evaluate<T = unknown>(expression: string): Promise<T>;
-  addScriptToEvaluateOnNewDocument(source: string): Promise<void>;
+  setPageInitScript(source: string): Promise<void>;
   getPageInfo(): Promise<BrowserPageInfo>;
 }
 

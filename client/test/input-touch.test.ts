@@ -427,7 +427,7 @@ describe("client/input (Spec 03, 06)", () => {
   });
 
   it("Spec 06 §2.2: normalizes touch coordinates in effective layout dimensions after maxSize clamp", () => {
-    // 実車相当: 自ビューポート 1710×941 dpr=2、stream.maxSize=1280 → 有効寸法 1280×704 で正規化される。
+    // 実車相当: クライアントビューポート 1710×941 dpr=2、stream.maxSize=1280 → 有効寸法 1280×704 で正規化される。
     const engine = new TouchInputEngine();
     engine.updateStreamDimensions(1_710, 941, { dpr: 2, maxSize: 1_280 });
 

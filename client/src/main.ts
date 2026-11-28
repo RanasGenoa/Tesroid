@@ -1,4 +1,5 @@
 import { STREAM_BOUNDS } from "@tesroid/shared";
+import { attachGlobalAudioUnlock } from "./input/audio-unlock.js";
 import { TouchInputProcessor, ViewportResizeReporter } from "./input/index.js";
 import { type CanvasElementLike, PlaybackController } from "./media/index.js";
 import { ClientMetricsCollector, ClientTelemetryReporter } from "./observability/index.js";
@@ -46,6 +47,13 @@ export function bootstrapClientApp(root: HTMLElement): ClientAppHandle {
     onRequestStreamReset: () => {
       void storeRef?.requestStreamReset();
     },
+    observer: {
+      onFrameRendered: (durationMs) => metrics.recordFrameRendered(durationMs),
+      onDroppedFrames: (count) => metrics.recordDroppedFrames(count),
+      onDecoderError: () => metrics.recordDecoderError(),
+      emitTelemetry: (category, event, data) => telemetry.record(category, event, data),
+      recordThrottledSync: (event, data) => telemetry.recordThrottledSync(event, data),
+    },
   });
 
   const store = new AppStore({
@@ -71,12 +79,16 @@ export function bootstrapClientApp(root: HTMLElement): ClientAppHandle {
     },
     onUserInteraction: (atMs) => {
       store.notifyUserInteraction(atMs);
-      void store.unlockAudioOnGesture();
     },
   });
   if (canvas !== null) {
     touchProcessor.attach(canvas);
   }
+
+  // 仕様 04 §2.2: 解禁は UI 全域の単一 pointerdown 経路でのみ保証する（二重経路を置かない）。
+  attachGlobalAudioUnlock(document, () => {
+    void store.unlockAudioOnGesture();
+  });
 
   applyEffectiveTouchSpace = () => {
     if (lastRawViewport === null) {

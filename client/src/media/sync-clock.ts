@@ -30,6 +30,8 @@ export const SYNC_CLOCK_CONSTANTS = {
   stallCushionMinMs: 180,
   stallCushionMaxMs: 450,
   stallQuietFramesForDecay: 8,
+  // 音声クロックよりこれ以上先行したフレームは待っても追いつけないため、ライブエッジへ再アンカーして即時描画する（AC-04 の収束境界）。
+  reAnchorThresholdMs: 1_500,
   sampleWindowSize: 60,
   minJitterSamples: 4,
 } as const;
@@ -190,6 +192,10 @@ export class MasterSyncClock {
       const signedDriftMs = this.computeSignedAvDriftMs(videoPtsUs, master.audioPlaybackPtsUs);
       if (signedDriftMs < -SYNC_CLOCK_CONSTANTS.lateDropThresholdMs) {
         return { action: "DROP_LATE", waitMs: 0, signedDriftMs };
+      }
+      // 音声遅延が収束境界以上では待っても追いつけないため、ライブエッジ再アンカーで描画を再開する。
+      if (signedDriftMs >= SYNC_CLOCK_CONSTANTS.reAnchorThresholdMs) {
+        return this.applyMinRenderInterval(nowMs, signedDriftMs);
       }
       if (signedDriftMs > SYNC_CLOCK_CONSTANTS.renderEarlyToleranceMs) {
         return { action: "WAIT", waitMs: signedDriftMs, signedDriftMs };

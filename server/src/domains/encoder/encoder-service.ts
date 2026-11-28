@@ -138,6 +138,7 @@ export class EncoderService implements EncoderControlPort {
     this.activeBackend = result.backend;
     this.vaapiDevice = result.vaapiDevice;
     this.vaapiDriver = result.vaapiDriver;
+    // 仕様 06 §2.1 のページ側コーデック方針は VAAPI プロフィール出力から機械的に判定する（推測で既定値を置かない）。
     if (result.backend === "vaapi") {
       this.vaapiFallbackCache = result;
     }
@@ -159,6 +160,12 @@ export class EncoderService implements EncoderControlPort {
     return this.activeBackend;
   }
 
+  // Spec: docs/specs/05-encoder-gpu.md#2.2
+  getRenderNode(): string | null {
+    return this.vaapiDevice;
+  }
+
+  // Spec: docs/specs/05-encoder-gpu.md#2.2
   // Spec: docs/specs/08-observability.md#2.1
   getHealthStatus(): EncoderHealthStatus {
     const stream = this.deps.settings.getCurrent().stream;

@@ -40,8 +40,8 @@ class FakeCdpSocket implements CdpSocketLike {
     this.onmessage?.({ data: JSON.stringify({ id: command.id, error: { message } }) });
   }
 
-  emitEvent(method: string): void {
-    this.onmessage?.({ data: JSON.stringify({ method }) });
+  emitEvent(method: string, params?: Record<string, unknown>): void {
+    this.onmessage?.({ data: JSON.stringify({ method, params }) });
   }
 }
 
@@ -224,7 +224,7 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     ]);
   });
 
-  it("setViewportSize は Emulation.setDeviceMetricsOverride、addScriptToEvaluateOnNewDocument は Page 注入コマンドになる", async () => {
+  it("setViewportSize は Emulation.setDeviceMetricsOverride を送出する", async () => {
     const fixture = createAdapterFixture();
     const socket = await connectFixture(fixture);
 
@@ -233,15 +233,69 @@ describe("仕様 06 AC-02 CDP クライアントアダプタ: ページターゲ
     expect(socket.sent[0]?.params).toMatchObject({ width: 1008, height: 878 });
     socket.respondTo({}, 0);
     await resize;
+  });
 
-    const inject = fixture.client.addScriptToEvaluateOnNewDocument("globalThis.x=1;");
-    expect(socket.sent[1]).toEqual({
-      id: expect.any(Number),
-      method: "Page.addScriptToEvaluateOnNewDocument",
-      params: { source: "globalThis.x=1;" },
-    });
+  it("AC-01 付則: setPageInitScript は登録と現文書への即時適用を行い、メインフレーム遷移で旧登録を除去して再適用し、子フレームでは再適用しない", async () => {
+    const fixture = createAdapterFixture();
+    const socket = await connectFixture(fixture);
+
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const inject = fixture.client.setPageInitScript("globalThis.x=1;");
+    expect(socket.sent[0]?.method).toBe("Page.enable");
+    socket.respondTo({}, 0);
+    await flush();
+    expect(socket.sent[1]?.method).toBe("Page.addScriptToEvaluateOnNewDocument");
+    expect(socket.sent[1]?.params).toEqual({ source: "globalThis.x=1;" });
     socket.respondTo({ identifier: "script-1" }, 1);
+    await flush();
+    expect(socket.sent[2]?.method).toBe("Runtime.evaluate");
+    socket.respondTo({}, 2);
     await inject;
+
+    // メインフレームのドキュメント差し替え: 旧登録を除去してから再登録・即時適用。
+    socket.emitEvent("Page.frameNavigated", { frame: { id: "F1", url: "https://x" } });
+    await flush();
+    expect(socket.sent[3]?.method).toBe("Page.removeScriptToEvaluateOnNewDocument");
+    expect(socket.sent[3]?.params).toEqual({ identifier: "script-1" });
+    socket.respondTo({}, 3);
+    await flush();
+    expect(socket.sent[4]?.method).toBe("Page.addScriptToEvaluateOnNewDocument");
+    socket.respondTo({ identifier: "script-2" }, 4);
+    await flush();
+    expect(socket.sent[5]?.method).toBe("Runtime.evaluate");
+    socket.respondTo({}, 5);
+
+    // 子フレーム遷移では何も再適用しない。
+    const before = socket.sent.length;
+    socket.emitEvent("Page.frameNavigated", { frame: { id: "F2", parentId: "F1" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(socket.sent.length).toBe(before);
+  });
+
+  it("AC-01 付則: 再接続後も保持した初期化スクリプトを自動再登録する", async () => {
+    const fixture = createAdapterFixture();
+    const socket = await connectFixture(fixture);
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const inject = fixture.client.setPageInitScript("globalThis.x=1;");
+    socket.respondTo({}, 0);
+    await flush();
+    socket.respondTo({ identifier: "script-1" }, 1);
+    await flush();
+    socket.respondTo({}, 2);
+    await inject;
+
+    socket.close();
+    const next = await connectFixture(fixture);
+    await flush();
+    expect(next.sent[0]?.method).toBe("Page.enable");
+    next.respondTo({}, 0);
+    await flush();
+    expect(next.sent[1]?.method).toBe("Page.addScriptToEvaluateOnNewDocument");
+    expect(next.sent[1]?.params).toEqual({ source: "globalThis.x=1;" });
+    next.respondTo({ identifier: "script-2" }, 1);
+    await flush();
+    expect(next.sent[2]?.method).toBe("Runtime.evaluate");
+    next.respondTo({}, 2);
   });
 
   it("evaluate と getPageInfo は応答値を返し、例外詳細と error 応答は reject する", async () => {

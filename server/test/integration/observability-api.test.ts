@@ -110,6 +110,7 @@ function createBoundaryEncoderFake() {
       reason: "test",
     }),
     getActiveBackend: () => "vaapi",
+    getRenderNode: () => "/dev/dri/renderD128",
     getHealthStatus: () => ({
       running,
       backend: "vaapi",

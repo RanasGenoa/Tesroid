@@ -14,6 +14,7 @@ import type {
   AudioDecoderConfigSpec,
   AudioDecoderFactory,
   AudioGainNodeLike,
+  PlaybackObserverPort,
 } from "./ports.js";
 import { SYNC_CLOCK_CONSTANTS } from "./sync-clock.js";
 
@@ -34,6 +35,7 @@ export interface AudioPlayerPipelineOptions {
   readonly clock?: ClientClock;
   readonly decoderFactory?: AudioDecoderFactory;
   readonly audioContextFactory?: AudioContextFactory;
+  readonly observer?: Pick<PlaybackObserverPort, "emitTelemetry">;
 }
 
 interface QueuedPcmChunk {
@@ -274,11 +276,13 @@ export class AudioPlayerPipeline {
   private anchorPtsUs: number | null = null;
   private lastScheduledEndPtsUs: number | null = null;
   private underrunCount = 0;
+  private readonly observer: Pick<PlaybackObserverPort, "emitTelemetry"> | undefined;
 
   constructor(options: AudioPlayerPipelineOptions = {}) {
     this.clock = options.clock ?? createBrowserClock();
     this.decoderFactory = options.decoderFactory ?? createBrowserAudioDecoderFactory();
     this.audioContextFactory = options.audioContextFactory ?? defaultBrowserAudioContextFactory;
+    this.observer = options.observer;
   }
 
   // Spec: docs/specs/04-client-playback-avsync.md#2.2
@@ -606,6 +610,10 @@ export class AudioPlayerPipeline {
         this.anchorCtxTimeSec = null;
         this.anchorPtsUs = null;
         this.underrunCount += 1;
+        this.observer?.emitTelemetry("audio", "underrun", {
+          gapMs: Math.round(gapMs),
+          bufferedMs: Math.round(this.queuedDurationUs / 1_000),
+        });
       } else if (gapMs > 0) {
         if (this.anchorCtxTimeSec !== null) {
           this.anchorCtxTimeSec += gapMs / 1_000;
@@ -627,6 +635,11 @@ export class AudioPlayerPipeline {
       this.nextScheduleCtxTimeSec = nowSec + AUDIO_PLAYER_CONSTANTS.scheduleLookaheadMs / 1_000;
       this.anchorCtxTimeSec = this.nextScheduleCtxTimeSec;
       this.anchorPtsUs = first.ptsUs;
+      if (this.underrunCount > 0) {
+        this.observer?.emitTelemetry("audio", "resume", {
+          bufferedMs: Math.round(this.queuedDurationUs / 1_000),
+        });
+      }
     }
 
     const maxAheadSec =
@@ -662,6 +675,8 @@ export class AudioPlayerPipeline {
       this.activeSources.add(source);
       source.onended = () => {
         this.activeSources.delete(source);
+        // 再生完了イベント起点の音声供給で自己持続させる（新規デコード出力の到着に依存せず無音窓を作らない）。
+        this.drainSchedule();
       };
       source.start(this.nextScheduleCtxTimeSec);
 

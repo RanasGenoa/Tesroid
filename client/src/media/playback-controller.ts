@@ -32,6 +32,7 @@ import type {
   AudioDecoderFactory,
   CanvasElementLike,
   PlaybackControllerPort,
+  PlaybackObserverPort,
   PlaybackStatsSnapshot,
   VideoDecoderFactory,
   VideoFrameLike,
@@ -50,10 +51,14 @@ export interface PlaybackControllerDeps {
   readonly audioContextFactory?: AudioContextFactory;
   readonly onStateChange?: (state: StreamingState) => void;
   readonly initialPrimaryAuthority?: boolean;
+  readonly observer?: PlaybackObserverPort;
 }
 
 const STATIC_SCREEN_IDLE_MS = 1_000;
 const FPS_WINDOW_MS = 1_000;
+// 実車の音ズれ・映像停止を切り分けるため、閾値超の事象のみ throttled で送る（仕様 08 §2.2）。
+const OBSERVER_AV_DRIFT_TELEMETRY_MS = 150;
+const OBSERVER_LONG_WAIT_TELEMETRY_MS = 500;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -134,6 +139,7 @@ export class PlaybackController implements PlaybackControllerPort {
         },
         onDecoderError: () => {
           this.decoderErrorsDelta += 1;
+          this.deps.observer?.onDecoderError();
         },
         onNeedsReset: () => {
           if (!this.disposed && this.isPrimaryAuthority) {
@@ -150,6 +156,7 @@ export class PlaybackController implements PlaybackControllerPort {
       clock: this.clock,
       decoderFactory: deps.audioDecoderFactory,
       audioContextFactory: deps.audioContextFactory,
+      observer: this.deps.observer,
     });
   }
 
@@ -235,6 +242,7 @@ export class PlaybackController implements PlaybackControllerPort {
       const maxQueue = this.videoDecoder.getMaxQueueLimit(this.targetFps);
       if (!isKeyframe && this.videoDecoder.getDecodeQueueSize() >= maxQueue) {
         this.droppedFramesDelta += 1;
+        this.deps.observer?.onDroppedFrames(1);
         this.epochGate.reset();
         return;
       }
@@ -458,7 +466,11 @@ export class PlaybackController implements PlaybackControllerPort {
       frame,
       receivedAtMs: this.clock.nowMs(),
     });
-    this.droppedFramesDelta += activeQueue.consumeEvictedCount();
+    const evicted = activeQueue.consumeEvictedCount();
+    if (evicted > 0) {
+      this.droppedFramesDelta += evicted;
+      this.deps.observer?.onDroppedFrames(evicted);
+    }
     this.runSyncStep();
   }
 
@@ -510,6 +522,7 @@ export class PlaybackController implements PlaybackControllerPort {
       }
       safeCloseVideoFrame(older.frame);
       this.droppedFramesDelta += 1;
+      this.deps.observer?.onDroppedFrames(1);
     }
 
     const latest = activeQueue.peek();
@@ -561,15 +574,27 @@ export class PlaybackController implements PlaybackControllerPort {
 
       const evaluation = this.syncClock.evaluateVideoFrame(head.ptsUs, nowMs);
       this.latestAvDriftMs = evaluation.signedDriftMs;
+      if (Math.abs(evaluation.signedDriftMs) >= OBSERVER_AV_DRIFT_TELEMETRY_MS) {
+        this.deps.observer?.recordThrottledSync("av_drift", {
+          signedDriftMs: Math.round(evaluation.signedDriftMs),
+        });
+      }
 
       if (evaluation.action === "DROP_LATE") {
         activeQueue.shift();
         safeCloseVideoFrame(head.frame);
         this.droppedFramesDelta += 1;
+        this.deps.observer?.onDroppedFrames(1);
         continue;
       }
 
       if (evaluation.action === "WAIT") {
+        if (evaluation.waitMs >= OBSERVER_LONG_WAIT_TELEMETRY_MS) {
+          this.deps.observer?.recordThrottledSync("video_long_wait", {
+            waitMs: Math.round(evaluation.waitMs),
+            headPtsUs: head.ptsUs,
+          });
+        }
         this.scheduleRenderTimer(Math.max(1, Math.ceil(evaluation.waitMs)));
         break;
       }
@@ -587,6 +612,7 @@ export class PlaybackController implements PlaybackControllerPort {
 
   private renderQueuedFrame(item: QueuedVideoFrame, nowMs: number): void {
     this.lastRenderTimeMs = this.renderer.renderFrame(item.frame);
+    this.deps.observer?.onFrameRendered(this.lastRenderTimeMs ?? 0);
     this.lastRenderedAtMs = nowMs;
     this.lastRenderedPtsUs = item.ptsUs;
     this.syncClock.recordFrameRendered(item.ptsUs, nowMs);

@@ -551,7 +551,7 @@ export class FakeCdpClient implements CdpClientPort {
   }
 
   // Spec: docs/architecture.md#4.2
-  async addScriptToEvaluateOnNewDocument(source: string): Promise<void> {
+  async setPageInitScript(source: string): Promise<void> {
     this.initScripts.push(source);
   }
 
@@ -603,6 +603,7 @@ export class FakeGpuHardwareProbe implements GpuHardwareProbePort {
     return false;
   }
 
+  // Spec: docs/architecture.md#4.2
   // Spec: docs/architecture.md#4.2
   async hasWslDxgDevice(): Promise<boolean> {
     return this.wslDxgDevice;
