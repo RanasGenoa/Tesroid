@@ -299,6 +299,21 @@ export class StreamingController implements StreamingControlPort {
       if (videoConfig !== null && videoConfig.streamEpoch === streamEpoch) {
         sessionRecord.transport.sendBinary(videoConfig.frameBytes);
       }
+      // 仕様 02 §2.2: プライマリがライブ端より 300 ms 以上後方を視聴中の参加では、
+      // プライマリ確認済み PTS 付近（キーフレーム境界）から追っかけ配送を開始する。
+      const anchorPtsUs = this.deps.session.getPrimaryConfirmedPtsUs(streamEpoch);
+      const latestMediaPtsUs = this.deps.ringBuffer.getStats().latestMediaPtsUs;
+      if (anchorPtsUs !== null && latestMediaPtsUs !== null) {
+        const lagMs = Number(latestMediaPtsUs - anchorPtsUs) / 1_000;
+        if (lagMs >= CATCHUP_FLOW_CONSTANTS.secondaryJoinCatchupMinLagMs) {
+          const joinEntries = this.deps.ringBuffer
+            .sliceFromKeyframe(anchorPtsUs, CATCHUP_FLOW_CONSTANTS.keyframeLookbackMaxMs)
+            .filter((entry) => entry.streamEpoch === streamEpoch && entry.mediaType === "video");
+          for (const entry of joinEntries) {
+            sessionRecord.transport.sendBinary(entry.frameBytes);
+          }
+        }
+      }
       return;
     }
 

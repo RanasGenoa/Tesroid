@@ -480,6 +480,66 @@ describe("server/domains/streaming (Spec 03)", () => {
     harness.controller.dispose();
   });
 
+  it("仕様 02 AC-03 拡張: プライマリがライブ端より 300 ms 以上後方を視聴中にセカンダリが参加した場合、プライマリ確認済み PTS 付近のキーフレームから追っかけ配送を開始する", async () => {
+    const harness = await createStreamingHarness({ maxSeconds: 60, maxBytes: 48 * 1024 * 1024 });
+    await harness.connectPrimary("p-1");
+
+    // 2s 間隔でキーフレーム、ライブ端 5s まで映像を蓄積し、プライマリは 2.0s 地点を再生確認済みとする。
+    for (let sec = 1; sec <= 5; sec += 1) {
+      harness.controller.ingestEncodedPacket({
+        mediaType: "video",
+        flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
+        streamEpoch: 1,
+        ptsUs: BigInt(sec) * 1_000_000n,
+        payload: new Uint8Array([sec]),
+      });
+    }
+    harness.controller.handlePrimaryFeedback("p-1", 1, 2_000_000, 100, 100);
+    expect(harness.session.getPrimaryConfirmedPtsUs(1)).toBe(2_000_000n);
+
+    const { transport: secondary } = await harness.connectSecondary("s-1");
+    const joinedPts = decodeMediaFrames(secondary).map((frame) => frame.ptsUs);
+
+    // 確認済み PTS 付近（2s のキーフレーム境界）から 5s までの GOP が届き、それより前は送らない。
+    expect(joinedPts).toContain(2_000_000n);
+    expect(joinedPts).toContain(5_000_000n);
+    expect(joinedPts).not.toContain(1_000_000n);
+
+    harness.controller.dispose();
+  });
+
+  it("仕様 02 AC-03 拡張: プライマリがライブ端付近（lag ≤ 300 ms）の参加では追っかけ配送せずライブエッジ配信のみとする", async () => {
+    const harness = await createStreamingHarness({ maxSeconds: 60, maxBytes: 48 * 1024 * 1024 });
+    await harness.connectPrimary("p-1");
+
+    for (let sec = 1; sec <= 5; sec += 1) {
+      harness.controller.ingestEncodedPacket({
+        mediaType: "video",
+        flags: (sec % 2 === 0 ? VIDEO_FLAG.KEYFRAME : 0) | VIDEO_FLAG.AVCC,
+        streamEpoch: 1,
+        ptsUs: BigInt(sec) * 1_000_000n,
+        payload: new Uint8Array([sec]),
+      });
+    }
+    harness.controller.handlePrimaryFeedback("p-1", 1, 4_800_000, 100, 100);
+
+    const { transport: secondary } = await harness.connectSecondary("s-1");
+    expect(decodeMediaFrames(secondary).map((frame) => frame.ptsUs)).toEqual([]);
+
+    // 以降のライブ配信は従来通りセカンダリへ届く。
+    secondary.sentFrames.length = 0;
+    harness.controller.ingestEncodedPacket({
+      mediaType: "video",
+      flags: VIDEO_FLAG.AVCC,
+      streamEpoch: 1,
+      ptsUs: 5_100_000n,
+      payload: new Uint8Array([6]),
+    });
+    expect(decodeMediaFrames(secondary).map((frame) => frame.ptsUs)).toContain(5_100_000n);
+
+    harness.controller.dispose();
+  });
+
   it("AC-03: treats unreceived confirmed PTS as 0% occupancy and keeps occupancy from rising during LIVE GOP skip while audio playback advances", async () => {
     const harness = await createStreamingHarness({ maxSeconds: 60, maxBytes: 48 * 1024 * 1024 });
     const { transport: primary } = await harness.connectPrimary("p-1");
