@@ -144,6 +144,15 @@ export function createAppContainer(
         await encoder.detectBackend();
         return encoder.getRenderNode();
       },
+      // VAAPI デコードのドライバ名も同一検出結果から伝播する（Chrome の libva 自動探索に任せない）。
+      vaapiDriverNameProvider: async () => {
+        const driver = encoder.getVaapiDriver();
+        if (driver !== null) {
+          return driver;
+        }
+        await encoder.detectBackend();
+        return encoder.getVaapiDriver();
+      },
     });
 
   const encoder =

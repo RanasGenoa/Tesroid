@@ -119,6 +119,7 @@ function createBoundaryEncoderFake(
       detectBackend: notUsed,
       getActiveBackend: () => backend,
       getRenderNode: () => null,
+      getVaapiDriver: () => null,
       getHealthStatus: notUsed,
       reconfigureDimensions: notUsed,
       applySettingsUpdate: async (update) => {

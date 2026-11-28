@@ -111,6 +111,7 @@ function createBoundaryEncoderFake() {
     }),
     getActiveBackend: () => "vaapi",
     getRenderNode: () => "/dev/dri/renderD128",
+    getVaapiDriver: () => "iHD",
     getHealthStatus: () => ({
       running,
       backend: "vaapi",

@@ -57,6 +57,8 @@ export interface BrowserServiceDeps {
   readonly config: Omit<BrowserLaunchConfig, "initialUrl" | "timezone" | "vaapiRenderNode">;
   // VAAPI レンダノードはエンコーダ側の GPU 検出結果に依存するため、Chrome 起動時点で遅延取得する（app 層で配線）。
   readonly vaapiRenderNodeProvider?: () => string | null | Promise<string | null>;
+  // VAAPI デコードのドライバ名は --render-node-override と同一検出源から伝播する（仕様 06 §2.1）。
+  readonly vaapiDriverNameProvider?: () => string | null | Promise<string | null>;
   readonly onPageInfoChanged?: (info: BrowserPageInfo) => void;
   readonly onDroppedInput?: (kind: DroppedInputKind, reason: string) => void;
 }
@@ -474,6 +476,7 @@ export class BrowserService implements BrowserControlPort {
       timezone,
       this.deps.config.display,
       this.deps.config.pulseSocketPath,
+      (await this.deps.vaapiDriverNameProvider?.()) ?? null,
     );
 
     const proc = this.deps.processRunner.spawn({

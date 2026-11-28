@@ -165,6 +165,11 @@ export class EncoderService implements EncoderControlPort {
     return this.vaapiDevice;
   }
 
+  // Spec: docs/specs/06-browser-input-cdp.md#2.1
+  getVaapiDriver(): string | null {
+    return this.activeBackend === "vaapi" ? this.vaapiDriver : null;
+  }
+
   // Spec: docs/specs/05-encoder-gpu.md#2.2
   // Spec: docs/specs/08-observability.md#2.1
   getHealthStatus(): EncoderHealthStatus {
